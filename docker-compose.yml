@@ -1,0 +1,29 @@
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: relay
+    ports:
+      - "8088:8088"
+      - "8443:8443"
+    environment:
+      JWT_SECRET: "change-me"
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    depends_on:
+      - backend-orders-a
+      - backend-payments-a
+
+  backend-orders-a:
+    image: mendhak/http-https-echo:36
+    container_name: backend-orders-a
+    ports:
+      - "8080:8080"
+
+  backend-payments-a:
+    image: mendhak/http-https-echo:36
+    container_name: backend-payments-a
+    ports:
+      - "8081:8080"

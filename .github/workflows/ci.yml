@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - run: go test ./...
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - run: cd dashboard && npm ci && npm run build
+      - run: go build ./cmd/relay
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
