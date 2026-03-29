@@ -57,6 +57,32 @@ type RouteConfig struct {
 
 type MatchConfig struct {
 	Path       string   `yaml:"path"`
+	Port int `yaml:"port"`
+}
+
+type TLSConfig struct {
+	Mode     string `yaml:"mode"`
+	CertFile string `yaml:"cert_file"`
+	KeyFile  string `yaml:"key_file"`
+}
+
+type TimeoutsConfig struct {
+	ReadTimeout   time.Duration `yaml:"read_timeout"`
+	WriteTimeout  time.Duration `yaml:"write_timeout"`
+	IdleTimeout   time.Duration `yaml:"idle_timeout"`
+	HeaderTimeout time.Duration `yaml:"header_timeout"`
+}
+
+type RouteConfig struct {
+	ID          string          `yaml:"id"`
+	Match       MatchConfig     `yaml:"match"`
+	Backend     string          `yaml:"backend"`
+	Middlewares []string        `yaml:"middlewares"`
+	Thresholds  ThresholdConfig `yaml:"thresholds"`
+}
+
+type MatchConfig struct {
+
 	PathPrefix string   `yaml:"path_prefix"`
 	Methods    []string `yaml:"methods"`
 	Hosts      []string `yaml:"hosts"`
@@ -66,6 +92,7 @@ type BackendConfig struct {
 	Name        string            `yaml:"name"`
 	Strategy    string            `yaml:"strategy"`
 	HealthCheck HealthCheckConfig `yaml:"health_check"`
+	HealthCheck HealthCheckConfig `yaml:"healthcheck"`
 	Instances   []InstanceConfig  `yaml:"instances"`
 }
 
@@ -73,6 +100,8 @@ type HealthCheckConfig struct {
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
 	Path     string        `yaml:"path"`
+	Interval time.Duration `yaml:"interval"`
+	Timeout  time.Duration `yaml:"timeout"`
 }
 
 type InstanceConfig struct {
@@ -99,6 +128,11 @@ type MiddlewareSettingsConfig struct {
 	Blacklist []string      `yaml:"blacklist"`
 	Allow     []string      `yaml:"allow"`
 	Deny      []string      `yaml:"deny"`
+	Name      string         `yaml:"name"`
+	Type      string         `yaml:"type"`
+	Enabled   bool           `yaml:"enabled"`
+	RawConfig map[string]any `yaml:"config"`
+
 }
 
 type ObservabilityConfig struct {
@@ -158,5 +192,22 @@ func Validate(c *Config) error {
 }
 
 func (c *Config) Provider() any {
+	Enabled bool `yaml:"enabled"`
+}
+
+type ThresholdConfig struct {
+	ErrorRatePct float64 `yaml:"error_rate_pct"`
+	P99Ms        int     `yaml:"p99_ms"`
+}
+
+func Load(path string) (*Config, error) {
+	_ = path
+	// TODO: implement relay YAML loading and decoding with gopkg.in/yaml.v3.
+	return nil, nil
+}
+
+func (c *Config) Provider() any {
+	_ = c
+	// TODO: implement config provider adapter for Algoryn Fabric.
 	return nil
 }
