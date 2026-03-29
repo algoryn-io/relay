@@ -1,0 +1,53 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# Go build / test artifacts
+bin/
+dist/
+*.test
+*.out
+coverage.out
+cover.out
+
+# Local Go caches
+.gocache/
+.gomodcache/
+.gopath/
+
+# Runtime data
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.log
+
+# Dashboard (Node/Vite)
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Docker / Compose local overrides
+docker-compose.override.yml
+
+# Misc temp files
+*.tmp
+*.swp

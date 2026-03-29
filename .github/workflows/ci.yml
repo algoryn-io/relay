@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - run: go test ./...
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - run: cd dashboard && npm ci && npm run build
+      - run: go build ./cmd/relay
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+      - name: Install golangci-lint with current Go toolchain
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - name: Run golangci-lint
+        run: $(go env GOPATH)/bin/golangci-lint run --timeout=5m
