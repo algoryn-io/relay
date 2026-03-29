@@ -1,5 +1,51 @@
 listener:
   http:
+
+    port: 80
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+    header: 5s
+
+routes:
+  - name: orders-route
+    match:
+      path: /api/orders
+      methods: [GET, POST]
+    backend: orders-backend
+
+backends:
+  - name: orders-backend
+    strategy: round_robin
+    health_check:
+      interval: 10s
+      timeout: 2s
+      path: /health
+    instances:
+      - url: http://localhost:8080
+
+middleware: []
+
+observability:
+  dashboard:
+    enabled: false
+    port: 9090
+  logs:
+    level: info
+  metrics:
+    flush_interval: 30s
+
+storage:
+  path: ./data
+  retention:
+    metrics_days: 90
+    logs_days: 30
+
+reload:
+  watch: false
+  debounce: 500ms
+=======
     port: 8088
   https:
     port: 8443
@@ -105,3 +151,4 @@ storage:
 
 reload:
   enabled: true
+
