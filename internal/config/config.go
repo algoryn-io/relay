@@ -24,31 +24,39 @@ type HTTPConfig struct {
 }
 
 type HTTPSConfig struct {
-	Port int `yaml:"port"`
+	Port int       `yaml:"port"`
+	TLS  TLSConfig `yaml:"tls"`
 }
 
 type TLSConfig struct {
-	Mode     string `yaml:"mode"`
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
+	Mode     string   `yaml:"mode"`
+	Domains  []string `yaml:"domains"`
+	CertFile string   `yaml:"cert_file"`
+	KeyFile  string   `yaml:"key_file"`
 }
 
 type TimeoutsConfig struct {
-	ReadTimeout   time.Duration `yaml:"read_timeout"`
-	WriteTimeout  time.Duration `yaml:"write_timeout"`
-	IdleTimeout   time.Duration `yaml:"idle_timeout"`
-	HeaderTimeout time.Duration `yaml:"header_timeout"`
+	Read          time.Duration `yaml:"read"`
+	Write         time.Duration `yaml:"write"`
+	Idle          time.Duration `yaml:"idle"`
+	Header        time.Duration `yaml:"header"`
+	ReadTimeout   time.Duration `yaml:"-"`
+	WriteTimeout  time.Duration `yaml:"-"`
+	IdleTimeout   time.Duration `yaml:"-"`
+	HeaderTimeout time.Duration `yaml:"-"`
 }
 
 type RouteConfig struct {
-	ID          string          `yaml:"id"`
-	Match       MatchConfig     `yaml:"match"`
-	Backend     string          `yaml:"backend"`
-	Middlewares []string        `yaml:"middlewares"`
-	Thresholds  ThresholdConfig `yaml:"thresholds"`
+	Name        string      `yaml:"name"`
+	ID          string      `yaml:"id"`
+	Match       MatchConfig `yaml:"match"`
+	Middleware  []string    `yaml:"middleware"`
+	Middlewares []string    `yaml:"-"`
+	Backend     string      `yaml:"backend"`
 }
 
 type MatchConfig struct {
+	Path       string   `yaml:"path"`
 	PathPrefix string   `yaml:"path_prefix"`
 	Methods    []string `yaml:"methods"`
 	Hosts      []string `yaml:"hosts"`
@@ -57,14 +65,14 @@ type MatchConfig struct {
 type BackendConfig struct {
 	Name        string            `yaml:"name"`
 	Strategy    string            `yaml:"strategy"`
-	HealthCheck HealthCheckConfig `yaml:"healthcheck"`
+	HealthCheck HealthCheckConfig `yaml:"health_check"`
 	Instances   []InstanceConfig  `yaml:"instances"`
 }
 
 type HealthCheckConfig struct {
-	Path     string        `yaml:"path"`
 	Interval time.Duration `yaml:"interval"`
 	Timeout  time.Duration `yaml:"timeout"`
+	Path     string        `yaml:"path"`
 }
 
 type InstanceConfig struct {
@@ -73,10 +81,24 @@ type InstanceConfig struct {
 }
 
 type MiddlewareConfig struct {
-	Name      string         `yaml:"name"`
-	Type      string         `yaml:"type"`
-	Enabled   bool           `yaml:"enabled"`
-	RawConfig map[string]any `yaml:"config"`
+	Name    string                   `yaml:"name"`
+	Type    string                   `yaml:"type"`
+	Enabled bool                     `yaml:"enabled"`
+	Config  MiddlewareSettingsConfig `yaml:"config"`
+}
+
+type MiddlewareSettingsConfig struct {
+	SecretEnv string        `yaml:"secret_env"`
+	Secret    string        `yaml:"secret"`
+	Header    string        `yaml:"header"`
+	Strategy  string        `yaml:"strategy"`
+	Limit     int           `yaml:"limit"`
+	Window    time.Duration `yaml:"window"`
+	By        string        `yaml:"by"`
+	Whitelist []string      `yaml:"whitelist"`
+	Blacklist []string      `yaml:"blacklist"`
+	Allow     []string      `yaml:"allow"`
+	Deny      []string      `yaml:"deny"`
 }
 
 type ObservabilityConfig struct {
@@ -87,10 +109,12 @@ type ObservabilityConfig struct {
 
 type DashboardConfig struct {
 	Enabled bool   `yaml:"enabled"`
+	Port    int    `yaml:"port"`
 	Path    string `yaml:"path"`
 }
 
 type LogsConfig struct {
+	Level      string `yaml:"level"`
 	Directory  string `yaml:"directory"`
 	MaxSizeMB  int    `yaml:"max_size_mb"`
 	MaxBackups int    `yaml:"max_backups"`
@@ -114,22 +138,25 @@ type RetentionConfig struct {
 }
 
 type ReloadConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Watch    bool          `yaml:"watch"`
+	Enabled  bool          `yaml:"enabled"`
+	Debounce time.Duration `yaml:"debounce"`
 }
 
-type ThresholdConfig struct {
-	ErrorRatePct float64 `yaml:"error_rate_pct"`
-	P99Ms        int     `yaml:"p99_ms"`
+func (c *Config) Validate() error {
+	if c == nil {
+		return errNilConfig
+	}
+	return validateConfig(c)
 }
 
-func Load(path string) (*Config, error) {
-	_ = path
-	// TODO: implement relay YAML loading and decoding with gopkg.in/yaml.v3.
-	return nil, nil
+func Validate(c *Config) error {
+	if c == nil {
+		return errNilConfig
+	}
+	return c.Validate()
 }
 
 func (c *Config) Provider() any {
-	_ = c
-	// TODO: implement config provider adapter for Algoryn Fabric.
 	return nil
 }

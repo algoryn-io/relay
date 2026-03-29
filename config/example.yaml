@@ -1,107 +1,46 @@
 listener:
   http:
-    port: 8088
-  https:
-    port: 8443
-  tls:
-    mode: "disabled"
-    cert_file: "./certs/relay.crt"
-    key_file: "./certs/relay.key"
+    port: 80
   timeouts:
-    read_timeout: "15s"
-    write_timeout: "15s"
-    idle_timeout: "60s"
-    header_timeout: "5s"
+    read: 30s
+    write: 30s
+    idle: 60s
+    header: 5s
 
 routes:
-  - id: "orders-route"
+  - name: orders-route
     match:
-      path_prefix: "/api/orders"
-      methods: ["GET", "POST"]
-      hosts: ["localhost"]
-    backend: "orders-backend"
-    middlewares: ["jwt-auth", "orders-rate-limit", "ip-filter"]
-    thresholds:
-      error_rate_pct: 2.5
-      p99_ms: 750
-
-  - id: "payments-route"
-    match:
-      path_prefix: "/api/payments"
-      methods: ["GET", "POST"]
-      hosts: ["localhost"]
-    backend: "payments-backend"
-    middlewares: ["jwt-auth", "orders-rate-limit"]
-    thresholds:
-      error_rate_pct: 1.0
-      p99_ms: 900
+      path: /api/orders
+      methods: [GET, POST]
+    backend: orders-backend
 
 backends:
-  - name: "orders-backend"
-    strategy: "round_robin"
-    healthcheck:
-      path: "/health"
-      interval: "10s"
-      timeout: "2s"
+  - name: orders-backend
+    strategy: round_robin
+    health_check:
+      interval: 10s
+      timeout: 2s
+      path: /health
     instances:
-      - id: "orders-a"
-        url: "http://backend-orders-a:8080"
-      - id: "orders-b"
-        url: "http://backend-orders-b:8080"
+      - url: http://localhost:8080
 
-  - name: "payments-backend"
-    strategy: "least_connections"
-    healthcheck:
-      path: "/health"
-      interval: "10s"
-      timeout: "2s"
-    instances:
-      - id: "payments-a"
-        url: "http://backend-payments-a:8081"
-
-middleware:
-  - name: "jwt-auth"
-    type: "jwt"
-    enabled: true
-    config:
-      header: "Authorization"
-      secret_env: "JWT_SECRET"
-
-  - name: "orders-rate-limit"
-    type: "ratelimit"
-    enabled: true
-    config:
-      strategy: "token_bucket"
-      limit: 120
-      window: "1m"
-      by: "client_ip"
-
-  - name: "ip-filter"
-    type: "ipfilter"
-    enabled: true
-    config:
-      whitelist: ["127.0.0.1/32", "10.0.0.0/8"]
-      blacklist: ["192.168.200.0/24"]
+middleware: []
 
 observability:
   dashboard:
-    enabled: true
-    path: "/dashboard"
+    enabled: false
+    port: 9090
   logs:
-    directory: "./data/logs"
-    max_size_mb: 100
-    max_backups: 5
-    max_age_days: 14
-    compress: true
+    level: info
   metrics:
-    flush_interval: "10s"
+    flush_interval: 30s
 
 storage:
-  path: "./data/relay.db"
+  path: ./data
   retention:
-    requests_days: 14
-    metrics_days: 30
-    logs_days: 14
+    metrics_days: 90
+    logs_days: 30
 
 reload:
-  enabled: true
+  watch: false
+  debounce: 500ms
