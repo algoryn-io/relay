@@ -26,14 +26,11 @@ func TestServerMatchedRouteReturns200(t *testing.T) {
 
 	var body map[string]string
 	decodeJSON(t, resp.Body, &body)
-	if body["route"] != "orders-route" {
-		t.Fatalf("route = %q, want orders-route", body["route"])
+	if body["service"] != "orders" {
+		t.Fatalf("service = %q, want orders", body["service"])
 	}
-	if body["backend"] != "orders-backend" {
-		t.Fatalf("backend = %q, want orders-backend", body["backend"])
-	}
-	if body["status"] != "matched" {
-		t.Fatalf("status = %q, want matched", body["status"])
+	if body["path"] != "/api/orders" {
+		t.Fatalf("path = %q, want /api/orders", body["path"])
 	}
 }
 
@@ -95,6 +92,15 @@ func TestServerShutdown(t *testing.T) {
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"service": "orders",
+			"path":    r.URL.Path,
+		})
+	}))
+	t.Cleanup(backend.Close)
+
 	rt := &config.RuntimeConfig{
 		Routes: map[string]config.RouteRuntime{
 			"orders-route": {
@@ -102,6 +108,14 @@ func newTestServer(t *testing.T) *Server {
 				Path:        "/api/orders",
 				Methods:     []string{http.MethodGet, http.MethodPost},
 				BackendName: "orders-backend",
+			},
+		},
+		Backends: map[string]config.BackendRuntime{
+			"orders-backend": {
+				Name: "orders-backend",
+				Instances: []config.InstanceRuntime{
+					{URL: backend.URL},
+				},
 			},
 		},
 	}

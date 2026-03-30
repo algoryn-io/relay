@@ -1,47 +1,81 @@
 package proxy
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
+
+	"algoryn.io/relay/internal/config"
 )
 
 type Proxy struct {
-	reverseProxy *httputil.ReverseProxy
-	registry     BackendRegistry
-	balancer     Balancer
+	backends map[string]config.BackendRuntime
 }
 
-var _ http.Handler = (*Proxy)(nil)
-
-func New(registry BackendRegistry, balancer Balancer) *Proxy {
-	p := &Proxy{
-		registry: registry,
-		balancer: balancer,
+func New(rt *config.RuntimeConfig) (*Proxy, error) {
+	if rt == nil {
+		return nil, fmt.Errorf("runtime config is nil")
 	}
-	p.reverseProxy = &httputil.ReverseProxy{
-		Director:       p.director,
-		ModifyResponse: p.modifyResponse,
-		ErrorHandler:   p.errorHandler,
+
+	return &Proxy{
+		backends: rt.Backends,
+	}, nil
+}
+
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.RouteRuntime) {
+	if p == nil || route == nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
 	}
-	return p
+
+	backend, ok := p.backends[route.BackendName]
+	if !ok {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	if len(backend.Instances) == 0 {
+		writeJSONError(w, http.StatusBadGateway, "bad_gateway")
+		return
+	}
+
+	target, err := url.Parse(backend.Instances[0].URL)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	director := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalHost := req.Host
+		proto := "http"
+		if req.TLS != nil {
+			proto = "https"
+		}
+
+		director(req)
+		setForwardedHeaders(req, originalHost, proto)
+	}
+	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
+		writeJSONError(rw, http.StatusBadGateway, "bad_gateway")
+	}
+
+	proxy.ServeHTTP(w, r)
 }
 
-func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	p.reverseProxy.ServeHTTP(w, r)
+func setForwardedHeaders(req *http.Request, originalHost, proto string) {
+	req.Header.Set("X-Forwarded-Host", originalHost)
+	req.Header.Set("X-Forwarded-Proto", proto)
 }
 
-func (p *Proxy) director(req *http.Request) {
-	_ = req
-	// TODO: implement backend resolution and request URL rewrite before proxy forwarding.
-}
-
-func (p *Proxy) modifyResponse(resp *http.Response) error {
-	_ = resp
-	// TODO: implement response mutation hooks and telemetry enrichment for proxied traffic.
-	return nil
-}
-
-func (p *Proxy) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	_, _, _ = w, r, err
-	// TODO: implement proxy error translation and fallback behavior for upstream failures.
+func writeJSONError(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":  code,
+		"status": "error",
+	})
 }

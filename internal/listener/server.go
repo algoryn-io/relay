@@ -9,11 +9,13 @@ import (
 	"net/http"
 
 	"algoryn.io/relay/internal/config"
+	"algoryn.io/relay/internal/proxy"
 	"algoryn.io/relay/internal/router"
 )
 
 type Server struct {
 	httpServer *http.Server
+	proxy      *proxy.Proxy
 	router     *router.Router
 	logger     *slog.Logger
 }
@@ -40,8 +42,13 @@ func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *sl
 	if err != nil {
 		return nil, err
 	}
+	rtProxy, err := proxy.New(rt)
+	if err != nil {
+		return nil, err
+	}
 
 	s := &Server{
+		proxy:  rtProxy,
 		router: rtRouter,
 		logger: logger,
 	}
@@ -76,11 +83,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	route, err := s.router.Match(req)
 	switch {
 	case err == nil:
-		s.writeJSON(w, http.StatusOK, responseBody{
-			Route:   route.Name,
-			Backend: route.BackendName,
-			Status:  "matched",
-		})
+		s.proxy.ServeHTTP(w, req, route)
 	case errors.Is(err, router.ErrMethodNotAllowed):
 		s.writeJSON(w, http.StatusMethodNotAllowed, responseBody{
 			Error:  "method_not_allowed",
