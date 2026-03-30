@@ -5,7 +5,6 @@ listener:
     read: 30s
     write: 30s
     idle: 60s
-    header: 5s
 
 routes:
   - name: orders-route
