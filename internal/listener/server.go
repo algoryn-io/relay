@@ -10,6 +10,7 @@ import (
 
 	"algoryn.io/relay/internal/config"
 	"algoryn.io/relay/internal/middleware"
+	"algoryn.io/relay/internal/observability"
 	"algoryn.io/relay/internal/proxy"
 	"algoryn.io/relay/internal/router"
 )
@@ -19,6 +20,8 @@ type Server struct {
 	proxy      *proxy.Proxy
 	router     *router.Router
 	logger     *slog.Logger
+	metrics    *observability.Metrics
+	metricsH   http.Handler
 	routes     map[string]*compiledRoute
 }
 
@@ -57,6 +60,7 @@ func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *sl
 	if err != nil {
 		return nil, err
 	}
+	metrics := observability.NewMetrics(100)
 	compiledRoutes := make(map[string]*compiledRoute, len(rt.Routes))
 	for routeName, routeRuntime := range rt.Routes {
 		route := routeRuntime
@@ -69,18 +73,23 @@ func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *sl
 		if resolveErr != nil {
 			return nil, fmt.Errorf("resolve middleware for route %q: %w", routeRef.Name, resolveErr)
 		}
+		routeHandler := middleware.Chain(final, routeMiddlewares...)
+		loggingMW := observability.NewLoggingMiddleware(logger, routeRef.Name, routeRef.BackendName)
+		metricsMW := observability.NewMetricsMiddleware(metrics, routeRef.Name)
 
 		compiledRoutes[routeName] = &compiledRoute{
 			route:   routeRef,
-			handler: middleware.Chain(final, routeMiddlewares...),
+			handler: middleware.Chain(routeHandler, loggingMW, metricsMW),
 		}
 	}
 
 	s := &Server{
-		proxy:  rtProxy,
-		router: rtRouter,
-		logger: logger,
-		routes: compiledRoutes,
+		proxy:    rtProxy,
+		router:   rtRouter,
+		logger:   logger,
+		metrics:  metrics,
+		metricsH: observability.MetricsHandler(metrics),
+		routes:   compiledRoutes,
 	}
 
 	s.httpServer = &http.Server{
@@ -113,6 +122,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Path == "/_relay/metrics" {
+		s.metricsH.ServeHTTP(w, req)
+		return
+	}
+
 	route, err := s.router.Match(req)
 	switch {
 	case err == nil:
