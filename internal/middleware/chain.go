@@ -1,32 +1,35 @@
 package middleware
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+)
 
 type Middleware func(http.Handler) http.Handler
 
-func Chain(middlewares ...Middleware) Middleware {
-	return func(next http.Handler) http.Handler {
-		if next == nil {
-			next = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
-		}
-		for i := len(middlewares) - 1; i >= 0; i-- {
-			if middlewares[i] == nil {
-				continue
-			}
-			next = middlewares[i](next)
-		}
-		return next
+func Chain(final http.Handler, middlewares ...Middleware) http.Handler {
+	if final == nil {
+		final = http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	}
+
+	handler := final
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		if middlewares[i] == nil {
+			continue
+		}
+		handler = middlewares[i](handler)
+	}
+	return handler
 }
 
-func Resolve(names []string, registry map[string]Middleware) []Middleware {
+func Resolve(names []string, registry map[string]Middleware) ([]Middleware, error) {
 	out := make([]Middleware, 0, len(names))
 	for _, name := range names {
 		m, ok := registry[name]
 		if !ok {
-			continue
+			return nil, fmt.Errorf("middleware %q not found", name)
 		}
 		out = append(out, m)
 	}
-	return out
+	return out, nil
 }

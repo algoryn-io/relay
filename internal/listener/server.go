@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"algoryn.io/relay/internal/config"
+	"algoryn.io/relay/internal/middleware"
 	"algoryn.io/relay/internal/proxy"
 	"algoryn.io/relay/internal/router"
 )
@@ -18,6 +19,12 @@ type Server struct {
 	proxy      *proxy.Proxy
 	router     *router.Router
 	logger     *slog.Logger
+	routes     map[string]*compiledRoute
+}
+
+type compiledRoute struct {
+	route   *config.RouteRuntime
+	handler http.Handler
 }
 
 type responseBody struct {
@@ -46,11 +53,34 @@ func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *sl
 	if err != nil {
 		return nil, err
 	}
+	mwRegistry, err := middleware.BuildRegistry(rt.Middleware)
+	if err != nil {
+		return nil, err
+	}
+	compiledRoutes := make(map[string]*compiledRoute, len(rt.Routes))
+	for routeName, routeRuntime := range rt.Routes {
+		route := routeRuntime
+		routeRef := &route
+
+		final := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			rtProxy.ServeHTTP(w, r, routeRef)
+		})
+		routeMiddlewares, resolveErr := middleware.Resolve(routeRef.MiddlewareRefs, mwRegistry)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("resolve middleware for route %q: %w", routeRef.Name, resolveErr)
+		}
+
+		compiledRoutes[routeName] = &compiledRoute{
+			route:   routeRef,
+			handler: middleware.Chain(final, routeMiddlewares...),
+		}
+	}
 
 	s := &Server{
 		proxy:  rtProxy,
 		router: rtRouter,
 		logger: logger,
+		routes: compiledRoutes,
 	}
 
 	s.httpServer = &http.Server{
@@ -86,7 +116,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	route, err := s.router.Match(req)
 	switch {
 	case err == nil:
-		s.proxy.ServeHTTP(w, req, route)
+		compiled, ok := s.routes[route.Name]
+		if !ok || compiled == nil || compiled.handler == nil {
+			s.logger.Error("compiled route not found", "route", route.Name)
+			s.writeJSON(w, http.StatusInternalServerError, responseBody{
+				Error:  "internal_error",
+				Status: "error",
+			})
+			return
+		}
+		compiled.handler.ServeHTTP(w, req)
 	case errors.Is(err, router.ErrMethodNotAllowed):
 		s.writeJSON(w, http.StatusMethodNotAllowed, responseBody{
 			Error:  "method_not_allowed",

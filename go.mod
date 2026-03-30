@@ -4,8 +4,9 @@ go 1.25.5
 
 require (
 	github.com/fsnotify/fsnotify v1.8.0
-	gopkg.in/yaml.v3 v3.0.1
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.39.1
 )
 
