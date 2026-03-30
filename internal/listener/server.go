@@ -76,6 +76,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s == nil || s.httpServer == nil {
 		return nil
 	}
+	if s.proxy != nil {
+		s.proxy.Close()
+	}
 	return s.httpServer.Shutdown(ctx)
 }
 
