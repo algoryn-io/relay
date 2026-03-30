@@ -155,6 +155,22 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		if middleware.Type == "jwt" && strings.TrimSpace(middleware.Config.SecretEnv) == "" && strings.TrimSpace(middleware.Config.Secret) == "" {
 			errs.Addf("%s.config.secret_env: required for jwt middleware", prefix)
 		}
+		if middleware.Type == "rate_limit" {
+			if middleware.Config.Strategy != "sliding_window" {
+				errs.Addf("%s.config.strategy: only sliding_window is supported in this phase", prefix)
+			}
+			if middleware.Config.Limit <= 0 {
+				errs.Addf("%s.config.limit: must be greater than 0", prefix)
+			}
+			if middleware.Config.Window <= 0 {
+				errs.Addf("%s.config.window: must be greater than 0", prefix)
+			}
+			switch middleware.Config.By {
+			case "ip", "route", "api_key":
+			default:
+				errs.Addf("%s.config.by: must be one of ip, route, api_key", prefix)
+			}
+		}
 	}
 
 	return seen

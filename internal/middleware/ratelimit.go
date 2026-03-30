@@ -1,7 +1,11 @@
 package middleware
 
 import (
+	"fmt"
+	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,14 +21,124 @@ type RateLimitConfig struct {
 	Limit    int
 	Window   time.Duration
 	By       string
+	Header   string
 }
 
-func NewRateLimit(cfg RateLimitConfig) Middleware {
-	_ = cfg
+type rateLimiter struct {
+	limit  int
+	window time.Duration
+	by     string
+	header string
+
+	mu      sync.Mutex
+	buckets map[string][]time.Time
+}
+
+func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
+	if cfg.Strategy == "" {
+		cfg.Strategy = SlidingWindow
+	}
+	if cfg.Strategy != SlidingWindow {
+		return nil, fmt.Errorf("unsupported rate limit strategy %q", cfg.Strategy)
+	}
+	if cfg.Limit <= 0 {
+		return nil, fmt.Errorf("rate limit must be greater than 0")
+	}
+	if cfg.Window <= 0 {
+		return nil, fmt.Errorf("rate limit window must be greater than 0")
+	}
+	if strings.TrimSpace(cfg.By) == "" {
+		cfg.By = "ip"
+	}
+	switch cfg.By {
+	case "ip", "route", "api_key":
+	default:
+		return nil, fmt.Errorf("unsupported rate limit key %q", cfg.By)
+	}
+	if cfg.By == "api_key" && strings.TrimSpace(cfg.Header) == "" {
+		cfg.Header = "X-API-Key"
+	}
+
+	limiter := &rateLimiter{
+		limit:   cfg.Limit,
+		window:  cfg.Window,
+		by:      cfg.By,
+		header:  cfg.Header,
+		buckets: make(map[string][]time.Time),
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// TODO: implement token bucket and sliding window request throttling strategies.
+			key := limiter.keyFromRequest(r)
+			if key == "" {
+				key = "unknown"
+			}
+
+			if !limiter.allow(key, time.Now()) {
+				writeJSONError(w, http.StatusTooManyRequests, "rate_limited")
+				return
+			}
+
 			next.ServeHTTP(w, r)
 		})
+	}, nil
+}
+
+func (l *rateLimiter) allow(key string, now time.Time) bool {
+	cutoff := now.Add(-l.window)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	events := l.buckets[key]
+	keep := events[:0]
+	for _, ts := range events {
+		if ts.After(cutoff) {
+			keep = append(keep, ts)
+		}
 	}
+	if len(keep) >= l.limit {
+		l.buckets[key] = keep
+		return false
+	}
+
+	keep = append(keep, now)
+	l.buckets[key] = keep
+
+	// Opportunistic pruning to keep memory bounded.
+	if len(l.buckets) > 1024 {
+		for k, timestamps := range l.buckets {
+			if len(timestamps) == 0 || !timestamps[len(timestamps)-1].After(cutoff) {
+				delete(l.buckets, k)
+			}
+		}
+	}
+
+	return true
+}
+
+func (l *rateLimiter) keyFromRequest(r *http.Request) string {
+	switch l.by {
+	case "route":
+		return r.Method + ":" + r.URL.Path
+	case "api_key":
+		return strings.TrimSpace(r.Header.Get(l.header))
+	default:
+		return clientIP(r)
+	}
+}
+
+func clientIP(r *http.Request) string {
+	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+	if xff != "" {
+		if parts := strings.Split(xff, ","); len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil {
+		return host
+	}
+	return strings.TrimSpace(r.RemoteAddr)
 }
