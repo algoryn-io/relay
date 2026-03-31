@@ -41,6 +41,9 @@ func resolveEnvValue(v reflect.Value, path string, getenv func(string) string) e
 
 					targetName := strings.TrimSuffix(field.Name, "Env")
 					target := v.FieldByName(targetName)
+					if !target.IsValid() {
+						target = v.FieldByName("Resolved" + targetName)
+					}
 					if target.IsValid() && target.CanSet() && target.Kind() == reflect.String {
 						target.SetString(resolved)
 					}

@@ -38,10 +38,6 @@ func (c *Config) normalizeAliases() {
 		c.Routes[i].normalizeAliases()
 	}
 
-	for i := range c.Backends {
-		c.Backends[i].normalizeAliases()
-	}
-
 	for i := range c.Middleware {
 		c.Middleware[i].normalizeAliases()
 	}
@@ -70,14 +66,10 @@ func (c *TimeoutsConfig) normalizeAliases() {
 	if c.Idle == 0 {
 		c.Idle = c.IdleTimeout
 	}
-	if c.Header == 0 {
-		c.Header = c.HeaderTimeout
-	}
 
 	c.ReadTimeout = c.Read
 	c.WriteTimeout = c.Write
 	c.IdleTimeout = c.Idle
-	c.HeaderTimeout = c.Header
 }
 
 func (c *RouteConfig) normalizeAliases() {
@@ -93,14 +85,10 @@ func (c *RouteConfig) normalizeAliases() {
 	c.Middlewares = c.Middleware
 }
 
-func (c *BackendConfig) normalizeAliases() {}
-
 func (c *MiddlewareConfig) normalizeAliases() {
 	switch c.Type {
 	case "ratelimit":
 		c.Type = "rate_limit"
-	case "ipfilter":
-		c.Type = "ip_filter"
 	}
 }
 
@@ -121,14 +109,12 @@ func (c *ReloadConfig) normalizeAliases() {
 
 func (c *TimeoutsConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawTimeouts struct {
-		Read          timeDuration `yaml:"read"`
-		Write         timeDuration `yaml:"write"`
-		Idle          timeDuration `yaml:"idle"`
-		Header        timeDuration `yaml:"header"`
-		ReadTimeout   timeDuration `yaml:"read_timeout"`
-		WriteTimeout  timeDuration `yaml:"write_timeout"`
-		IdleTimeout   timeDuration `yaml:"idle_timeout"`
-		HeaderTimeout timeDuration `yaml:"header_timeout"`
+		Read         timeDuration `yaml:"read"`
+		Write        timeDuration `yaml:"write"`
+		Idle         timeDuration `yaml:"idle"`
+		ReadTimeout  timeDuration `yaml:"read_timeout"`
+		WriteTimeout timeDuration `yaml:"write_timeout"`
+		IdleTimeout  timeDuration `yaml:"idle_timeout"`
 	}
 
 	var raw rawTimeouts
@@ -139,11 +125,9 @@ func (c *TimeoutsConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.Read = raw.Read.Duration()
 	c.Write = raw.Write.Duration()
 	c.Idle = raw.Idle.Duration()
-	c.Header = raw.Header.Duration()
 	c.ReadTimeout = raw.ReadTimeout.Duration()
 	c.WriteTimeout = raw.WriteTimeout.Duration()
 	c.IdleTimeout = raw.IdleTimeout.Duration()
-	c.HeaderTimeout = raw.HeaderTimeout.Duration()
 
 	return nil
 }

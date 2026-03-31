@@ -10,7 +10,7 @@ func Build(def config.MiddlewareRuntime) (Middleware, error) {
 	switch def.Type {
 	case "jwt":
 		return NewJWT(JWTConfig{
-			Secret: def.Config.Secret,
+			Secret: def.Config.ResolvedSecret,
 			Header: def.Config.Header,
 		})
 	case "rate_limit":
@@ -20,6 +20,13 @@ func Build(def config.MiddlewareRuntime) (Middleware, error) {
 			Window:   def.Config.Window,
 			By:       def.Config.By,
 			Header:   def.Config.Header,
+		})
+	case "cors":
+		return NewCORS(CORSConfig{
+			AllowedOrigins:   def.Config.AllowedOrigins,
+			AllowedMethods:   def.Config.AllowedMethods,
+			AllowedHeaders:   def.Config.AllowedHeaders,
+			AllowCredentials: def.Config.AllowCredentials,
 		})
 	default:
 		return nil, fmt.Errorf("unsupported middleware type %q", def.Type)
