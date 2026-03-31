@@ -36,14 +36,12 @@ type TLSConfig struct {
 }
 
 type TimeoutsConfig struct {
-	Read          time.Duration `yaml:"read"`
-	Write         time.Duration `yaml:"write"`
-	Idle          time.Duration `yaml:"idle"`
-	Header        time.Duration `yaml:"header"`
-	ReadTimeout   time.Duration `yaml:"-"`
-	WriteTimeout  time.Duration `yaml:"-"`
-	IdleTimeout   time.Duration `yaml:"-"`
-	HeaderTimeout time.Duration `yaml:"-"`
+	Read         time.Duration `yaml:"read"`
+	Write        time.Duration `yaml:"write"`
+	Idle         time.Duration `yaml:"idle"`
+	ReadTimeout  time.Duration `yaml:"-"`
+	WriteTimeout time.Duration `yaml:"-"`
+	IdleTimeout  time.Duration `yaml:"-"`
 }
 
 type RouteConfig struct {
@@ -88,17 +86,17 @@ type MiddlewareConfig struct {
 }
 
 type MiddlewareSettingsConfig struct {
-	SecretEnv string        `yaml:"secret_env"`
-	Secret    string        `yaml:"secret"`
-	Header    string        `yaml:"header"`
-	Strategy  string        `yaml:"strategy"`
-	Limit     int           `yaml:"limit"`
-	Window    time.Duration `yaml:"window"`
-	By        string        `yaml:"by"`
-	Whitelist []string      `yaml:"whitelist"`
-	Blacklist []string      `yaml:"blacklist"`
-	Allow     []string      `yaml:"allow"`
-	Deny      []string      `yaml:"deny"`
+	SecretEnv        string        `yaml:"secret_env"`
+	ResolvedSecret   string        `yaml:"-"`
+	Header           string        `yaml:"header"`
+	Strategy         string        `yaml:"strategy"`
+	Limit            int           `yaml:"limit"`
+	Window           time.Duration `yaml:"window"`
+	By               string        `yaml:"by"`
+	AllowedOrigins   []string      `yaml:"allowed_origins"`
+	AllowedMethods   []string      `yaml:"allowed_methods"`
+	AllowedHeaders   []string      `yaml:"allowed_headers"`
+	AllowCredentials bool          `yaml:"allow_credentials"`
 }
 
 type ObservabilityConfig struct {
@@ -155,8 +153,4 @@ func Validate(c *Config) error {
 		return errNilConfig
 	}
 	return c.Validate()
-}
-
-func (c *Config) Provider() any {
-	return nil
 }

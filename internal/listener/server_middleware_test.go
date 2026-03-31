@@ -78,6 +78,27 @@ func TestServerPublicRouteStillProxies(t *testing.T) {
 	}
 }
 
+func TestServerCORSMiddlewareHandlesPreflight(t *testing.T) {
+	t.Parallel()
+
+	server := newMiddlewareTestServer(t, 1, time.Minute)
+
+	req := httptest.NewRequest(http.MethodOptions, "/public", nil)
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	req.Header.Set("Access-Control-Request-Headers", "Authorization, Content-Type")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
+		t.Fatalf("Access-Control-Allow-Origin = %q", got)
+	}
+}
+
 func newMiddlewareTestServer(t *testing.T, limit int, window time.Duration) *Server {
 	t.Helper()
 
@@ -107,10 +128,11 @@ func newMiddlewareTestServer(t *testing.T, limit int, window time.Duration) *Ser
 				MiddlewareRefs: []string{"jwt-auth", "orders-rate-limit"},
 			},
 			"public-route": {
-				Name:        "public-route",
-				Path:        "/public",
-				Methods:     []string{http.MethodGet},
-				BackendName: "orders-backend",
+				Name:           "public-route",
+				Path:           "/public",
+				Methods:        []string{http.MethodGet, http.MethodOptions},
+				BackendName:    "orders-backend",
+				MiddlewareRefs: []string{"api-cors"},
 			},
 		},
 		Backends: map[string]config.BackendRuntime{
@@ -127,8 +149,8 @@ func newMiddlewareTestServer(t *testing.T, limit int, window time.Duration) *Ser
 				Name: "jwt-auth",
 				Type: "jwt",
 				Config: config.MiddlewareSettingsConfig{
-					Secret: "jwt-secret",
-					Header: "Authorization",
+					ResolvedSecret: "jwt-secret",
+					Header:         "Authorization",
 				},
 			},
 			"orders-rate-limit": {
@@ -139,6 +161,16 @@ func newMiddlewareTestServer(t *testing.T, limit int, window time.Duration) *Ser
 					Limit:    limit,
 					Window:   window,
 					By:       "ip",
+				},
+			},
+			"api-cors": {
+				Name: "api-cors",
+				Type: "cors",
+				Config: config.MiddlewareSettingsConfig{
+					AllowedOrigins:   []string{"http://localhost:3000"},
+					AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+					AllowedHeaders:   []string{"Authorization", "Content-Type"},
+					AllowCredentials: true,
 				},
 			},
 		},

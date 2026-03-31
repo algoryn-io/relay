@@ -20,7 +20,7 @@ func TestResolveEnvJWTSecret(t *testing.T) {
 		t.Fatalf("ResolveEnv() error = %v", err)
 	}
 
-	if got := cfg.Middleware[0].Config.Secret; got != "top-secret" {
+	if got := cfg.Middleware[0].Config.ResolvedSecret; got != "top-secret" {
 		t.Fatalf("resolved secret = %q, want top-secret", got)
 	}
 }

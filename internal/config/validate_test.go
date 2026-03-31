@@ -79,6 +79,25 @@ func TestValidateInvalidPorts(t *testing.T) {
 	assertValidationErrorContains(t, cfg.Validate(), "listener: at least one of listener.http.port or listener.https.port must be greater than 0")
 }
 
+func TestValidateCORSMiddleware(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+		Name: "api-cors",
+		Type: "cors",
+		Config: MiddlewareSettingsConfig{
+			AllowedOrigins: []string{"http://localhost:3000"},
+			AllowedMethods: []string{"GET", "POST", "OPTIONS"},
+			AllowedHeaders: []string{"Authorization", "Content-Type"},
+		},
+	})
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func assertValidationErrorContains(t *testing.T, err error, want string) {
 	t.Helper()
 	if err == nil {

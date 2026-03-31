@@ -15,7 +15,7 @@ var (
 	validMiddlewareTypes = map[string]struct{}{
 		"jwt":        {},
 		"rate_limit": {},
-		"ip_filter":  {},
+		"cors":       {},
 	}
 )
 
@@ -49,7 +49,6 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 	validatePositiveDuration("listener.timeouts.read", listener.Timeouts.Read, errs, false)
 	validatePositiveDuration("listener.timeouts.write", listener.Timeouts.Write, errs, false)
 	validatePositiveDuration("listener.timeouts.idle", listener.Timeouts.Idle, errs, false)
-	validatePositiveDuration("listener.timeouts.header", listener.Timeouts.Header, errs, true)
 }
 
 func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[string]struct{}, errs *ValidationErrors) {
@@ -149,11 +148,11 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 
 		if _, ok := validMiddlewareTypes[middleware.Type]; !ok {
-			errs.Addf("%s.type: must be one of jwt, rate_limit, ip_filter", prefix)
+			errs.Addf("%s.type: must be one of jwt, rate_limit, cors", prefix)
 		}
 
-		if middleware.Type == "jwt" && strings.TrimSpace(middleware.Config.SecretEnv) == "" && strings.TrimSpace(middleware.Config.Secret) == "" {
-			errs.Addf("%s.config.secret_env: required for jwt middleware", prefix)
+		if middleware.Type == "jwt" && strings.TrimSpace(middleware.Config.SecretEnv) == "" {
+			errs.Addf("%s.config.secret_env: must not be empty", prefix)
 		}
 		if middleware.Type == "rate_limit" {
 			if middleware.Config.Strategy != "sliding_window" {
@@ -169,6 +168,14 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 			case "ip", "route", "api_key":
 			default:
 				errs.Addf("%s.config.by: must be one of ip, route, api_key", prefix)
+			}
+		}
+		if middleware.Type == "cors" {
+			if len(middleware.Config.AllowedOrigins) == 0 {
+				errs.Addf("%s.config.allowed_origins: must not be empty", prefix)
+			}
+			if len(middleware.Config.AllowedMethods) == 0 {
+				errs.Addf("%s.config.allowed_methods: must not be empty", prefix)
 			}
 		}
 	}
