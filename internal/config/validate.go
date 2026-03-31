@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ var (
 		"jwt":        {},
 		"rate_limit": {},
 		"body_limit": {},
+		"ip_filter":  {},
 		"cors":       {},
 	}
 )
@@ -149,7 +151,7 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 
 		if _, ok := validMiddlewareTypes[middleware.Type]; !ok {
-			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, cors", prefix)
+			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors", prefix)
 		}
 
 		if middleware.Type == "jwt" && strings.TrimSpace(middleware.Config.SecretEnv) == "" {
@@ -184,9 +186,34 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 				errs.Addf("%s.config.max_bytes: must be greater than 0", prefix)
 			}
 		}
+		if middleware.Type == "ip_filter" {
+			if len(middleware.Config.Allow) == 0 && len(middleware.Config.Deny) == 0 {
+				errs.Addf("%s.config: at least one of allow or deny must be provided", prefix)
+			}
+			validateIPFilterEntries(prefix+".config.allow", middleware.Config.Allow, errs)
+			validateIPFilterEntries(prefix+".config.deny", middleware.Config.Deny, errs)
+		}
 	}
 
 	return seen
+}
+
+func validateIPFilterEntries(field string, entries []string, errs *ValidationErrors) {
+	for i, entry := range entries {
+		value := strings.TrimSpace(entry)
+		if value == "" {
+			errs.Addf("%s[%d]: must not be empty", field, i)
+			continue
+		}
+
+		if ip := net.ParseIP(value); ip != nil {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(value); err == nil {
+			continue
+		}
+		errs.Addf("%s[%d]: must be a valid IP or CIDR", field, i)
+	}
 }
 
 func validateObservability(observability ObservabilityConfig, errs *ValidationErrors) {

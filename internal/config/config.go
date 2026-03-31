@@ -90,6 +90,8 @@ type MiddlewareSettingsConfig struct {
 	ResolvedSecret   string        `yaml:"-"`
 	Header           string        `yaml:"header"`
 	MaxBytes         int64         `yaml:"max_bytes"`
+	Allow            []string      `yaml:"allow"`
+	Deny             []string      `yaml:"deny"`
 	Strategy         string        `yaml:"strategy"`
 	Limit            int           `yaml:"limit"`
 	Window           time.Duration `yaml:"window"`
