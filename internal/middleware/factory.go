@@ -25,6 +25,11 @@ func Build(def config.MiddlewareRuntime) (Middleware, error) {
 		return NewBodyLimit(BodyLimitConfig{
 			MaxBytes: def.Config.MaxBytes,
 		})
+	case "ip_filter":
+		return NewIPFilter(IPFilterConfig{
+			Allow: def.Config.Allow,
+			Deny:  def.Config.Deny,
+		})
 	case "cors":
 		return NewCORS(CORSConfig{
 			AllowedOrigins:   def.Config.AllowedOrigins,

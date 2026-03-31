@@ -136,6 +136,61 @@ func TestValidateCORSMiddleware(t *testing.T) {
 	}
 }
 
+func TestValidateIPFilterRequiresAllowOrDeny(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name:   "admin-ip-filter",
+			Type:   "ip_filter",
+			Config: MiddlewareSettingsConfig{},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"admin-ip-filter"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "at least one of allow or deny must be provided")
+}
+
+func TestValidateIPFilterInvalidEntry(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "admin-ip-filter",
+			Type: "ip_filter",
+			Config: MiddlewareSettingsConfig{
+				Allow: []string{"bad-ip"},
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"admin-ip-filter"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "must be a valid IP or CIDR")
+}
+
+func TestValidateIPFilterValidConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "admin-ip-filter",
+			Type: "ip_filter",
+			Config: MiddlewareSettingsConfig{
+				Allow: []string{"192.168.1.0/24", "10.0.0.1"},
+				Deny:  []string{"192.168.1.10"},
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"admin-ip-filter"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func assertValidationErrorContains(t *testing.T, err error, want string) {
 	t.Helper()
 	if err == nil {
