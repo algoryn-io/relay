@@ -79,6 +79,44 @@ func TestValidateInvalidPorts(t *testing.T) {
 	assertValidationErrorContains(t, cfg.Validate(), "listener: at least one of listener.http.port or listener.https.port must be greater than 0")
 }
 
+func TestValidateBodyLimitRequiresPositiveMaxBytes(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "api-body-limit",
+			Type: "body_limit",
+			Config: MiddlewareSettingsConfig{
+				MaxBytes: 0,
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"api-body-limit"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "middleware[0].config.max_bytes: must be greater than 0")
+}
+
+func TestValidateBodyLimitValidConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "api-body-limit",
+			Type: "body_limit",
+			Config: MiddlewareSettingsConfig{
+				MaxBytes: 1024,
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"api-body-limit"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestValidateCORSMiddleware(t *testing.T) {
 	t.Parallel()
 

@@ -89,6 +89,7 @@ type MiddlewareSettingsConfig struct {
 	SecretEnv        string        `yaml:"secret_env"`
 	ResolvedSecret   string        `yaml:"-"`
 	Header           string        `yaml:"header"`
+	MaxBytes         int64         `yaml:"max_bytes"`
 	Strategy         string        `yaml:"strategy"`
 	Limit            int           `yaml:"limit"`
 	Window           time.Duration `yaml:"window"`
