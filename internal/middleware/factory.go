@@ -21,6 +21,10 @@ func Build(def config.MiddlewareRuntime) (Middleware, error) {
 			By:       def.Config.By,
 			Header:   def.Config.Header,
 		})
+	case "body_limit":
+		return NewBodyLimit(BodyLimitConfig{
+			MaxBytes: def.Config.MaxBytes,
+		})
 	case "cors":
 		return NewCORS(CORSConfig{
 			AllowedOrigins:   def.Config.AllowedOrigins,

@@ -15,6 +15,7 @@ var (
 	validMiddlewareTypes = map[string]struct{}{
 		"jwt":        {},
 		"rate_limit": {},
+		"body_limit": {},
 		"cors":       {},
 	}
 )
@@ -148,7 +149,7 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 
 		if _, ok := validMiddlewareTypes[middleware.Type]; !ok {
-			errs.Addf("%s.type: must be one of jwt, rate_limit, cors", prefix)
+			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, cors", prefix)
 		}
 
 		if middleware.Type == "jwt" && strings.TrimSpace(middleware.Config.SecretEnv) == "" {
@@ -176,6 +177,11 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 			}
 			if len(middleware.Config.AllowedMethods) == 0 {
 				errs.Addf("%s.config.allowed_methods: must not be empty", prefix)
+			}
+		}
+		if middleware.Type == "body_limit" {
+			if middleware.Config.MaxBytes <= 0 {
+				errs.Addf("%s.config.max_bytes: must be greater than 0", prefix)
 			}
 		}
 	}
