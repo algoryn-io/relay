@@ -220,6 +220,12 @@ func validateObservability(observability ObservabilityConfig, errs *ValidationEr
 	if observability.Dashboard.Enabled && observability.Dashboard.Port <= 0 {
 		errs.Addf("observability.dashboard.port: must be greater than 0")
 	}
+	if observability.Logs.File != "" && strings.TrimSpace(observability.Logs.File) == "" {
+		errs.Addf("observability.logs.file: must not be blank")
+	}
+	if observability.Logs.MaxSizeMB < 0 {
+		errs.Addf("observability.logs.max_size_mb: must be >= 0")
+	}
 	validatePositiveDuration("observability.metrics.flush_interval", observability.Metrics.FlushInterval, errs, false)
 }
 

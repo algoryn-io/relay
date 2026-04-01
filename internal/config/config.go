@@ -116,9 +116,9 @@ type DashboardConfig struct {
 
 type LogsConfig struct {
 	Level      string `yaml:"level"`
-	Directory  string `yaml:"directory"`
+	Format     string `yaml:"format"`
+	File       string `yaml:"file"`
 	MaxSizeMB  int    `yaml:"max_size_mb"`
-	MaxBackups int    `yaml:"max_backups"`
 	MaxAgeDays int    `yaml:"max_age_days"`
 	Compress   bool   `yaml:"compress"`
 }
