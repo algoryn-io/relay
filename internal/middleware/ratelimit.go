@@ -76,7 +76,7 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
 			}
 
 			if !limiter.allow(key, time.Now()) {
-				writeJSONError(w, http.StatusTooManyRequests, "rate_limited")
+				httpx.WriteError(w, http.StatusTooManyRequests, "rate_limited")
 				return
 			}
 

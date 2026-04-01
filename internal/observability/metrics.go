@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"algoryn.io/relay/internal/httpx"
 )
 
 const defaultLatencySamples = 100
@@ -114,12 +116,7 @@ func (m *Metrics) Snapshot() map[string]any {
 func MetricsHandler(metrics *Metrics) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error":  "method_not_allowed",
-				"status": "error",
-			})
+			httpx.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 			return
 		}
 

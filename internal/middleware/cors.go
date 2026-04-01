@@ -3,6 +3,8 @@ package middleware
 import (
 	"net/http"
 	"strings"
+
+	"algoryn.io/relay/internal/httpx"
 )
 
 type CORSConfig struct {
@@ -67,7 +69,7 @@ func NewCORS(cfg CORSConfig) (Middleware, error) {
 			_, originAllowed := mw.allowedOrigins[origin]
 			if isPreflightRequest(r) {
 				if !originAllowed || !mw.isMethodAllowed(r.Header.Get("Access-Control-Request-Method")) || !mw.areHeadersAllowed(r.Header.Get("Access-Control-Request-Headers")) {
-					writeJSONError(w, http.StatusForbidden, "forbidden")
+					httpx.WriteError(w, http.StatusForbidden, "forbidden")
 					return
 				}
 				appendVary(w.Header(), "Access-Control-Request-Method")

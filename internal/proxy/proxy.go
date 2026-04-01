@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"algoryn.io/relay/internal/config"
+	"algoryn.io/relay/internal/httpx"
 )
 
 type instanceState struct {
@@ -82,19 +82,19 @@ func (p *Proxy) Close() {
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.RouteRuntime) {
 	if p == nil || route == nil {
-		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
 
 	backend, ok := p.backends[route.BackendName]
 	if !ok {
-		writeJSONError(w, http.StatusInternalServerError, "internal_error")
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
 		return
 	}
 
 	selected, err := p.selectInstance(backend.Name, backend.Strategy)
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "bad_gateway")
+		httpx.WriteError(w, http.StatusBadGateway, "bad_gateway")
 		return
 	}
 	defer p.releaseInstance(backend.Name, selected)
@@ -112,7 +112,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		setForwardedHeaders(req, originalHost, proto)
 	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
-		writeJSONError(rw, http.StatusBadGateway, "bad_gateway")
+		httpx.WriteError(rw, http.StatusBadGateway, "bad_gateway")
 	}
 
 	proxy.ServeHTTP(w, r)
@@ -137,13 +137,4 @@ func (p *Proxy) releaseInstance(backendName string, selected *instanceState) {
 			return
 		}
 	}
-}
-
-func writeJSONError(w http.ResponseWriter, status int, code string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"error":  code,
-		"status": "error",
-	})
 }

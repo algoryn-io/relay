@@ -40,7 +40,7 @@ func NewIPFilter(cfg IPFilterConfig) (Middleware, error) {
 			client := net.ParseIP(httpx.ClientIP(r))
 			if client == nil {
 				if hasAllow {
-					writeJSONError(w, http.StatusForbidden, "forbidden")
+					httpx.WriteError(w, http.StatusForbidden, "forbidden")
 					return
 				}
 				// Nil client IP is treated as non-matching; deny-only configs allow it.
@@ -49,11 +49,11 @@ func NewIPFilter(cfg IPFilterConfig) (Middleware, error) {
 			}
 
 			if hasAllow && !allowSet.contains(client) {
-				writeJSONError(w, http.StatusForbidden, "forbidden")
+				httpx.WriteError(w, http.StatusForbidden, "forbidden")
 				return
 			}
 			if hasDeny && denySet.contains(client) {
-				writeJSONError(w, http.StatusForbidden, "forbidden")
+				httpx.WriteError(w, http.StatusForbidden, "forbidden")
 				return
 			}
 

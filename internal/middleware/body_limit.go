@@ -16,11 +16,6 @@ func NewBodyLimit(cfg BodyLimitConfig) (Middleware, error) {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.ContentLength > cfg.MaxBytes {
-				writeJSONError(w, http.StatusRequestEntityTooLarge, "request_too_large")
-				return
-			}
-
 			r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxBytes)
 			next.ServeHTTP(w, r)
 		})

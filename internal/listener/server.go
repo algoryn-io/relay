@@ -2,13 +2,13 @@ package listener
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 
 	"algoryn.io/relay/internal/config"
+	"algoryn.io/relay/internal/httpx"
 	"algoryn.io/relay/internal/middleware"
 	"algoryn.io/relay/internal/observability"
 	"algoryn.io/relay/internal/proxy"
@@ -28,13 +28,6 @@ type Server struct {
 type compiledRoute struct {
 	route   *config.RouteRuntime
 	handler http.Handler
-}
-
-type responseBody struct {
-	Route   string `json:"route,omitempty"`
-	Backend string `json:"backend,omitempty"`
-	Status  string `json:"status,omitempty"`
-	Error   string `json:"error,omitempty"`
 }
 
 func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *slog.Logger) (*Server, error) {
@@ -133,36 +126,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		compiled, ok := s.routes[route.Name]
 		if !ok || compiled == nil || compiled.handler == nil {
 			s.logger.Error("compiled route not found", "route", route.Name)
-			s.writeJSON(w, http.StatusInternalServerError, responseBody{
-				Error:  "internal_error",
-				Status: "error",
-			})
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
 			return
 		}
 		compiled.handler.ServeHTTP(w, req)
 	case errors.Is(err, router.ErrMethodNotAllowed):
-		s.writeJSON(w, http.StatusMethodNotAllowed, responseBody{
-			Error:  "method_not_allowed",
-			Status: "error",
-		})
+		httpx.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 	case errors.Is(err, router.ErrNotFound):
-		s.writeJSON(w, http.StatusNotFound, responseBody{
-			Error:  "not_found",
-			Status: "error",
-		})
+		httpx.WriteError(w, http.StatusNotFound, "not_found")
 	default:
 		s.logger.Error("request match failed", "error", err)
-		s.writeJSON(w, http.StatusInternalServerError, responseBody{
-			Error:  "internal_error",
-			Status: "error",
-		})
-	}
-}
-
-func (s *Server) writeJSON(w http.ResponseWriter, status int, payload responseBody) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(payload); err != nil && s.logger != nil {
-		s.logger.Error("failed to write JSON response", "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
 	}
 }
