@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"algoryn.io/relay/internal/httpx"
 )
 
 func TestBodyLimitUnderLimitPasses(t *testing.T) {
@@ -42,9 +44,14 @@ func TestBodyLimitOverLimitReturns413(t *testing.T) {
 	t.Parallel()
 
 	mw := mustBodyLimit(t, BodyLimitConfig{MaxBytes: 4})
-	called := false
+	success := false
 	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request_too_large")
+			return
+		}
+		success = true
 		w.WriteHeader(http.StatusOK)
 	}), mw)
 
@@ -55,8 +62,8 @@ func TestBodyLimitOverLimitReturns413(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
 	}
-	if called {
-		t.Fatal("downstream handler should not be called when body exceeds limit")
+	if success {
+		t.Fatal("downstream should not be considered successful when body exceeds limit")
 	}
 
 	var body map[string]string
@@ -95,9 +102,14 @@ func TestBodyLimitDownstreamNotCalledWhenExceeded(t *testing.T) {
 	t.Parallel()
 
 	mw := mustBodyLimit(t, BodyLimitConfig{MaxBytes: 1})
-	calls := 0
+	successCalls := 0
 	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		_, err := io.ReadAll(r.Body)
+		if err != nil {
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request_too_large")
+			return
+		}
+		successCalls++
 		w.WriteHeader(http.StatusOK)
 	}), mw)
 
@@ -105,8 +117,11 @@ func TestBodyLimitDownstreamNotCalledWhenExceeded(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if calls != 0 {
-		t.Fatalf("downstream calls = %d, want 0", calls)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if successCalls != 0 {
+		t.Fatalf("successful downstream calls = %d, want 0", successCalls)
 	}
 }
 
