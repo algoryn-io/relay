@@ -206,7 +206,7 @@ func TestValidateLogsMaxSizeNegative(t *testing.T) {
 	cfg := validConfig()
 	cfg.Observability.Logs.MaxSizeMB = -1
 
-	assertValidationErrorContains(t, cfg.Validate(), "observability.logs.max_size_mb: must be greater than 0 when provided")
+	assertValidationErrorContains(t, cfg.Validate(), "observability.logs.max_size_mb: must be >= 0")
 }
 
 func assertValidationErrorContains(t *testing.T, err error, want string) {
