@@ -191,6 +191,24 @@ func TestValidateIPFilterValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateLogsFileBlankAfterTrim(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Observability.Logs.File = "   "
+
+	assertValidationErrorContains(t, cfg.Validate(), "observability.logs.file: must not be blank")
+}
+
+func TestValidateLogsMaxSizeNegative(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Observability.Logs.MaxSizeMB = -1
+
+	assertValidationErrorContains(t, cfg.Validate(), "observability.logs.max_size_mb: must be greater than 0 when provided")
+}
+
 func assertValidationErrorContains(t *testing.T, err error, want string) {
 	t.Helper()
 	if err == nil {

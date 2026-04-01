@@ -99,6 +99,9 @@ func (c *ObservabilityConfig) normalizeAliases() {
 	if c.Logs.Level == "" {
 		c.Logs.Level = "info"
 	}
+	if c.Logs.Format == "" {
+		c.Logs.Format = "json"
+	}
 }
 
 func (c *ReloadConfig) normalizeAliases() {

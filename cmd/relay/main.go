@@ -10,12 +10,13 @@ import (
 
 	"algoryn.io/relay/internal/config"
 	"algoryn.io/relay/internal/listener"
+	"algoryn.io/relay/internal/observability"
 )
 
 const defaultConfig = "config/example.yaml"
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	bootstrapLogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	configPath := os.Getenv("RELAY_CONFIG")
 	if configPath == "" {
@@ -24,19 +25,30 @@ func main() {
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		logger.Error("failed to load config", "path", configPath, "error", err)
+		bootstrapLogger.Error("failed to load config", "path", configPath, "error", err)
 		os.Exit(1)
 	}
 
 	if err := cfg.ResolveEnv(os.Getenv); err != nil {
-		logger.Error("failed to resolve environment", "error", err)
+		bootstrapLogger.Error("failed to resolve environment", "error", err)
 		os.Exit(1)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		logger.Error("invalid config", "error", err)
+		bootstrapLogger.Error("invalid config", "error", err)
 		os.Exit(1)
 	}
+
+	logger, logCloser, err := observability.NewAccessLogger(cfg.Observability.Logs)
+	if err != nil {
+		bootstrapLogger.Error("failed to initialize access logger", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if logCloser != nil {
+			_ = logCloser.Close()
+		}
+	}()
 
 	rt, err := config.BuildRuntime(cfg)
 	if err != nil {
