@@ -68,8 +68,13 @@ func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[stri
 			seen[route.Name] = struct{}{}
 		}
 
-		if route.Match.Path == "" {
-			errs.Addf("%s.match.path: required", prefix)
+		path := strings.TrimSpace(route.Match.Path)
+		pathPrefix := strings.TrimSpace(route.Match.PathPrefix)
+		switch {
+		case path == "" && pathPrefix == "":
+			errs.Addf("%s.match: exactly one of path or path_prefix is required", prefix)
+		case path != "" && pathPrefix != "":
+			errs.Addf("%s.match: path and path_prefix are mutually exclusive", prefix)
 		}
 		if len(route.Match.Methods) == 0 {
 			errs.Addf("%s.match.methods: must not be empty", prefix)

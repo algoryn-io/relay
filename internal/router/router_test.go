@@ -77,6 +77,85 @@ func TestNewDuplicateRouteReturnsError(t *testing.T) {
 	}
 }
 
+func TestMatchLongestPathPrefixWins(t *testing.T) {
+	t.Parallel()
+
+	rt := &config.RuntimeConfig{
+		Routes: map[string]config.RouteRuntime{
+			"v1-route": {
+				Name:        "v1-route",
+				PathPrefix:  "/v1",
+				Methods:     []string{http.MethodGet},
+				MethodSet:   methodSet(http.MethodGet),
+				BackendName: "api",
+			},
+			"v1-auth-route": {
+				Name:        "v1-auth-route",
+				PathPrefix:  "/v1/auth",
+				Methods:     []string{http.MethodPost},
+				MethodSet:   methodSet(http.MethodPost),
+				BackendName: "api",
+			},
+		},
+	}
+
+	r, err := New(rt)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/login", nil)
+	route, err := r.Match(req)
+	if err != nil {
+		t.Fatalf("Match() error = %v", err)
+	}
+	if route.Name != "v1-auth-route" {
+		t.Fatalf("route.Name = %q, want v1-auth-route", route.Name)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/students", nil)
+	route2, err := r.Match(req2)
+	if err != nil {
+		t.Fatalf("Match() error = %v", err)
+	}
+	if route2.Name != "v1-route" {
+		t.Fatalf("route.Name = %q, want v1-route", route2.Name)
+	}
+}
+
+func TestMatchPathPrefixExactSegment(t *testing.T) {
+	t.Parallel()
+
+	rt := &config.RuntimeConfig{
+		Routes: map[string]config.RouteRuntime{
+			"api": {
+				Name:        "api",
+				PathPrefix:  "/v1",
+				Methods:     []string{http.MethodGet},
+				MethodSet:   methodSet(http.MethodGet),
+				BackendName: "api",
+			},
+		},
+	}
+	r, err := New(rt)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = r.Match(httptest.NewRequest(http.MethodGet, "/v10/extra", nil))
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Match() error = %v, want %v", err, ErrNotFound)
+	}
+}
+
+func methodSet(methods ...string) map[string]struct{} {
+	m := make(map[string]struct{}, len(methods))
+	for _, x := range methods {
+		m[x] = struct{}{}
+	}
+	return m
+}
+
 func newTestRouter(t *testing.T) *Router {
 	t.Helper()
 
