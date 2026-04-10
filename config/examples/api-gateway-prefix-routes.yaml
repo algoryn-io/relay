@@ -1,0 +1,122 @@
+# Example: reverse proxy in front of an HTTP API using path_prefix routes.
+# Adjust listener port, upstream URL, and CORS origins for your app.
+#
+# Run from repo root:
+#   RELAY_CONFIG=./config/examples/api-gateway-prefix-routes.yaml go run ./cmd/relay
+#   ./scripts/run-with-config.sh ./config/examples/api-gateway-prefix-routes.yaml
+
+listener:
+  http:
+    port: 8090
+  timeouts:
+    read: 60s
+    write: 120s
+    idle: 120s
+
+backends:
+  - name: upstream-api
+    strategy: round_robin
+    health_check:
+      interval: 10s
+      timeout: 2s
+      path: /health
+    instances:
+      - url: http://127.0.0.1:8080
+
+middleware:
+  - name: gw-cors
+    type: cors
+    config:
+      allowed_origins:
+        - http://localhost:3000
+      allowed_methods:
+        - GET
+        - POST
+        - PATCH
+        - DELETE
+        - OPTIONS
+      allowed_headers:
+        - Authorization
+        - Content-Type
+
+  - name: gw-body-limit
+    type: body_limit
+    config:
+      max_bytes: 10485760
+
+  - name: gw-rate-public
+    type: rate_limit
+    config:
+      strategy: sliding_window
+      limit: 120
+      window: 1m
+      by: ip
+
+  - name: gw-rate-auth
+    type: rate_limit
+    config:
+      strategy: sliding_window
+      limit: 30
+      window: 1m
+      by: ip
+
+  - name: gw-rate-api
+    type: rate_limit
+    config:
+      strategy: sliding_window
+      limit: 300
+      window: 1m
+      by: ip
+
+routes:
+  - name: health
+    match:
+      path: /health
+      methods: [GET]
+    backend: upstream-api
+    middleware: []
+
+  - name: storage-prefix
+    match:
+      path_prefix: /storage
+      methods: [GET, HEAD, OPTIONS]
+    backend: upstream-api
+    middleware: [gw-cors, gw-rate-public]
+
+  - name: verify-prefix
+    match:
+      path_prefix: /verify
+      methods: [GET, HEAD, OPTIONS]
+    backend: upstream-api
+    middleware: [gw-cors, gw-rate-public]
+
+  - name: v1-auth-prefix
+    match:
+      path_prefix: /v1/auth
+      methods: [GET, POST, OPTIONS]
+    backend: upstream-api
+    middleware: [gw-cors, gw-body-limit, gw-rate-auth]
+
+  - name: v1-prefix
+    match:
+      path_prefix: /v1
+      methods: [GET, POST, PATCH, DELETE, OPTIONS]
+    backend: upstream-api
+    middleware: [gw-cors, gw-body-limit, gw-rate-api]
+
+observability:
+  logs:
+    level: info
+    format: text
+  metrics:
+    flush_interval: 30s
+
+storage:
+  path: ./data
+  retention:
+    metrics_days: 90
+    logs_days: 30
+
+reload:
+  watch: false
+  debounce: 500ms

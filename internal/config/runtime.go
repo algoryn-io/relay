@@ -11,6 +11,7 @@ type RuntimeConfig struct {
 type RouteRuntime struct {
 	Name           string
 	Path           string
+	PathPrefix     string
 	Methods        []string
 	MethodSet      map[string]struct{}
 	Backend        BackendRuntime
@@ -86,9 +87,13 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			middleware = append(middleware, rt.Middleware[name])
 		}
 
+		path := strings.TrimSpace(route.Match.Path)
+		pathPrefix := strings.TrimSpace(route.Match.PathPrefix)
+
 		rt.Routes[route.Name] = RouteRuntime{
 			Name:           route.Name,
-			Path:           route.Match.Path,
+			Path:           path,
+			PathPrefix:     pathPrefix,
 			Methods:        methods,
 			MethodSet:      methodSet,
 			Backend:        rt.Backends[route.Backend],

@@ -76,9 +76,6 @@ func (c *RouteConfig) normalizeAliases() {
 	if c.Name == "" {
 		c.Name = c.ID
 	}
-	if c.Match.Path == "" {
-		c.Match.Path = c.Match.PathPrefix
-	}
 	if len(c.Middleware) == 0 {
 		c.Middleware = c.Middlewares
 	}

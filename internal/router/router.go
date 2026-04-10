@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"algoryn.io/relay/internal/config"
 )
@@ -14,7 +16,8 @@ var (
 )
 
 type Router struct {
-	paths map[string]map[string]*config.RouteRuntime
+	exact    map[string]map[string]*config.RouteRuntime
+	prefixes []*config.RouteRuntime
 }
 
 func New(rt *config.RuntimeConfig) (*Router, error) {
@@ -23,27 +26,73 @@ func New(rt *config.RuntimeConfig) (*Router, error) {
 	}
 
 	r := &Router{
-		paths: make(map[string]map[string]*config.RouteRuntime, len(rt.Routes)),
+		exact: make(map[string]map[string]*config.RouteRuntime),
 	}
+
+	seenPrefix := make(map[string]struct{})
 
 	for name := range rt.Routes {
 		route := rt.Routes[name]
-		methods, ok := r.paths[route.Path]
-		if !ok {
-			methods = make(map[string]*config.RouteRuntime, len(route.Methods))
-			r.paths[route.Path] = methods
+		routeCopy := route
+
+		if routeCopy.PathPrefix != "" {
+			if _, dup := seenPrefix[routeCopy.PathPrefix]; dup {
+				return nil, fmt.Errorf("duplicate path_prefix %q", routeCopy.PathPrefix)
+			}
+			seenPrefix[routeCopy.PathPrefix] = struct{}{}
+			r.prefixes = append(r.prefixes, &routeCopy)
+			continue
 		}
 
-		routeCopy := route
-		for _, method := range route.Methods {
+		if routeCopy.Path == "" {
+			return nil, fmt.Errorf("route %q has empty path", routeCopy.Name)
+		}
+
+		methods, ok := r.exact[routeCopy.Path]
+		if !ok {
+			methods = make(map[string]*config.RouteRuntime)
+			r.exact[routeCopy.Path] = methods
+		}
+
+		for _, method := range routeCopy.Methods {
 			if existing, exists := methods[method]; exists {
-				return nil, fmt.Errorf("duplicate route match for path %q and method %q: %q and %q", route.Path, method, existing.Name, route.Name)
+				return nil, fmt.Errorf("duplicate route match for path %q and method %q: %q and %q", routeCopy.Path, method, existing.Name, routeCopy.Name)
 			}
 			methods[method] = &routeCopy
 		}
 	}
 
+	sort.SliceStable(r.prefixes, func(i, j int) bool {
+		return len(r.prefixes[i].PathPrefix) > len(r.prefixes[j].PathPrefix)
+	})
+
 	return r, nil
+}
+
+func pathMatchesPrefix(requestPath, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	if requestPath == prefix {
+		return true
+	}
+	return strings.HasPrefix(requestPath, prefix+"/")
+}
+
+func routeAllowsMethod(route *config.RouteRuntime, method string) bool {
+	if route == nil {
+		return false
+	}
+	if len(route.MethodSet) > 0 {
+		_, ok := route.MethodSet[method]
+		return ok
+	}
+	for _, m := range route.Methods {
+		if m == method {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Router) Match(req *http.Request) (*config.RouteRuntime, error) {
@@ -54,15 +103,25 @@ func (r *Router) Match(req *http.Request) (*config.RouteRuntime, error) {
 		return nil, fmt.Errorf("request is nil")
 	}
 
-	methods, ok := r.paths[req.URL.Path]
-	if !ok {
-		return nil, ErrNotFound
-	}
+	path := req.URL.Path
 
-	route, ok := methods[req.Method]
-	if !ok {
+	if methods, ok := r.exact[path]; ok {
+		route, ok := methods[req.Method]
+		if ok {
+			return route, nil
+		}
 		return nil, ErrMethodNotAllowed
 	}
 
-	return route, nil
+	for _, route := range r.prefixes {
+		if !pathMatchesPrefix(path, route.PathPrefix) {
+			continue
+		}
+		if routeAllowsMethod(route, req.Method) {
+			return route, nil
+		}
+		return nil, ErrMethodNotAllowed
+	}
+
+	return nil, ErrNotFound
 }

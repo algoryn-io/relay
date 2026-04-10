@@ -22,6 +22,10 @@ func NewAccessLogger(cfg config.LogsConfig) (*slog.Logger, io.Closer, error) {
 
 	filePath := strings.TrimSpace(cfg.File)
 	if filePath == "" {
+		format := strings.ToLower(strings.TrimSpace(cfg.Format))
+		if format == "text" {
+			return slog.New(slog.NewTextHandler(os.Stdout, opts)), nopCloser{}, nil
+		}
 		return slog.New(slog.NewJSONHandler(os.Stdout, opts)), nopCloser{}, nil
 	}
 

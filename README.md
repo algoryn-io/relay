@@ -72,7 +72,22 @@ Adjust host, port, and path based on your config.
 curl -s http://localhost:8080/_relay/metrics | jq
 ```
 
+### Example: API gateway with prefix routes
+
+For a fuller example (health, `/storage`, `/verify`, `/v1/auth`, `/v1` prefixes, CORS, rate limits) see [`config/examples/api-gateway-prefix-routes.yaml`](config/examples/api-gateway-prefix-routes.yaml). Run it with:
+
+```bash
+./scripts/run-with-config.sh ./config/examples/api-gateway-prefix-routes.yaml
+```
+
+Or set `RELAY_CONFIG` to that path manually. The helper script lives at [`scripts/run-with-config.sh`](scripts/run-with-config.sh).
+
 ---
+
+## Path matching
+
+- `match.path`: **exact** path (e.g. `/health`).
+- `match.path_prefix`: **prefix** match: the request path must equal the prefix or continue with `/` (e.g. `/v1` matches `/v1` and `/v1/students`, not `/v10`). If several prefixes match, the **longest** wins. `path` and `path_prefix` are mutually exclusive.
 
 ## Configuration Overview
 
