@@ -60,6 +60,15 @@ func TestValidateInvalidURL(t *testing.T) {
 	assertValidationErrorContains(t, cfg.Validate(), `invalid URL "://bad"`)
 }
 
+func TestValidateInvalidURLScheme(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Backends[0].Instances[0].URL = "ftp://localhost:8080"
+
+	assertValidationErrorContains(t, cfg.Validate(), "scheme must be http or https")
+}
+
 func TestValidateEmptyMethods(t *testing.T) {
 	t.Parallel()
 

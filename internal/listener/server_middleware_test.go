@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +30,7 @@ func TestServerRateLimitMiddlewareReturns429(t *testing.T) {
 	t.Parallel()
 
 	server := newMiddlewareTestServer(t, 1, time.Minute)
-	token := mustSignToken(t, "jwt-secret", time.Now().Add(time.Minute))
+	token := mustSignToken(t, strings.Repeat("j", 32), time.Now().Add(time.Minute))
 
 	req1 := httptest.NewRequest(http.MethodGet, "/limited", nil)
 	req1.Header.Set("Authorization", "Bearer "+token)
@@ -149,7 +150,7 @@ func newMiddlewareTestServer(t *testing.T, limit int, window time.Duration) *Ser
 				Name: "jwt-auth",
 				Type: "jwt",
 				Config: config.MiddlewareSettingsConfig{
-					ResolvedSecret: "jwt-secret",
+					ResolvedSecret: strings.Repeat("j", 32),
 					Header:         "Authorization",
 				},
 			},

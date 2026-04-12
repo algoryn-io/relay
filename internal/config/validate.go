@@ -133,6 +133,10 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 			parsed, err := url.Parse(instance.URL)
 			if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 				errs.Addf("%s.instances[%d].url: invalid URL %q", prefix, j, instance.URL)
+				continue
+			}
+			if parsed.Scheme != "http" && parsed.Scheme != "https" {
+				errs.Addf("%s.instances[%d].url: scheme must be http or https", prefix, j)
 			}
 		}
 	}

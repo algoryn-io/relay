@@ -18,6 +18,9 @@ func NewJWT(cfg JWTConfig) (Middleware, error) {
 	if strings.TrimSpace(cfg.Secret) == "" {
 		return nil, fmt.Errorf("jwt secret is required")
 	}
+	if len(strings.TrimSpace(cfg.Secret)) < 32 {
+		return nil, fmt.Errorf("jwt secret must be at least 32 bytes")
+	}
 	if strings.TrimSpace(cfg.Header) == "" {
 		cfg.Header = "Authorization"
 	}
@@ -35,10 +38,15 @@ func NewJWT(cfg JWTConfig) (Middleware, error) {
 					return nil, fmt.Errorf("unexpected signing method")
 				}
 				return []byte(cfg.Secret), nil
-			}, jwt.WithValidMethods([]string{"HS256", "HS384", "HS512"}))
+			}, jwt.WithValidMethods([]string{"HS256", "HS384", "HS512"}), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
 			if err != nil || token == nil || !token.Valid {
 				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 				return
+			}
+			if claims, ok := token.Claims.(jwt.MapClaims); ok {
+				if sub, ok := claims["sub"].(string); ok && strings.TrimSpace(sub) != "" {
+					r.Header.Set("X-Authenticated-Sub", sub)
+				}
 			}
 
 			next.ServeHTTP(w, r)

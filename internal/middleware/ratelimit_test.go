@@ -97,6 +97,65 @@ func TestRateLimitWindowExpirationAllowsAgain(t *testing.T) {
 	}
 }
 
+func TestRateLimitAPIKeyHashesMapKey(t *testing.T) {
+	t.Parallel()
+
+	limiter := &rateLimiter{
+		limit:      2,
+		window:     time.Minute,
+		by:         "api_key",
+		header:     "X-API-Key",
+		buckets:    make(map[string][]time.Time),
+		apiKeySalt: []byte("01234567890123456789012345678901"),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+	req.Header.Set("X-API-Key", "plain-api-key")
+
+	key := limiter.keyFromRequest(req)
+	if key == "" {
+		t.Fatal("keyFromRequest() = empty, want hashed value")
+	}
+	if key == "plain-api-key" {
+		t.Fatal("keyFromRequest() returned raw API key")
+	}
+	if len(key) != 64 {
+		t.Fatalf("len(key) = %d, want 64", len(key))
+	}
+	if !limiter.allow(key, time.Now()) {
+		t.Fatal("allow() = false, want true")
+	}
+	if _, ok := limiter.buckets["plain-api-key"]; ok {
+		t.Fatal("buckets contains raw API key")
+	}
+	if _, ok := limiter.buckets[key]; !ok {
+		t.Fatal("buckets missing hashed API key")
+	}
+}
+
+func TestRateLimitCapsTimestampSliceAtLimit(t *testing.T) {
+	t.Parallel()
+
+	limiter := &rateLimiter{
+		limit:   2,
+		window:  time.Minute,
+		buckets: make(map[string][]time.Time),
+	}
+	now := time.Now()
+	limiter.buckets["client"] = []time.Time{
+		now.Add(-3 * time.Second),
+		now.Add(-2 * time.Second),
+		now.Add(-1 * time.Second),
+	}
+
+	if limiter.allow("client", now) {
+		t.Fatal("allow() = true, want false")
+	}
+	if got := len(limiter.buckets["client"]); got != 2 {
+		t.Fatalf("len(bucket) = %d, want 2", got)
+	}
+}
+
 func mustRateLimit(t *testing.T, cfg RateLimitConfig) Middleware {
 	t.Helper()
 	mw, err := NewRateLimit(cfg)

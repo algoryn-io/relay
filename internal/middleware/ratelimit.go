@@ -1,6 +1,10 @@
 package middleware
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -33,6 +37,8 @@ type rateLimiter struct {
 
 	mu      sync.Mutex
 	buckets map[string][]time.Time
+
+	apiKeySalt []byte
 }
 
 func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
@@ -60,12 +66,18 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
 		cfg.Header = "X-API-Key"
 	}
 
+	salt := make([]byte, 32)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, fmt.Errorf("generate rate limit salt: %w", err)
+	}
+
 	limiter := &rateLimiter{
-		limit:   cfg.Limit,
-		window:  cfg.Window,
-		by:      cfg.By,
-		header:  cfg.Header,
-		buckets: make(map[string][]time.Time),
+		limit:      cfg.Limit,
+		window:     cfg.Window,
+		by:         cfg.By,
+		header:     cfg.Header,
+		buckets:    make(map[string][]time.Time),
+		apiKeySalt: salt,
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -98,6 +110,9 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 			keep = append(keep, ts)
 		}
 	}
+	if len(keep) > l.limit {
+		keep = keep[len(keep)-l.limit:]
+	}
 	if len(keep) >= l.limit {
 		l.buckets[key] = keep
 		return false
@@ -123,8 +138,18 @@ func (l *rateLimiter) keyFromRequest(r *http.Request) string {
 	case "route":
 		return r.Method + ":" + r.URL.Path
 	case "api_key":
-		return strings.TrimSpace(r.Header.Get(l.header))
+		key := strings.TrimSpace(r.Header.Get(l.header))
+		if key == "" {
+			return ""
+		}
+		return l.hashAPIKey(key)
 	default:
 		return httpx.ClientIP(r)
 	}
+}
+
+func (l *rateLimiter) hashAPIKey(key string) string {
+	mac := hmac.New(sha256.New, l.apiKeySalt)
+	_, _ = mac.Write([]byte(key))
+	return hex.EncodeToString(mac.Sum(nil))
 }

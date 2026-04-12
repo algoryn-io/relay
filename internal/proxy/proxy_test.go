@@ -95,6 +95,81 @@ func TestProxySetsForwardedHeaders(t *testing.T) {
 	}
 }
 
+func TestProxyStripsSensitiveClientHeaders(t *testing.T) {
+	t.Parallel()
+
+	received := make(chan http.Header, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	p := newTestProxy(t, map[string]config.BackendRuntime{
+		"orders-backend": {
+			Name:     "orders-backend",
+			Strategy: "round_robin",
+			Instances: []config.InstanceRuntime{
+				{URL: backend.URL},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/orders", nil)
+	req.Host = "relay.local"
+	req.RemoteAddr = "203.0.113.10:4321"
+	req.Header.Set("X-Internal-Auth", "secret")
+	req.Header.Set("X-Real-IP", "198.51.100.99")
+	req.Header.Set("X-Admin", "true")
+	req.Header.Set("X-Forwarded-For", "198.51.100.50")
+	rec := httptest.NewRecorder()
+
+	p.ServeHTTP(rec, req, &config.RouteRuntime{BackendName: "orders-backend"})
+
+	headers := <-received
+	for _, header := range []string{"X-Internal-Auth", "X-Real-IP", "X-Admin"} {
+		if got := headers.Get(header); got != "" {
+			t.Fatalf("%s = %q, want empty", header, got)
+		}
+	}
+	if got := headers.Get("X-Forwarded-For"); got != "203.0.113.10" {
+		t.Fatalf("X-Forwarded-For = %q, want 203.0.113.10", got)
+	}
+}
+
+func TestProxyPreservesForwardedProtoFromUpstreamProxy(t *testing.T) {
+	t.Parallel()
+
+	received := make(chan http.Header, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	p := newTestProxy(t, map[string]config.BackendRuntime{
+		"orders-backend": {
+			Name:     "orders-backend",
+			Strategy: "round_robin",
+			Instances: []config.InstanceRuntime{
+				{URL: backend.URL},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/orders", nil)
+	req.RemoteAddr = "203.0.113.10:4321"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+
+	p.ServeHTTP(rec, req, &config.RouteRuntime{BackendName: "orders-backend"})
+
+	headers := <-received
+	if got := headers.Get("X-Forwarded-Proto"); got != "https" {
+		t.Fatalf("X-Forwarded-Proto = %q, want https", got)
+	}
+}
+
 func TestProxyRoundRobin(t *testing.T) {
 	t.Parallel()
 

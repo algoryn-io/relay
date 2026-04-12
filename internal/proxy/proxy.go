@@ -103,11 +103,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	director := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalHost := req.Host
-		proto := "http"
-		if req.TLS != nil {
-			proto = "https"
+		// Preserve the forwarded scheme from an upstream TLS terminator when present.
+		proto := req.Header.Get("X-Forwarded-Proto")
+		if proto == "" {
+			if req.TLS != nil {
+				proto = "https"
+			} else {
+				proto = "http"
+			}
 		}
 
+		stripSensitiveForwardedHeaders(req)
 		director(req)
 		setForwardedHeaders(req, originalHost, proto)
 	}
@@ -121,6 +127,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 func setForwardedHeaders(req *http.Request, originalHost, proto string) {
 	req.Header.Set("X-Forwarded-Host", originalHost)
 	req.Header.Set("X-Forwarded-Proto", proto)
+}
+
+func stripSensitiveForwardedHeaders(req *http.Request) {
+	req.Header.Del("X-Internal-Auth")
+	req.Header.Del("X-Real-IP")
+	req.Header.Del("X-Admin")
+	req.Header.Del("X-Forwarded-For")
 }
 
 func (p *Proxy) releaseInstance(backendName string, selected *instanceState) {

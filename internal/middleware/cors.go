@@ -76,6 +76,7 @@ func NewCORS(cfg CORSConfig) (Middleware, error) {
 				appendVary(w.Header(), "Access-Control-Request-Headers")
 
 				setCORSHeaders(w.Header(), origin, mw.allowedMethods, mw.allowedHeaders, mw.allowCredentials)
+				w.Header().Set("Access-Control-Max-Age", "3600")
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}

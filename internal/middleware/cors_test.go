@@ -104,6 +104,9 @@ func TestCORSAllowedPreflightReturns204(t *testing.T) {
 	if got := rec.Header().Get("Access-Control-Allow-Headers"); got != "Authorization, Content-Type" {
 		t.Fatalf("Access-Control-Allow-Headers = %q", got)
 	}
+	if got := rec.Header().Get("Access-Control-Max-Age"); got != "3600" {
+		t.Fatalf("Access-Control-Max-Age = %q, want 3600", got)
+	}
 }
 
 func TestCORSDisallowedPreflightReturns403(t *testing.T) {

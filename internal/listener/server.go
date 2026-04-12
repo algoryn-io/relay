@@ -67,12 +67,13 @@ func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *sl
 			return nil, fmt.Errorf("resolve middleware for route %q: %w", routeRef.Name, resolveErr)
 		}
 		routeHandler := middleware.Chain(final, routeMiddlewares...)
+		recoveryMW := middleware.Recovery(logger)
 		loggingMW := observability.NewLoggingMiddleware(logger, routeRef.Name, routeRef.BackendName)
 		metricsMW := observability.NewMetricsMiddleware(metrics, routeRef.Name)
 
 		compiledRoutes[routeName] = &compiledRoute{
 			route:   routeRef,
-			handler: middleware.Chain(routeHandler, loggingMW, metricsMW),
+			handler: middleware.Chain(routeHandler, recoveryMW, loggingMW, metricsMW),
 		}
 	}
 
@@ -116,6 +117,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.URL.Path == "/_relay/metrics" {
+		clientIP := httpx.ClientIP(req)
+		if clientIP != "127.0.0.1" && clientIP != "::1" {
+			httpx.WriteError(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		s.metricsH.ServeHTTP(w, req)
 		return
 	}

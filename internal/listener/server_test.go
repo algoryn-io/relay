@@ -76,6 +76,42 @@ func TestServerWrongMethodReturns405(t *testing.T) {
 	}
 }
 
+func TestServerMetricsAllowsLocalhost(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/_relay/metrics", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestServerMetricsRejectsNonLocalhost(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/_relay/metrics", nil)
+	req.RemoteAddr = "203.0.113.10:1234"
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body map[string]string
+	decodeJSON(t, rec.Body, &body)
+	if body["error"] != "forbidden" {
+		t.Fatalf("error = %q, want forbidden", body["error"])
+	}
+}
+
 func TestServerShutdown(t *testing.T) {
 	t.Parallel()
 
