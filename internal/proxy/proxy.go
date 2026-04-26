@@ -129,6 +129,13 @@ func setForwardedHeaders(req *http.Request, originalHost, proto string) {
 	req.Header.Set("X-Forwarded-Proto", proto)
 }
 
+// stripSensitiveForwardedHeaders drops hop/ingress headers that the external
+// client must not be allowed to set (spoofing). It intentionally does not use
+// any prefix on identity headers: names resolved from JWT (claims_to_headers in
+// config) are not listed here, so they are forwarded to backends after
+// validation. Client-originated values for those same names are removed in the
+// JWT middleware (delete-then-inject) before the request reaches the proxy
+// chain.
 func stripSensitiveForwardedHeaders(req *http.Request) {
 	req.Header.Del("X-Internal-Auth")
 	req.Header.Del("X-Real-IP")

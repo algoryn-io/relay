@@ -181,6 +181,164 @@ func TestJWTInjectsAuthenticatedSubHeader(t *testing.T) {
 	}
 }
 
+func TestJWTInjectsClaimMappedHeaders(t *testing.T) {
+	t.Parallel()
+
+	secret := strings.Repeat("a", 32)
+	token := signJWTClaims(t, secret, jwt.MapClaims{
+		"sub":  "user-999",
+		"role": "admin",
+		"exp":  time.Now().Add(5 * time.Minute).Unix(),
+	})
+	mw, err := NewJWT(JWTConfig{
+		Secret: secret,
+		Header: "Authorization",
+		ClaimsToHeaders: map[string]string{
+			"role": "X-Test-Role",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewJWT() error = %v", err)
+	}
+
+	var gotSub, gotRole string
+	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSub = r.Header.Get("X-Authenticated-Sub")
+		gotRole = r.Header.Get("X-Test-Role")
+		w.WriteHeader(http.StatusOK)
+	}), mw)
+
+	req := httptest.NewRequest(http.MethodGet, "/secure", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotSub != "user-999" {
+		t.Fatalf("X-Authenticated-Sub = %q, want user-999", gotSub)
+	}
+	if gotRole != "admin" {
+		t.Fatalf("X-Test-Role = %q, want admin", gotRole)
+	}
+}
+
+func TestJWTMappedStripsClientSpoofBeforeInject(t *testing.T) {
+	t.Parallel()
+
+	secret := strings.Repeat("a", 32)
+	token := signJWTClaims(t, secret, jwt.MapClaims{
+		"sub":  "user-1",
+		"role": "from-token",
+		"exp":  time.Now().Add(5 * time.Minute).Unix(),
+	})
+	mw, err := NewJWT(JWTConfig{
+		Secret: secret,
+		Header: "Authorization",
+		ClaimsToHeaders: map[string]string{
+			"role": "X-Test-Role",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewJWT() error = %v", err)
+	}
+
+	var gotRole string
+	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRole = r.Header.Get("X-Test-Role")
+		w.WriteHeader(http.StatusOK)
+	}), mw)
+
+	req := httptest.NewRequest(http.MethodGet, "/secure", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Test-Role", "spoofed")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotRole != "from-token" {
+		t.Fatalf("X-Test-Role = %q, want from-token", gotRole)
+	}
+}
+
+func TestJWTMappedWithSubInMapNoDefaultSubHeader(t *testing.T) {
+	t.Parallel()
+
+	secret := strings.Repeat("a", 32)
+	token := signJWTClaims(t, secret, jwt.MapClaims{
+		"sub": "id-from-jwt",
+		"exp": time.Now().Add(5 * time.Minute).Unix(),
+	})
+	mw, err := NewJWT(JWTConfig{
+		Secret: secret,
+		Header: "Authorization",
+		ClaimsToHeaders: map[string]string{
+			"sub": "X-Subject-Custom",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewJWT() error = %v", err)
+	}
+
+	var gotDefault, gotCustom string
+	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotDefault = r.Header.Get("X-Authenticated-Sub")
+		gotCustom = r.Header.Get("X-Subject-Custom")
+		w.WriteHeader(http.StatusOK)
+	}), mw)
+
+	req := httptest.NewRequest(http.MethodGet, "/secure", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotDefault != "" {
+		t.Fatalf("X-Authenticated-Sub = %q, want empty (mapped via claims_to_headers)", gotDefault)
+	}
+	if gotCustom != "id-from-jwt" {
+		t.Fatalf("X-Subject-Custom = %q, want id-from-jwt", gotCustom)
+	}
+}
+
+func TestJWTDefaultSubStripsClientSpoof(t *testing.T) {
+	t.Parallel()
+
+	secret := strings.Repeat("a", 32)
+	token := signJWTClaims(t, secret, jwt.MapClaims{
+		"sub": "token-sub",
+		"exp": time.Now().Add(5 * time.Minute).Unix(),
+	})
+	mw, err := NewJWT(JWTConfig{Secret: secret, Header: "Authorization"})
+	if err != nil {
+		t.Fatalf("NewJWT() error = %v", err)
+	}
+
+	var got string
+	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Authenticated-Sub")
+		w.WriteHeader(http.StatusOK)
+	}), mw)
+
+	req := httptest.NewRequest(http.MethodGet, "/secure", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Authenticated-Sub", "spoofed")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got != "token-sub" {
+		t.Fatalf("X-Authenticated-Sub = %q, want token-sub", got)
+	}
+}
+
 func TestJWTRejectsShortSecret(t *testing.T) {
 	t.Parallel()
 

@@ -163,8 +163,11 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors", prefix)
 		}
 
-		if middleware.Type == "jwt" && strings.TrimSpace(middleware.Config.SecretEnv) == "" {
-			errs.Addf("%s.config.secret_env: must not be empty", prefix)
+		if middleware.Type == "jwt" {
+			if strings.TrimSpace(middleware.Config.SecretEnv) == "" {
+				errs.Addf("%s.config.secret_env: must not be empty", prefix)
+			}
+			validateJWTClaimsToHeaders(prefix+".config", middleware.Config.ClaimsToHeaders, errs)
 		}
 		if middleware.Type == "rate_limit" {
 			if middleware.Config.Strategy != "sliding_window" {
@@ -222,6 +225,29 @@ func validateIPFilterEntries(field string, entries []string, errs *ValidationErr
 			continue
 		}
 		errs.Addf("%s[%d]: must be a valid IP or CIDR", field, i)
+	}
+}
+
+func validateJWTClaimsToHeaders(field string, m map[string]string, errs *ValidationErrors) {
+	if len(m) == 0 {
+		return
+	}
+
+	seenDest := make(map[string]struct{}, len(m))
+	for claim, dest := range m {
+		claim = strings.TrimSpace(claim)
+		dest = strings.TrimSpace(dest)
+		if claim == "" {
+			errs.Addf("%s.claims_to_headers: claim name must not be empty", field)
+		}
+		if dest == "" {
+			errs.Addf("%s.claims_to_headers: header name for claim %q must not be empty", field, claim)
+		}
+		if _, ok := seenDest[dest]; ok {
+			errs.Addf("%s.claims_to_headers: duplicate destination header %q", field, dest)
+		} else {
+			seenDest[dest] = struct{}{}
+		}
 	}
 }
 

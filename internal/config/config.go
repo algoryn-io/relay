@@ -86,20 +86,21 @@ type MiddlewareConfig struct {
 }
 
 type MiddlewareSettingsConfig struct {
-	SecretEnv        string        `yaml:"secret_env"`
-	ResolvedSecret   string        `yaml:"-"`
-	Header           string        `yaml:"header"`
-	MaxBytes         int64         `yaml:"max_bytes"`
-	Allow            []string      `yaml:"allow"`
-	Deny             []string      `yaml:"deny"`
-	Strategy         string        `yaml:"strategy"`
-	Limit            int           `yaml:"limit"`
-	Window           time.Duration `yaml:"window"`
-	By               string        `yaml:"by"`
-	AllowedOrigins   []string      `yaml:"allowed_origins"`
-	AllowedMethods   []string      `yaml:"allowed_methods"`
-	AllowedHeaders   []string      `yaml:"allowed_headers"`
-	AllowCredentials bool          `yaml:"allow_credentials"`
+	SecretEnv          string            `yaml:"secret_env"`
+	ResolvedSecret     string            `yaml:"-"`
+	Header             string            `yaml:"header"`
+	ClaimsToHeaders    map[string]string `yaml:"claims_to_headers"`
+	MaxBytes           int64             `yaml:"max_bytes"`
+	Allow              []string          `yaml:"allow"`
+	Deny               []string          `yaml:"deny"`
+	Strategy           string            `yaml:"strategy"`
+	Limit              int               `yaml:"limit"`
+	Window             time.Duration     `yaml:"window"`
+	By                 string            `yaml:"by"`
+	AllowedOrigins     []string          `yaml:"allowed_origins"`
+	AllowedMethods     []string          `yaml:"allowed_methods"`
+	AllowedHeaders     []string          `yaml:"allowed_headers"`
+	AllowCredentials   bool              `yaml:"allow_credentials"`
 }
 
 type ObservabilityConfig struct {

@@ -137,6 +137,39 @@ func TestProxyStripsSensitiveClientHeaders(t *testing.T) {
 	}
 }
 
+func TestProxyForwardsArbitraryUnlistedHeader(t *testing.T) {
+	t.Parallel()
+
+	received := make(chan http.Header, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	p := newTestProxy(t, map[string]config.BackendRuntime{
+		"orders-backend": {
+			Name:     "orders-backend",
+			Strategy: "round_robin",
+			Instances: []config.InstanceRuntime{
+				{URL: backend.URL},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/orders", nil)
+	req.Header.Set("X-Client-Correlation-Id", "abc-123")
+	req.RemoteAddr = "203.0.113.10:4321"
+	rec := httptest.NewRecorder()
+
+	p.ServeHTTP(rec, req, &config.RouteRuntime{BackendName: "orders-backend"})
+
+	headers := <-received
+	if got := headers.Get("X-Client-Correlation-Id"); got != "abc-123" {
+		t.Fatalf("X-Client-Correlation-Id = %q, want abc-123", got)
+	}
+}
+
 func TestProxyPreservesForwardedProtoFromUpstreamProxy(t *testing.T) {
 	t.Parallel()
 
