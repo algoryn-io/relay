@@ -15,6 +15,18 @@ func TestValidateValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateJWTMappedClaimDuplicateDestination(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware[0].Config.ClaimsToHeaders = map[string]string{
+		"role":  "X-Shared-Dest",
+		"scope": "X-Shared-Dest",
+	}
+
+	assertValidationErrorContains(t, cfg.Validate(), `duplicate destination header "X-Shared-Dest"`)
+}
+
 func TestValidateDuplicateRouteNames(t *testing.T) {
 	t.Parallel()
 

@@ -10,8 +10,9 @@ func Build(def config.MiddlewareRuntime) (Middleware, error) {
 	switch def.Type {
 	case "jwt":
 		return NewJWT(JWTConfig{
-			Secret: def.Config.ResolvedSecret,
-			Header: def.Config.Header,
+			Secret:          def.Config.ResolvedSecret,
+			Header:          def.Config.Header,
+			ClaimsToHeaders: def.Config.ClaimsToHeaders,
 		})
 	case "rate_limit":
 		return NewRateLimit(RateLimitConfig{
