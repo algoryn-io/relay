@@ -76,6 +76,9 @@ func pathMatchesPrefix(requestPath, prefix string) bool {
 	if requestPath == prefix {
 		return true
 	}
+	if prefix == "/" {
+		return strings.HasPrefix(requestPath, "/")
+	}
 	return strings.HasPrefix(requestPath, prefix+"/")
 }
 
