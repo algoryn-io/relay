@@ -107,6 +107,14 @@ type ObservabilityConfig struct {
 	Dashboard DashboardConfig `yaml:"dashboard"`
 	Logs      LogsConfig      `yaml:"logs"`
 	Metrics   MetricsConfig   `yaml:"metrics"`
+	Fabric    FabricConfig    `yaml:"fabric"`
+}
+
+// FabricConfig controls Algoryn Fabric protobuf telemetry (MetricSnapshot + Event) toward Beacon and peers.
+type FabricConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	ServiceName string `yaml:"service_name"`
+	QueueSize   int    `yaml:"queue_size"`
 }
 
 type DashboardConfig struct {

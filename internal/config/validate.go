@@ -262,6 +262,19 @@ func validateObservability(observability ObservabilityConfig, errs *ValidationEr
 		errs.Addf("observability.logs.max_size_mb: must be >= 0")
 	}
 	validatePositiveDuration("observability.metrics.flush_interval", observability.Metrics.FlushInterval, errs, false)
+	validateFabric(observability.Fabric, errs)
+}
+
+func validateFabric(f FabricConfig, errs *ValidationErrors) {
+	if !f.Enabled {
+		return
+	}
+	if strings.TrimSpace(f.ServiceName) == "" {
+		errs.Addf("observability.fabric.service_name: required when fabric.enabled is true")
+	}
+	if f.QueueSize < 0 {
+		errs.Addf("observability.fabric.queue_size: must be >= 0")
+	}
 }
 
 func validateStorage(storage StorageConfig, errs *ValidationErrors) {

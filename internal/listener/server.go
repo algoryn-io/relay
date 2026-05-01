@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"algoryn.io/relay/internal/config"
 	"algoryn.io/relay/internal/httpx"
@@ -23,6 +24,9 @@ type Server struct {
 	metrics    *observability.Metrics
 	metricsH   http.Handler
 	routes     map[string]*compiledRoute
+
+	fabricDispatch   *observability.EventDispatcher
+	relayServiceName string
 }
 
 type compiledRoute struct {
@@ -30,10 +34,15 @@ type compiledRoute struct {
 	handler http.Handler
 }
 
-func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *slog.Logger) (*Server, error) {
+// New builds an HTTP server. cfg must not be nil; cfg.Listener supplies bind and timeout settings.
+func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Server, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config must not be nil")
+	}
 	if rt == nil {
 		return nil, fmt.Errorf("runtime config must not be nil")
 	}
+	listenerCfg := cfg.Listener
 	if listenerCfg.HTTP.Port <= 0 {
 		return nil, fmt.Errorf("listener.http.port must be greater than 0")
 	}
@@ -55,6 +64,20 @@ func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *sl
 	}
 	metrics := observability.NewMetrics(100)
 	compiledRoutes := make(map[string]*compiledRoute, len(rt.Routes))
+
+	relaySvc := strings.TrimSpace(cfg.Observability.Fabric.ServiceName)
+	var fabricDispatch *observability.EventDispatcher
+	if cfg.Observability.Fabric.Enabled {
+		queueSize := cfg.Observability.Fabric.QueueSize
+		if queueSize <= 0 {
+			queueSize = 1024
+		}
+		fabricDispatch = observability.NewEventDispatcher(queueSize, logger, nil)
+		if relaySvc == "" {
+			relaySvc = "relay"
+		}
+	}
+
 	for routeName, routeRuntime := range rt.Routes {
 		route := routeRuntime
 		routeRef := &route
@@ -69,7 +92,7 @@ func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *sl
 		routeHandler := middleware.Chain(final, routeMiddlewares...)
 		recoveryMW := middleware.Recovery(logger)
 		loggingMW := observability.NewLoggingMiddleware(logger, routeRef.Name, routeRef.BackendName)
-		metricsMW := observability.NewMetricsMiddleware(metrics, routeRef.Name)
+		metricsMW := observability.NewMetricsMiddlewareFabric(metrics, fabricDispatch, relaySvc, routeRef.Name)
 
 		compiledRoutes[routeName] = &compiledRoute{
 			route:   routeRef,
@@ -78,12 +101,18 @@ func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *sl
 	}
 
 	s := &Server{
-		proxy:    rtProxy,
-		router:   rtRouter,
-		logger:   logger,
-		metrics:  metrics,
-		metricsH: observability.MetricsHandler(metrics),
-		routes:   compiledRoutes,
+		proxy:            rtProxy,
+		router:           rtRouter,
+		logger:           logger,
+		metrics:          metrics,
+		metricsH:         observability.MetricsHandler(metrics),
+		routes:           compiledRoutes,
+		fabricDispatch:   fabricDispatch,
+		relayServiceName: relaySvc,
+	}
+
+	if fabricDispatch != nil {
+		s.enqueueFabricBackendRegistryEvents(rt)
 	}
 
 	s.httpServer = &http.Server{
@@ -97,6 +126,21 @@ func New(listenerCfg config.ListenerConfig, rt *config.RuntimeConfig, logger *sl
 	return s, nil
 }
 
+func (s *Server) enqueueFabricBackendRegistryEvents(rt *config.RuntimeConfig) {
+	if s == nil || s.fabricDispatch == nil || rt == nil {
+		return
+	}
+	for _, b := range rt.Backends {
+		for _, inst := range b.Instances {
+			if strings.TrimSpace(inst.URL) == "" {
+				continue
+			}
+			evt := observability.BuildServiceRegisteredFabricEvent(s.relayServiceName, b.Name, inst.URL)
+			s.fabricDispatch.TryEnqueue(observability.FabricDispatchItem{Event: evt})
+		}
+	}
+}
+
 func (s *Server) Start() error {
 	err := s.httpServer.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
@@ -106,6 +150,10 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s != nil && s.fabricDispatch != nil {
+		s.fabricDispatch.Close()
+		s.fabricDispatch = nil
+	}
 	if s == nil || s.httpServer == nil {
 		return nil
 	}

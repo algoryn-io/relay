@@ -56,7 +56,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	server, err := listener.New(cfg.Listener, rt, logger)
+	server, err := listener.New(cfg, rt, logger)
 	if err != nil {
 		logger.Error("failed to create server", "error", err)
 		os.Exit(1)

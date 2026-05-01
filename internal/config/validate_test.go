@@ -15,6 +15,15 @@ func TestValidateValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateFabricEnabledRequiresServiceName(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Observability.Fabric = FabricConfig{Enabled: true, ServiceName: ""}
+
+	assertValidationErrorContains(t, cfg.Validate(), "observability.fabric.service_name")
+}
+
 func TestValidateJWTMappedClaimDuplicateDestination(t *testing.T) {
 	t.Parallel()
 
