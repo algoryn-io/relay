@@ -94,7 +94,7 @@ func TestServerLogsRequestToFileEndToEnd(t *testing.T) {
 		}
 	})
 
-	server, err := New(cfg.Listener, rt, logger)
+	server, err := New(cfg, rt, logger)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

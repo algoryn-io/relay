@@ -94,14 +94,14 @@ func newIPFilterTestServer(t *testing.T) (*Server, *atomic.Int64) {
 		},
 	}
 
-	server, err := New(config.ListenerConfig{
+	server, err := New(testServerConfig(config.ListenerConfig{
 		HTTP: config.HTTPConfig{Port: 8080},
 		Timeouts: config.TimeoutsConfig{
 			Read:  30 * time.Second,
 			Write: 30 * time.Second,
 			Idle:  60 * time.Second,
 		},
-	}, rt, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}), rt, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
