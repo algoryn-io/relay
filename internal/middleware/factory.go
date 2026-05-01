@@ -2,17 +2,20 @@ package middleware
 
 import (
 	"fmt"
+	"log/slog"
 
 	"algoryn.io/relay/internal/config"
 )
 
-func Build(def config.MiddlewareRuntime) (Middleware, error) {
+func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, error) {
 	switch def.Type {
 	case "jwt":
 		return NewJWT(JWTConfig{
 			Secret:          def.Config.ResolvedSecret,
 			Header:          def.Config.Header,
 			ClaimsToHeaders: def.Config.ClaimsToHeaders,
+			Logger:          logger,
+			LogFailures:     def.Config.JWTLogFailures,
 		})
 	case "rate_limit":
 		return NewRateLimit(RateLimitConfig{
@@ -43,10 +46,10 @@ func Build(def config.MiddlewareRuntime) (Middleware, error) {
 	}
 }
 
-func BuildRegistry(defs map[string]config.MiddlewareRuntime) (map[string]Middleware, error) {
+func BuildRegistry(defs map[string]config.MiddlewareRuntime, logger *slog.Logger) (map[string]Middleware, error) {
 	registry := make(map[string]Middleware, len(defs))
 	for name, def := range defs {
-		mw, err := Build(def)
+		mw, err := Build(def, logger)
 		if err != nil {
 			return nil, fmt.Errorf("build middleware %q: %w", name, err)
 		}

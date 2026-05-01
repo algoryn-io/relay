@@ -101,6 +101,9 @@ type MiddlewareSettingsConfig struct {
 	AllowedMethods     []string          `yaml:"allowed_methods"`
 	AllowedHeaders     []string          `yaml:"allowed_headers"`
 	AllowCredentials   bool              `yaml:"allow_credentials"`
+	// JWTLogFailures emits structured Warn logs on JWT rejection (missing header, parse/signature/claims).
+	// Does not log the raw token or secret; payload inspection lists claim keys and exp only.
+	JWTLogFailures bool `yaml:"jwt_log_failures"`
 }
 
 type ObservabilityConfig struct {
