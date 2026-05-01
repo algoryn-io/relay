@@ -58,7 +58,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 	if err != nil {
 		return nil, err
 	}
-	mwRegistry, err := middleware.BuildRegistry(rt.Middleware)
+	mwRegistry, err := middleware.BuildRegistry(rt.Middleware, logger)
 	if err != nil {
 		return nil, err
 	}

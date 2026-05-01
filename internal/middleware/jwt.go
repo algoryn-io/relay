@@ -1,8 +1,12 @@
 package middleware
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -38,13 +42,16 @@ type JWTConfig struct {
 	Secret          string
 	Header          string
 	ClaimsToHeaders map[string]string
+	Logger          *slog.Logger
+	LogFailures     bool
 }
 
 func NewJWT(cfg JWTConfig) (Middleware, error) {
 	if strings.TrimSpace(cfg.Secret) == "" {
 		return nil, fmt.Errorf("jwt secret is required")
 	}
-	if len(strings.TrimSpace(cfg.Secret)) < 32 {
+	secret := strings.TrimSpace(cfg.Secret)
+	if len(secret) < 32 {
 		return nil, fmt.Errorf("jwt secret must be at least 32 bytes")
 	}
 	if strings.TrimSpace(cfg.Header) == "" {
@@ -53,10 +60,21 @@ func NewJWT(cfg JWTConfig) (Middleware, error) {
 
 	claimsToHeaders := normalizeClaimsToHeaders(cfg.ClaimsToHeaders)
 
+	if cfg.Logger != nil {
+		cfg.Logger.Info("jwt middleware initialized",
+			"authorization_header", cfg.Header,
+			"secret_byte_length", len(secret),
+			"claims_to_headers_mappings", len(claimsToHeaders),
+			"jwt_log_failures", cfg.LogFailures,
+		)
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString, ok := readTokenFromHeader(r, cfg.Header)
 			if !ok {
+				cfg.logReject(r, "missing_or_malformed_authorization", nil, "",
+					slog.String("note", "expected Bearer scheme when header is Authorization"))
 				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -65,15 +83,17 @@ func NewJWT(cfg JWTConfig) (Middleware, error) {
 				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 					return nil, fmt.Errorf("unexpected signing method")
 				}
-				return []byte(cfg.Secret), nil
+				return []byte(secret), nil
 			}, jwt.WithValidMethods([]string{"HS256", "HS384", "HS512"}), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
 			if err != nil || token == nil || !token.Valid {
+				cfg.logReject(r, "invalid_token", err, tokenString, slog.Bool("parser_reports_valid", token != nil && token.Valid))
 				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok {
+				cfg.logReject(r, "claims_not_map", nil, tokenString)
 				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -87,6 +107,72 @@ func NewJWT(cfg JWTConfig) (Middleware, error) {
 			next.ServeHTTP(w, r)
 		})
 	}, nil
+}
+
+func (cfg JWTConfig) logReject(r *http.Request, reason string, parseErr error, rawJWT string, extra ...slog.Attr) {
+	if !cfg.LogFailures || cfg.Logger == nil {
+		return
+	}
+	attrs := []any{
+		slog.String("event", "jwt_rejected"),
+		slog.String("reason", reason),
+		slog.String("method", r.Method),
+		slog.String("path", r.URL.Path),
+	}
+	if parseErr != nil {
+		attrs = append(attrs, slog.String("parse_error", parseErr.Error()))
+	}
+	for _, a := range extra {
+		attrs = append(attrs, a)
+	}
+	if rawJWT != "" {
+		if keys, exp, inspErr := inspectJWTPayload(rawJWT); inspErr != nil {
+			attrs = append(attrs, slog.String("payload_inspect_error", inspErr.Error()))
+		} else {
+			attrs = append(attrs,
+				slog.Any("payload_claim_keys", keys),
+				slog.Any("payload_exp", exp),
+			)
+		}
+	}
+	cfg.Logger.WarnContext(r.Context(), "jwt unauthorized", attrs...)
+}
+
+// inspectJWTPayload decodes the JWT payload segment without verifying the signature.
+// Used only for troubleshooting (jwt_log_failures). Never log the full token.
+func inspectJWTPayload(token string) (keys []string, exp any, err error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, nil, fmt.Errorf("expected 3 JWT segments, got %d", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, nil, fmt.Errorf("payload base64: %w", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil, nil, fmt.Errorf("payload json: %w", err)
+	}
+	keys = make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var expAny any
+	if raw, ok := m["exp"]; ok {
+		var n json.Number
+		if err := json.Unmarshal(raw, &n); err == nil {
+			expAny = n.String()
+		} else {
+			var f float64
+			if err := json.Unmarshal(raw, &f); err == nil {
+				expAny = f
+			} else {
+				expAny = strings.Trim(string(raw), `"`)
+			}
+		}
+	}
+	return keys, expAny, nil
 }
 
 // stripAndSetSubOnly clears any client-supplied default subject header, then
