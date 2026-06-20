@@ -22,14 +22,26 @@ type instanceState struct {
 	ActiveRequests int
 }
 
+// HealthNotifier receives backend health state changes from the health check loop.
+type HealthNotifier interface {
+	NotifyBackendHealth(backend, instance string, healthy bool)
+}
+
 type Proxy struct {
-	cancel     context.CancelFunc
-	ctx        context.Context
-	mu         sync.RWMutex
-	logger     *slog.Logger
-	backends   map[string]config.BackendRuntime
-	instances  map[string][]*instanceState
-	roundRobin map[string]int
+	cancel         context.CancelFunc
+	ctx            context.Context
+	mu             sync.RWMutex
+	logger         *slog.Logger
+	healthNotifier HealthNotifier
+	backends       map[string]config.BackendRuntime
+	instances      map[string][]*instanceState
+	roundRobin     map[string]int
+}
+
+func (p *Proxy) SetHealthNotifier(n HealthNotifier) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.healthNotifier = n
 }
 
 func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {

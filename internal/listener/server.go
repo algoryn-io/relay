@@ -24,6 +24,8 @@ type Server struct {
 	logger       *slog.Logger
 	metrics      *observability.Metrics
 	metricsH     http.Handler
+	prometheusH  http.Handler
+	prometheusPath string
 	routes       map[string]*compiledRoute
 	trustedNets  []*net.IPNet
 
@@ -65,6 +67,14 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		return nil, err
 	}
 	metrics := observability.NewMetrics(100)
+	promCollector := observability.NewPrometheusCollector()
+	rtProxy.SetHealthNotifier(promCollector)
+	for backendName, backend := range rt.Backends {
+		hasHealthCheck := backend.HealthCheck.Path != "" && backend.HealthCheck.Interval > 0
+		for _, inst := range backend.Instances {
+			promCollector.NotifyBackendHealth(backendName, inst.URL, !hasHealthCheck)
+		}
+	}
 	compiledRoutes := make(map[string]*compiledRoute, len(rt.Routes))
 
 	relaySvc := strings.TrimSpace(cfg.Observability.Fabric.ServiceName)
@@ -113,7 +123,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		recoveryMW := middleware.Recovery(logger)
 		requestIDMW := middleware.RequestID()
 		loggingMW := observability.NewLoggingMiddleware(logger, routeRef.Name, routeRef.BackendName)
-		metricsMW := observability.NewMetricsMiddlewareFabric(metrics, fabricDispatch, relaySvc, routeRef.Name)
+		metricsMW := observability.NewMetricsMiddlewareFabric(metrics, promCollector, fabricDispatch, relaySvc, routeRef.Name)
 
 		compiledRoutes[routeName] = &compiledRoute{
 			route:   routeRef,
@@ -123,12 +133,19 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 
 	trustedNets := httpx.ParseTrustedNets(cfg.Listener.TrustedProxies)
 
+	promPath := cfg.Observability.Prometheus.Path
+	if promPath == "" {
+		promPath = "/_relay/metrics/prometheus"
+	}
+
 	s := &Server{
 		proxy:            rtProxy,
 		router:           rtRouter,
 		logger:           logger,
 		metrics:          metrics,
 		metricsH:         observability.MetricsHandler(metrics),
+		prometheusH:      promCollector.Handler(),
+		prometheusPath:   promPath,
 		routes:           compiledRoutes,
 		trustedNets:      trustedNets,
 		fabricDispatch:   fabricDispatch,
@@ -203,6 +220,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		return
+	case s.prometheusPath:
+		s.prometheusH.ServeHTTP(w, req)
 		return
 	}
 

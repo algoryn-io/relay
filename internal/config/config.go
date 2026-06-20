@@ -115,10 +115,16 @@ type MiddlewareSettingsConfig struct {
 }
 
 type ObservabilityConfig struct {
-	Dashboard DashboardConfig `yaml:"dashboard"`
-	Logs      LogsConfig      `yaml:"logs"`
-	Metrics   MetricsConfig   `yaml:"metrics"`
-	Fabric    FabricConfig    `yaml:"fabric"`
+	Dashboard  DashboardConfig  `yaml:"dashboard"`
+	Logs       LogsConfig       `yaml:"logs"`
+	Metrics    MetricsConfig    `yaml:"metrics"`
+	Fabric     FabricConfig     `yaml:"fabric"`
+	Prometheus PrometheusConfig `yaml:"prometheus"`
+}
+
+type PrometheusConfig struct {
+	// Path is the scrape endpoint. Defaults to /_relay/metrics/prometheus when empty.
+	Path string `yaml:"path"`
 }
 
 // FabricConfig controls Algoryn Fabric protobuf telemetry (MetricSnapshot + Event) toward Beacon and peers.
