@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"algoryn.io/relay/internal/config"
 	"algoryn.io/relay/internal/httpx"
@@ -17,20 +19,38 @@ import (
 	"algoryn.io/relay/internal/router"
 )
 
-type Server struct {
-	httpServer   *http.Server
-	proxy        *proxy.Proxy
-	router       *router.Router
-	logger       *slog.Logger
-	metrics      *observability.Metrics
-	metricsH     http.Handler
-	prometheusH  http.Handler
-	prometheusPath string
-	routes       map[string]*compiledRoute
-	trustedNets  []*net.IPNet
-
+// serverState holds all hot-reloadable request-handling state.
+// It is swapped atomically on reload; the previous state is closed after the swap.
+type serverState struct {
+	proxy            *proxy.Proxy
+	router           *router.Router
+	metrics          *observability.Metrics
+	metricsH         http.Handler
+	prometheusH      http.Handler
+	prometheusPath   string
+	routes           map[string]*compiledRoute
+	trustedNets      []*net.IPNet
 	fabricDispatch   *observability.EventDispatcher
 	relayServiceName string
+}
+
+func (st *serverState) close() {
+	if st == nil {
+		return
+	}
+	if st.fabricDispatch != nil {
+		st.fabricDispatch.Close()
+	}
+	if st.proxy != nil {
+		st.proxy.Close()
+	}
+}
+
+type Server struct {
+	httpServer *http.Server
+	logger     *slog.Logger
+	state      atomic.Pointer[serverState]
+	reloadMu   sync.Mutex
 }
 
 type compiledRoute struct {
@@ -46,14 +66,116 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 	if rt == nil {
 		return nil, fmt.Errorf("runtime config must not be nil")
 	}
-	listenerCfg := cfg.Listener
-	if listenerCfg.HTTP.Port <= 0 {
+	if cfg.Listener.HTTP.Port <= 0 {
 		return nil, fmt.Errorf("listener.http.port must be greater than 0")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
 
+	st, err := buildState(cfg, rt, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	s := &Server{logger: logger}
+	s.state.Store(st)
+	s.httpServer = &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.Listener.HTTP.Port),
+		Handler:      s,
+		ReadTimeout:  cfg.Listener.Timeouts.Read,
+		WriteTimeout: cfg.Listener.Timeouts.Write,
+		IdleTimeout:  cfg.Listener.Timeouts.Idle,
+	}
+
+	return s, nil
+}
+
+// Reload applies a new config without restarting the process. The TCP listener
+// stays open; only the request-handling state (routes, backends, middleware,
+// metrics) is replaced. In-flight requests on the old state complete normally.
+// Returns an error if the new state cannot be built; the server keeps running
+// with the previous config in that case.
+func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
+	newState, err := buildState(cfg, rt, s.logger)
+	if err != nil {
+		return fmt.Errorf("build reloaded state: %w", err)
+	}
+
+	old := s.state.Swap(newState)
+	go old.close()
+
+	s.httpServer.ReadTimeout = cfg.Listener.Timeouts.Read
+	s.httpServer.WriteTimeout = cfg.Listener.Timeouts.Write
+	s.httpServer.IdleTimeout = cfg.Listener.Timeouts.Idle
+
+	return nil
+}
+
+func (s *Server) Start() error {
+	err := s.httpServer.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.state.Load().close()
+	if s.httpServer == nil {
+		return nil
+	}
+	return s.httpServer.Shutdown(ctx)
+}
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	st := s.state.Load()
+
+	req = httpx.WithResolvedClientIP(req, st.trustedNets)
+
+	switch req.URL.Path {
+	case "/_relay/metrics":
+		clientIP := httpx.ClientIP(req)
+		if clientIP != "127.0.0.1" && clientIP != "::1" {
+			httpx.WriteError(w, http.StatusForbidden, "forbidden")
+			return
+		}
+		st.metricsH.ServeHTTP(w, req)
+		return
+	case "/_relay/health":
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		return
+	case st.prometheusPath:
+		st.prometheusH.ServeHTTP(w, req)
+		return
+	}
+
+	route, err := st.router.Match(req)
+	switch {
+	case err == nil:
+		compiled, ok := st.routes[route.Name]
+		if !ok || compiled == nil || compiled.handler == nil {
+			s.logger.Error("compiled route not found", "route", route.Name)
+			httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		compiled.handler.ServeHTTP(w, req)
+	case errors.Is(err, router.ErrMethodNotAllowed):
+		httpx.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+	case errors.Is(err, router.ErrNotFound):
+		httpx.WriteError(w, http.StatusNotFound, "not_found")
+	default:
+		s.logger.Error("request match failed", "error", err)
+		httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
+	}
+}
+
+func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*serverState, error) {
 	rtRouter, err := router.New(rt)
 	if err != nil {
 		return nil, err
@@ -66,6 +188,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 	if err != nil {
 		return nil, err
 	}
+
 	metrics := observability.NewMetrics(100)
 	promCollector := observability.NewPrometheusCollector()
 	rtProxy.SetHealthNotifier(promCollector)
@@ -75,7 +198,6 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 			promCollector.NotifyBackendHealth(backendName, inst.URL, !hasHealthCheck)
 		}
 	}
-	compiledRoutes := make(map[string]*compiledRoute, len(rt.Routes))
 
 	relaySvc := strings.TrimSpace(cfg.Observability.Fabric.ServiceName)
 	var fabricDispatch *observability.EventDispatcher
@@ -90,6 +212,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		}
 	}
 
+	compiledRoutes := make(map[string]*compiledRoute, len(rt.Routes))
 	for routeName, routeRuntime := range rt.Routes {
 		route := routeRuntime
 		routeRef := &route
@@ -115,6 +238,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 			}
 			rtProxy.ServeHTTP(w, r, routeRef)
 		})
+
 		routeMiddlewares, resolveErr := middleware.Resolve(routeRef.MiddlewareRefs, mwRegistry)
 		if resolveErr != nil {
 			return nil, fmt.Errorf("resolve middleware for route %q: %w", routeRef.Name, resolveErr)
@@ -138,10 +262,9 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		promPath = "/_relay/metrics/prometheus"
 	}
 
-	s := &Server{
+	st := &serverState{
 		proxy:            rtProxy,
 		router:           rtRouter,
-		logger:           logger,
 		metrics:          metrics,
 		metricsH:         observability.MetricsHandler(metrics),
 		prometheusH:      promCollector.Handler(),
@@ -153,95 +276,16 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 	}
 
 	if fabricDispatch != nil {
-		s.enqueueFabricBackendRegistryEvents(rt)
-	}
-
-	s.httpServer = &http.Server{
-		Addr:         fmt.Sprintf(":%d", listenerCfg.HTTP.Port),
-		Handler:      s,
-		ReadTimeout:  listenerCfg.Timeouts.Read,
-		WriteTimeout: listenerCfg.Timeouts.Write,
-		IdleTimeout:  listenerCfg.Timeouts.Idle,
-	}
-
-	return s, nil
-}
-
-func (s *Server) enqueueFabricBackendRegistryEvents(rt *config.RuntimeConfig) {
-	if s == nil || s.fabricDispatch == nil || rt == nil {
-		return
-	}
-	for _, b := range rt.Backends {
-		for _, inst := range b.Instances {
-			if strings.TrimSpace(inst.URL) == "" {
-				continue
+		for _, b := range rt.Backends {
+			for _, inst := range b.Instances {
+				if strings.TrimSpace(inst.URL) == "" {
+					continue
+				}
+				evt := observability.BuildServiceRegisteredFabricEvent(relaySvc, b.Name, inst.URL)
+				fabricDispatch.TryEnqueue(observability.FabricDispatchItem{Event: evt})
 			}
-			evt := observability.BuildServiceRegisteredFabricEvent(s.relayServiceName, b.Name, inst.URL)
-			s.fabricDispatch.TryEnqueue(observability.FabricDispatchItem{Event: evt})
 		}
 	}
-}
 
-func (s *Server) Start() error {
-	err := s.httpServer.ListenAndServe()
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
-}
-
-func (s *Server) Shutdown(ctx context.Context) error {
-	if s != nil && s.fabricDispatch != nil {
-		s.fabricDispatch.Close()
-		s.fabricDispatch = nil
-	}
-	if s == nil || s.httpServer == nil {
-		return nil
-	}
-	if s.proxy != nil {
-		s.proxy.Close()
-	}
-	return s.httpServer.Shutdown(ctx)
-}
-
-func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	req = httpx.WithResolvedClientIP(req, s.trustedNets)
-
-	switch req.URL.Path {
-	case "/_relay/metrics":
-		clientIP := httpx.ClientIP(req)
-		if clientIP != "127.0.0.1" && clientIP != "::1" {
-			httpx.WriteError(w, http.StatusForbidden, "forbidden")
-			return
-		}
-		s.metricsH.ServeHTTP(w, req)
-		return
-	case "/_relay/health":
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-		return
-	case s.prometheusPath:
-		s.prometheusH.ServeHTTP(w, req)
-		return
-	}
-
-	route, err := s.router.Match(req)
-	switch {
-	case err == nil:
-		compiled, ok := s.routes[route.Name]
-		if !ok || compiled == nil || compiled.handler == nil {
-			s.logger.Error("compiled route not found", "route", route.Name)
-			httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
-			return
-		}
-		compiled.handler.ServeHTTP(w, req)
-	case errors.Is(err, router.ErrMethodNotAllowed):
-		httpx.WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed")
-	case errors.Is(err, router.ErrNotFound):
-		httpx.WriteError(w, http.StatusNotFound, "not_found")
-	default:
-		s.logger.Error("request match failed", "error", err)
-		httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
-	}
+	return st, nil
 }

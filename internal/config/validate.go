@@ -299,7 +299,12 @@ func validateStorage(_ StorageConfig, _ *ValidationErrors) {
 }
 
 func validateReload(reload ReloadConfig, errs *ValidationErrors) {
-	validatePositiveDuration("reload.debounce", reload.Debounce, errs, false)
+	if !reload.Watch {
+		return
+	}
+	if reload.Debounce <= 0 {
+		errs.Addf("reload.debounce: must be > 0 when reload.watch is enabled")
+	}
 }
 
 func validatePositiveDuration(field string, value time.Duration, errs *ValidationErrors, allowZero bool) {
