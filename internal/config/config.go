@@ -13,10 +13,11 @@ type Config struct {
 }
 
 type ListenerConfig struct {
-	HTTP     HTTPConfig     `yaml:"http"`
-	HTTPS    HTTPSConfig    `yaml:"https"`
-	TLS      TLSConfig      `yaml:"tls"`
-	Timeouts TimeoutsConfig `yaml:"timeouts"`
+	HTTP           HTTPConfig     `yaml:"http"`
+	HTTPS          HTTPSConfig    `yaml:"https"`
+	TLS            TLSConfig      `yaml:"tls"`
+	Timeouts       TimeoutsConfig `yaml:"timeouts"`
+	TrustedProxies []string       `yaml:"trusted_proxies"`
 }
 
 type HTTPConfig struct {

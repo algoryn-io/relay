@@ -52,6 +52,7 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 	validatePositiveDuration("listener.timeouts.read", listener.Timeouts.Read, errs, false)
 	validatePositiveDuration("listener.timeouts.write", listener.Timeouts.Write, errs, false)
 	validatePositiveDuration("listener.timeouts.idle", listener.Timeouts.Idle, errs, false)
+	validateIPFilterEntries("listener.trusted_proxies", listener.TrustedProxies, errs)
 }
 
 func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[string]struct{}, errs *ValidationErrors) {
@@ -277,10 +278,8 @@ func validateFabric(f FabricConfig, errs *ValidationErrors) {
 	}
 }
 
-func validateStorage(storage StorageConfig, errs *ValidationErrors) {
-	if strings.TrimSpace(storage.Path) == "" {
-		errs.Addf("storage.path: required")
-	}
+func validateStorage(_ StorageConfig, _ *ValidationErrors) {
+	// storage is optional; leave path empty to disable
 }
 
 func validateReload(reload ReloadConfig, errs *ValidationErrors) {

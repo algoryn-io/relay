@@ -127,13 +127,17 @@ func TestProxyStripsSensitiveClientHeaders(t *testing.T) {
 	p.ServeHTTP(rec, req, &config.RouteRuntime{BackendName: "orders-backend"})
 
 	headers := <-received
-	for _, header := range []string{"X-Internal-Auth", "X-Real-IP", "X-Admin"} {
+	for _, header := range []string{"X-Internal-Auth", "X-Admin"} {
 		if got := headers.Get(header); got != "" {
-			t.Fatalf("%s = %q, want empty", header, got)
+			t.Fatalf("%s = %q, want empty (should be stripped)", header, got)
 		}
 	}
 	if got := headers.Get("X-Forwarded-For"); got != "203.0.113.10" {
 		t.Fatalf("X-Forwarded-For = %q, want 203.0.113.10", got)
+	}
+	// X-Real-IP must be set to the resolved client IP, not the client-injected spoofed value.
+	if got := headers.Get("X-Real-IP"); got != "203.0.113.10" {
+		t.Fatalf("X-Real-IP = %q, want 203.0.113.10 (proxy-set, not client-spoofed)", got)
 	}
 }
 
@@ -485,7 +489,7 @@ func TestProxyNoInstancesReturns502(t *testing.T) {
 func newTestProxy(t *testing.T, backends map[string]config.BackendRuntime) *Proxy {
 	t.Helper()
 
-	p, err := New(&config.RuntimeConfig{Backends: backends})
+	p, err := New(&config.RuntimeConfig{Backends: backends}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
