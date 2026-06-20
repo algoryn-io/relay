@@ -184,11 +184,12 @@ func (c *MatchConfig) UnmarshalYAML(node *yaml.Node) error {
 
 func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawBackend struct {
-		Name        string            `yaml:"name"`
-		Strategy    string            `yaml:"strategy"`
-		HealthCheck HealthCheckConfig `yaml:"health_check"`
-		Healthcheck HealthCheckConfig `yaml:"healthcheck"`
-		Instances   []InstanceConfig  `yaml:"instances"`
+		Name           string               `yaml:"name"`
+		Strategy       string               `yaml:"strategy"`
+		HealthCheck    HealthCheckConfig    `yaml:"health_check"`
+		Healthcheck    HealthCheckConfig    `yaml:"healthcheck"`
+		CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+		Instances      []InstanceConfig     `yaml:"instances"`
 	}
 
 	var raw rawBackend
@@ -202,6 +203,7 @@ func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 	if c.HealthCheck == (HealthCheckConfig{}) {
 		c.HealthCheck = raw.Healthcheck
 	}
+	c.CircuitBreaker = raw.CircuitBreaker
 	c.Instances = raw.Instances
 
 	return nil

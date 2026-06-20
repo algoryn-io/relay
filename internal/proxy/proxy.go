@@ -20,6 +20,7 @@ type instanceState struct {
 	Healthy        bool
 	LastChecked    time.Time
 	ActiveRequests int
+	circuit        *CircuitBreaker // nil when circuit breaker is disabled
 }
 
 // HealthNotifier receives backend health state changes from the health check loop.
@@ -65,6 +66,12 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		// the first check (which runs immediately in healthLoop) determines state
 		// before traffic is served. Without health checks, assume healthy.
 		hasHealthCheck := backend.HealthCheck.Path != "" && backend.HealthCheck.Interval > 0
+
+		var cbProto *CircuitBreaker
+		if backend.CircuitBreaker.Threshold > 0 {
+			cbProto = newCircuitBreaker(backend.CircuitBreaker.Threshold, backend.CircuitBreaker.Timeout)
+		}
+
 		states := make([]*instanceState, 0, len(backend.Instances))
 		for _, instance := range backend.Instances {
 			parsed, err := url.Parse(instance.URL)
@@ -75,10 +82,15 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 				})
 				continue
 			}
+			var cb *CircuitBreaker
+			if cbProto != nil {
+				cb = newCircuitBreaker(cbProto.threshold, cbProto.timeout)
+			}
 			states = append(states, &instanceState{
 				URL:         parsed,
 				Healthy:     !hasHealthCheck,
 				LastChecked: time.Now(),
+				circuit:     cb,
 			})
 		}
 
@@ -113,10 +125,30 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 
 	selected, err := p.selectInstance(backend.Name, backend.Strategy)
 	if err != nil {
-		httpx.WriteError(w, http.StatusBadGateway, "bad_gateway")
+		if errors.Is(err, errAllCircuitsOpen) {
+			if p.logger != nil {
+				p.logger.Warn("all instances have open circuits", "backend", backend.Name)
+			}
+			httpx.WriteError(w, http.StatusServiceUnavailable, "circuit_open")
+		} else {
+			httpx.WriteError(w, http.StatusBadGateway, "bad_gateway")
+		}
 		return
 	}
 	defer p.releaseInstance(backend.Name, selected)
+
+	// Circuit breaker gate: IsOpen() is checked in selectInstance, but Allow()
+	// handles the Open→HalfOpen transition and acts as the definitive gate.
+	if selected.circuit != nil && !selected.circuit.Allow() {
+		if p.logger != nil {
+			p.logger.Warn("circuit open, request rejected",
+				"backend", backend.Name,
+				"instance", selected.URL.String(),
+			)
+		}
+		httpx.WriteError(w, http.StatusServiceUnavailable, "circuit_open")
+		return
+	}
 
 	target := selected.URL
 	clientIP := httpx.ClientIP(r)
@@ -133,7 +165,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	originalHost := r.Host
 	backendName := backend.Name
 
+	var transport http.RoundTripper
+	if selected.circuit != nil {
+		transport = &circuitTransport{base: http.DefaultTransport, circuit: selected.circuit}
+	}
+
 	rp := &httputil.ReverseProxy{
+		Transport: transport,
 		// Use Rewrite (Go 1.22+) instead of Director so that the stdlib does not
 		// append an extra X-Forwarded-For after our Rewrite func runs. The Rewrite
 		// path strips X-Forwarded-*, Forwarded, etc. before calling us, giving us

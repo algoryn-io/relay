@@ -26,10 +26,11 @@ type RouteRuntime struct {
 }
 
 type BackendRuntime struct {
-	Name        string
-	Strategy    string
-	HealthCheck HealthCheckConfig
-	Instances   []InstanceRuntime
+	Name           string
+	Strategy       string
+	HealthCheck    HealthCheckConfig
+	CircuitBreaker CircuitBreakerConfig
+	Instances      []InstanceRuntime
 }
 
 type InstanceRuntime struct {
@@ -63,9 +64,10 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 		}
 
 		rt.Backends[backend.Name] = BackendRuntime{
-			Name:        backend.Name,
-			Strategy:    backend.Strategy,
-			HealthCheck: backend.HealthCheck,
+			Name:           backend.Name,
+			Strategy:       backend.Strategy,
+			HealthCheck:    backend.HealthCheck,
+			CircuitBreaker: backend.CircuitBreaker,
 			Instances:   instances,
 		}
 	}
