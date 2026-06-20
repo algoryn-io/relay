@@ -55,13 +55,21 @@ func (p *Proxy) checkBackendHealth(client *http.Client, backendName string, heal
 
 func (p *Proxy) updateInstanceHealth(backendName string, target *instanceState, healthy bool) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	var instanceURL string
 	for _, state := range p.instances[backendName] {
 		if state == target {
 			state.Healthy = healthy
 			state.LastChecked = time.Now()
-			return
+			if state.URL != nil {
+				instanceURL = state.URL.String()
+			}
+			break
 		}
+	}
+	notifier := p.healthNotifier
+	p.mu.Unlock()
+
+	if instanceURL != "" && notifier != nil {
+		notifier.NotifyBackendHealth(backendName, instanceURL, healthy)
 	}
 }

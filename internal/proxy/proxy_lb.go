@@ -1,8 +1,13 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 )
+
+// errAllCircuitsOpen is returned by selectInstance when every healthy instance
+// has an open circuit breaker. Callers translate this to 503.
+var errAllCircuitsOpen = errors.New("all instances have open circuits")
 
 func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, error) {
 	p.mu.Lock()
@@ -10,13 +15,21 @@ func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, er
 
 	states := p.instances[backendName]
 	healthy := make([]*instanceState, 0, len(states))
+	circuitBlocked := 0
 	for _, state := range states {
 		if state != nil && state.Healthy && state.URL != nil {
-			healthy = append(healthy, state)
+			if state.circuit != nil && state.circuit.IsOpen() {
+				circuitBlocked++
+			} else {
+				healthy = append(healthy, state)
+			}
 		}
 	}
 
 	if len(healthy) == 0 {
+		if circuitBlocked > 0 {
+			return nil, errAllCircuitsOpen
+		}
 		return nil, fmt.Errorf("no healthy instances for backend %q", backendName)
 	}
 

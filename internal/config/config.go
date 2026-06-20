@@ -64,10 +64,21 @@ type MatchConfig struct {
 }
 
 type BackendConfig struct {
-	Name        string            `yaml:"name"`
-	Strategy    string            `yaml:"strategy"`
-	HealthCheck HealthCheckConfig `yaml:"health_check"`
-	Instances   []InstanceConfig  `yaml:"instances"`
+	Name           string               `yaml:"name"`
+	Strategy       string               `yaml:"strategy"`
+	HealthCheck    HealthCheckConfig    `yaml:"health_check"`
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+	Instances      []InstanceConfig     `yaml:"instances"`
+}
+
+// CircuitBreakerConfig enables a per-instance circuit breaker for a backend.
+// Set Threshold > 0 to enable; zero disables it.
+type CircuitBreakerConfig struct {
+	// Threshold is the number of consecutive failures that trip the circuit.
+	Threshold int `yaml:"threshold"`
+	// Timeout is how long the circuit stays open before allowing a probe.
+	// Defaults to 30s when zero.
+	Timeout time.Duration `yaml:"timeout"`
 }
 
 type HealthCheckConfig struct {
@@ -115,10 +126,16 @@ type MiddlewareSettingsConfig struct {
 }
 
 type ObservabilityConfig struct {
-	Dashboard DashboardConfig `yaml:"dashboard"`
-	Logs      LogsConfig      `yaml:"logs"`
-	Metrics   MetricsConfig   `yaml:"metrics"`
-	Fabric    FabricConfig    `yaml:"fabric"`
+	Dashboard  DashboardConfig  `yaml:"dashboard"`
+	Logs       LogsConfig       `yaml:"logs"`
+	Metrics    MetricsConfig    `yaml:"metrics"`
+	Fabric     FabricConfig     `yaml:"fabric"`
+	Prometheus PrometheusConfig `yaml:"prometheus"`
+}
+
+type PrometheusConfig struct {
+	// Path is the scrape endpoint. Defaults to /_relay/metrics/prometheus when empty.
+	Path string `yaml:"path"`
 }
 
 // FabricConfig controls Algoryn Fabric protobuf telemetry (MetricSnapshot + Event) toward Beacon and peers.

@@ -145,6 +145,73 @@ func TestServerShutdown(t *testing.T) {
 	}
 }
 
+func TestServerReloadSwapsRoutes(t *testing.T) {
+	t.Parallel()
+
+	backendV1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": "v1"})
+	}))
+	t.Cleanup(backendV1.Close)
+
+	backendV2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"version": "v2"})
+	}))
+	t.Cleanup(backendV2.Close)
+
+	makeRT := func(backendURL string) *config.RuntimeConfig {
+		return &config.RuntimeConfig{
+			Routes: map[string]config.RouteRuntime{
+				"svc": {
+					Name:        "svc",
+					Path:        "/svc",
+					Methods:     []string{http.MethodGet},
+					BackendName: "svc-backend",
+				},
+			},
+			Backends: map[string]config.BackendRuntime{
+				"svc-backend": {
+					Name:      "svc-backend",
+					Instances: []config.InstanceRuntime{{URL: backendURL}},
+				},
+			},
+		}
+	}
+
+	cfg := testServerConfig(config.ListenerConfig{
+		HTTP:     config.HTTPConfig{Port: 8080},
+		Timeouts: config.TimeoutsConfig{Read: 5 * time.Second, Write: 5 * time.Second, Idle: 10 * time.Second},
+	})
+	server, err := New(cfg, makeRT(backendV1.URL), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Before reload: v1
+	resp := performRequest(t, server, http.MethodGet, "/svc")
+	defer resp.Body.Close()
+	var body map[string]string
+	decodeJSON(t, resp.Body, &body)
+	if body["version"] != "v1" {
+		t.Fatalf("before reload: version = %q, want v1", body["version"])
+	}
+
+	// Reload with v2 backend
+	if err := server.Reload(cfg, makeRT(backendV2.URL)); err != nil {
+		t.Fatalf("Reload() error = %v", err)
+	}
+
+	// After reload: v2
+	resp2 := performRequest(t, server, http.MethodGet, "/svc")
+	defer resp2.Body.Close()
+	var body2 map[string]string
+	decodeJSON(t, resp2.Body, &body2)
+	if body2["version"] != "v2" {
+		t.Fatalf("after reload: version = %q, want v2", body2["version"])
+	}
+}
+
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 

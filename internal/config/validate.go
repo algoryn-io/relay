@@ -134,6 +134,14 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 		validatePositiveDuration(prefix+".health_check.interval", backend.HealthCheck.Interval, errs, true)
 		validatePositiveDuration(prefix+".health_check.timeout", backend.HealthCheck.Timeout, errs, true)
 
+		cb := backend.CircuitBreaker
+		if cb.Threshold < 0 {
+			errs.Addf("%s.circuit_breaker.threshold: must be >= 0", prefix)
+		}
+		if cb.Threshold > 0 && cb.Timeout < 0 {
+			errs.Addf("%s.circuit_breaker.timeout: must be >= 0", prefix)
+		}
+
 		for j, instance := range backend.Instances {
 			if instance.URL == "" {
 				errs.Addf("%s.instances[%d].url: required", prefix, j)
@@ -299,7 +307,12 @@ func validateStorage(_ StorageConfig, _ *ValidationErrors) {
 }
 
 func validateReload(reload ReloadConfig, errs *ValidationErrors) {
-	validatePositiveDuration("reload.debounce", reload.Debounce, errs, false)
+	if !reload.Watch {
+		return
+	}
+	if reload.Debounce <= 0 {
+		errs.Addf("reload.debounce: must be > 0 when reload.watch is enabled")
+	}
 }
 
 func validatePositiveDuration(field string, value time.Duration, errs *ValidationErrors, allowZero bool) {
