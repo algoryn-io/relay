@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,7 +88,17 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
 				key = "unknown"
 			}
 
-			if !limiter.allow(key, time.Now()) {
+			now := time.Now()
+			allowed, remaining, reset := limiter.check(key, now)
+			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limiter.limit))
+			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+			if !allowed {
+				retryAfter := int(time.Until(reset).Seconds()) + 1
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 				httpx.WriteError(w, http.StatusTooManyRequests, "rate_limited")
 				return
 			}
@@ -97,7 +108,7 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
 	}, nil
 }
 
-func (l *rateLimiter) allow(key string, now time.Time) bool {
+func (l *rateLimiter) check(key string, now time.Time) (allowed bool, remaining int, reset time.Time) {
 	cutoff := now.Add(-l.window)
 
 	l.mu.Lock()
@@ -113,9 +124,16 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 	if len(keep) > l.limit {
 		keep = keep[len(keep)-l.limit:]
 	}
+
 	if len(keep) >= l.limit {
 		l.buckets[key] = keep
-		return false
+		// Reset = when the oldest in-window event exits the window.
+		if len(keep) > 0 {
+			reset = keep[0].Add(l.window)
+		} else {
+			reset = now.Add(l.window)
+		}
+		return false, 0, reset
 	}
 
 	keep = append(keep, now)
@@ -130,7 +148,13 @@ func (l *rateLimiter) allow(key string, now time.Time) bool {
 		}
 	}
 
-	return true
+	remaining = l.limit - len(keep)
+	if len(keep) > 0 {
+		reset = keep[0].Add(l.window)
+	} else {
+		reset = now.Add(l.window)
+	}
+	return true, remaining, reset
 }
 
 func (l *rateLimiter) keyFromRequest(r *http.Request) string {

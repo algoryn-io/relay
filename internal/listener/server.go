@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 
@@ -17,13 +18,14 @@ import (
 )
 
 type Server struct {
-	httpServer *http.Server
-	proxy      *proxy.Proxy
-	router     *router.Router
-	logger     *slog.Logger
-	metrics    *observability.Metrics
-	metricsH   http.Handler
-	routes     map[string]*compiledRoute
+	httpServer   *http.Server
+	proxy        *proxy.Proxy
+	router       *router.Router
+	logger       *slog.Logger
+	metrics      *observability.Metrics
+	metricsH     http.Handler
+	routes       map[string]*compiledRoute
+	trustedNets  []*net.IPNet
 
 	fabricDispatch   *observability.EventDispatcher
 	relayServiceName string
@@ -54,7 +56,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 	if err != nil {
 		return nil, err
 	}
-	rtProxy, err := proxy.New(rt)
+	rtProxy, err := proxy.New(rt, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -83,6 +85,24 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		routeRef := &route
 
 		final := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if routeRef.Timeout > 0 {
+				ctx, cancel := context.WithTimeout(r.Context(), routeRef.Timeout)
+				defer cancel()
+				r = r.WithContext(ctx)
+			}
+			if routeRef.StripPrefix != "" {
+				stripped := strings.TrimPrefix(r.URL.Path, routeRef.StripPrefix)
+				if stripped == "" {
+					stripped = "/"
+				}
+				r2 := r.Clone(r.Context())
+				r2.URL.Path = stripped
+				if r.URL.RawPath != "" {
+					r2.URL.RawPath = strings.TrimPrefix(r.URL.RawPath, routeRef.StripPrefix)
+				}
+				rtProxy.ServeHTTP(w, r2, routeRef)
+				return
+			}
 			rtProxy.ServeHTTP(w, r, routeRef)
 		})
 		routeMiddlewares, resolveErr := middleware.Resolve(routeRef.MiddlewareRefs, mwRegistry)
@@ -91,14 +111,17 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		}
 		routeHandler := middleware.Chain(final, routeMiddlewares...)
 		recoveryMW := middleware.Recovery(logger)
+		requestIDMW := middleware.RequestID()
 		loggingMW := observability.NewLoggingMiddleware(logger, routeRef.Name, routeRef.BackendName)
 		metricsMW := observability.NewMetricsMiddlewareFabric(metrics, fabricDispatch, relaySvc, routeRef.Name)
 
 		compiledRoutes[routeName] = &compiledRoute{
 			route:   routeRef,
-			handler: middleware.Chain(routeHandler, recoveryMW, loggingMW, metricsMW),
+			handler: middleware.Chain(routeHandler, recoveryMW, requestIDMW, loggingMW, metricsMW),
 		}
 	}
+
+	trustedNets := httpx.ParseTrustedNets(cfg.Listener.TrustedProxies)
 
 	s := &Server{
 		proxy:            rtProxy,
@@ -107,6 +130,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		metrics:          metrics,
 		metricsH:         observability.MetricsHandler(metrics),
 		routes:           compiledRoutes,
+		trustedNets:      trustedNets,
 		fabricDispatch:   fabricDispatch,
 		relayServiceName: relaySvc,
 	}
@@ -164,13 +188,21 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if req.URL.Path == "/_relay/metrics" {
+	req = httpx.WithResolvedClientIP(req, s.trustedNets)
+
+	switch req.URL.Path {
+	case "/_relay/metrics":
 		clientIP := httpx.ClientIP(req)
 		if clientIP != "127.0.0.1" && clientIP != "::1" {
 			httpx.WriteError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 		s.metricsH.ServeHTTP(w, req)
+		return
+	case "/_relay/health":
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 		return
 	}
 

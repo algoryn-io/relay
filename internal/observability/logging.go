@@ -24,6 +24,7 @@ func NewLoggingMiddleware(logger *slog.Logger, routeName, backendName string) mi
 				slog.String("route", routeName),
 				slog.String("backend", backendName),
 				slog.String("client_ip", httpx.ClientIP(r)),
+				slog.String("request_id", httpx.GetRequestID(r)),
 			}
 			if rec.Status() >= http.StatusInternalServerError {
 				attrs = append(attrs, slog.String("error", http.StatusText(rec.Status())))

@@ -1,6 +1,9 @@
 package config
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 type RuntimeConfig struct {
 	Routes     map[string]RouteRuntime
@@ -12,6 +15,8 @@ type RouteRuntime struct {
 	Name           string
 	Path           string
 	PathPrefix     string
+	StripPrefix    string
+	Timeout        time.Duration
 	Methods        []string
 	MethodSet      map[string]struct{}
 	Backend        BackendRuntime
@@ -94,6 +99,8 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			Name:           route.Name,
 			Path:           path,
 			PathPrefix:     pathPrefix,
+			StripPrefix:    strings.TrimSpace(route.StripPrefix),
+			Timeout:        route.Timeout,
 			Methods:        methods,
 			MethodSet:      methodSet,
 			Backend:        rt.Backends[route.Backend],

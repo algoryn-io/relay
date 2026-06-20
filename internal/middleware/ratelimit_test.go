@@ -122,8 +122,8 @@ func TestRateLimitAPIKeyHashesMapKey(t *testing.T) {
 	if len(key) != 64 {
 		t.Fatalf("len(key) = %d, want 64", len(key))
 	}
-	if !limiter.allow(key, time.Now()) {
-		t.Fatal("allow() = false, want true")
+	if allowed, _, _ := limiter.check(key, time.Now()); !allowed {
+		t.Fatal("check() = false, want true")
 	}
 	if _, ok := limiter.buckets["plain-api-key"]; ok {
 		t.Fatal("buckets contains raw API key")
@@ -148,8 +148,8 @@ func TestRateLimitCapsTimestampSliceAtLimit(t *testing.T) {
 		now.Add(-1 * time.Second),
 	}
 
-	if limiter.allow("client", now) {
-		t.Fatal("allow() = true, want false")
+	if allowed, _, _ := limiter.check("client", now); allowed {
+		t.Fatal("check() = true, want false")
 	}
 	if got := len(limiter.buckets["client"]); got != 2 {
 		t.Fatalf("len(bucket) = %d, want 2", got)
