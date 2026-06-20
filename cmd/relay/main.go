@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	"algoryn.io/relay/internal/config"
 	"algoryn.io/relay/internal/listener"
 	"algoryn.io/relay/internal/observability"
@@ -95,8 +97,36 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// SIGHUP triggers a hot reload: config is re-read, validated, and applied
-	// without interrupting in-flight requests or closing the TCP listener.
+	// reload loads, validates, and applies a new config version atomically.
+	// On success it updates cfg so subsequent reloads read the latest debounce value.
+	reload := func() {
+		newCfg, loadErr := config.Load(configPath)
+		if loadErr != nil {
+			logger.Error("reload failed: load", "error", loadErr)
+			return
+		}
+		if loadErr = newCfg.ResolveEnv(os.Getenv); loadErr != nil {
+			logger.Error("reload failed: resolve env", "error", loadErr)
+			return
+		}
+		if loadErr = newCfg.Validate(); loadErr != nil {
+			logger.Error("reload failed: invalid config", "error", loadErr)
+			return
+		}
+		newRt, loadErr := config.BuildRuntime(newCfg)
+		if loadErr != nil {
+			logger.Error("reload failed: build runtime", "error", loadErr)
+			return
+		}
+		if loadErr = server.Reload(newCfg, newRt); loadErr != nil {
+			logger.Error("reload failed: apply", "error", loadErr)
+			return
+		}
+		cfg = newCfg
+		logger.Info("config reloaded", "path", configPath)
+	}
+
+	// SIGHUP: manual hot reload trigger.
 	sigHUP := make(chan os.Signal, 1)
 	signal.Notify(sigHUP, syscall.SIGHUP)
 	go func() {
@@ -111,35 +141,20 @@ func main() {
 					logger.Info("reload debounced", "debounce", debounce)
 					continue
 				}
-				logger.Info("reloading config", "path", configPath)
-				newCfg, loadErr := config.Load(configPath)
-				if loadErr != nil {
-					logger.Error("reload failed: load", "error", loadErr)
-					continue
-				}
-				if loadErr = newCfg.ResolveEnv(os.Getenv); loadErr != nil {
-					logger.Error("reload failed: resolve env", "error", loadErr)
-					continue
-				}
-				if loadErr = newCfg.Validate(); loadErr != nil {
-					logger.Error("reload failed: invalid config", "error", loadErr)
-					continue
-				}
-				newRt, loadErr := config.BuildRuntime(newCfg)
-				if loadErr != nil {
-					logger.Error("reload failed: build runtime", "error", loadErr)
-					continue
-				}
-				if loadErr = server.Reload(newCfg, newRt); loadErr != nil {
-					logger.Error("reload failed: apply", "error", loadErr)
-					continue
-				}
-				cfg = newCfg
+				logger.Info("reloading config (SIGHUP)", "path", configPath)
+				reload()
 				lastReload = time.Now()
-				logger.Info("config reloaded", "path", configPath)
 			}
 		}
 	}()
+
+	// File watch: automatic reload when the config file is written.
+	if cfg.Reload.Watch {
+		go watchConfig(ctx, configPath, cfg.Reload.Debounce, logger, func() {
+			logger.Info("reloading config (file change)", "path", configPath)
+			reload()
+		})
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -167,5 +182,72 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("graceful shutdown failed", "error", err)
 		os.Exit(1)
+	}
+}
+
+// watchConfig watches configPath for modifications and calls onReload after debounce.
+// Handles atomic saves (rename + create) used by editors like vim/neovim by
+// re-registering the watch after the inode changes.
+func watchConfig(
+	ctx context.Context,
+	configPath string,
+	debounce time.Duration,
+	logger *slog.Logger,
+	onReload func(),
+) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		logger.Error("file watcher: failed to create", "error", err)
+		return
+	}
+	defer watcher.Close()
+
+	if err := watcher.Add(configPath); err != nil {
+		logger.Error("file watcher: failed to watch config", "path", configPath, "error", err)
+		return
+	}
+	logger.Info("file watcher: watching config", "path", configPath, "debounce", debounce)
+
+	var debounceTimer *time.Timer
+
+	scheduleReload := func() {
+		if debounceTimer != nil {
+			debounceTimer.Stop()
+		}
+		debounceTimer = time.AfterFunc(debounce, onReload)
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			if debounceTimer != nil {
+				debounceTimer.Stop()
+			}
+			return
+
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			switch {
+			case event.Has(fsnotify.Write) || event.Has(fsnotify.Create):
+				scheduleReload()
+			case event.Has(fsnotify.Rename) || event.Has(fsnotify.Remove):
+				// Atomic-save editors rename the temp file over the original,
+				// causing fsnotify to lose the inode. Re-add the watch.
+				_ = watcher.Remove(configPath)
+				if addErr := watcher.Add(configPath); addErr == nil {
+					scheduleReload()
+				} else {
+					logger.Warn("file watcher: lost watch after rename", "error", addErr)
+				}
+			}
+
+		case watchErr, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			logger.Warn("file watcher error", "error", watchErr)
+		}
 	}
 }
