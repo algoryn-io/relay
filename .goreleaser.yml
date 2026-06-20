@@ -13,6 +13,9 @@ builds:
     binary: relay
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - -X main.version={{.Version}}
+      - -X main.buildTime={{.Date}}
     goos:
       - linux
       - darwin

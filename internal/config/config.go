@@ -46,12 +46,14 @@ type TimeoutsConfig struct {
 }
 
 type RouteConfig struct {
-	Name        string      `yaml:"name"`
-	ID          string      `yaml:"id"`
-	Match       MatchConfig `yaml:"match"`
-	Middleware  []string    `yaml:"middleware"`
-	Middlewares []string    `yaml:"-"`
-	Backend     string      `yaml:"backend"`
+	Name        string        `yaml:"name"`
+	ID          string        `yaml:"id"`
+	Match       MatchConfig   `yaml:"match"`
+	Middleware  []string      `yaml:"middleware"`
+	Middlewares []string      `yaml:"-"`
+	Backend     string        `yaml:"backend"`
+	StripPrefix string        `yaml:"-"` // set via UnmarshalYAML
+	Timeout     time.Duration `yaml:"-"` // set via UnmarshalYAML
 }
 
 type MatchConfig struct {
@@ -105,6 +107,11 @@ type MiddlewareSettingsConfig struct {
 	// JWTLogFailures emits structured Warn logs on JWT rejection (missing header, parse/signature/claims).
 	// Does not log the raw token or secret; payload inspection lists claim keys and exp only.
 	JWTLogFailures bool `yaml:"jwt_log_failures"`
+	// Header middleware fields
+	RequestSet  map[string]string `yaml:"request_set"`
+	RequestDel  []string          `yaml:"request_del"`
+	ResponseSet map[string]string `yaml:"response_set"`
+	ResponseDel []string          `yaml:"response_del"`
 }
 
 type ObservabilityConfig struct {

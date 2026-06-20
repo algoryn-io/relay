@@ -19,6 +19,7 @@ var (
 		"body_limit": {},
 		"ip_filter":  {},
 		"cors":       {},
+		"header":     {},
 	}
 )
 
@@ -84,6 +85,13 @@ func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[stri
 			if strings.TrimSpace(method) == "" {
 				errs.Addf("%s.match.methods[%d]: must not be empty", prefix, j)
 			}
+		}
+
+		if route.Timeout < 0 {
+			errs.Addf("%s.timeout: must be >= 0", prefix)
+		}
+		if route.StripPrefix != "" && !strings.HasPrefix(route.StripPrefix, "/") {
+			errs.Addf("%s.strip_prefix: must start with /", prefix)
 		}
 
 		if route.Backend == "" {
@@ -205,6 +213,14 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 			}
 			validateIPFilterEntries(prefix+".config.allow", middleware.Config.Allow, errs)
 			validateIPFilterEntries(prefix+".config.deny", middleware.Config.Deny, errs)
+		}
+		if middleware.Type == "header" {
+			if len(middleware.Config.RequestSet) == 0 &&
+				len(middleware.Config.RequestDel) == 0 &&
+				len(middleware.Config.ResponseSet) == 0 &&
+				len(middleware.Config.ResponseDel) == 0 {
+				errs.Addf("%s.config: at least one of request_set, request_del, response_set, response_del must be provided", prefix)
+			}
 		}
 	}
 

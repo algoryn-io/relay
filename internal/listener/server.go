@@ -85,6 +85,24 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		routeRef := &route
 
 		final := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if routeRef.Timeout > 0 {
+				ctx, cancel := context.WithTimeout(r.Context(), routeRef.Timeout)
+				defer cancel()
+				r = r.WithContext(ctx)
+			}
+			if routeRef.StripPrefix != "" {
+				stripped := strings.TrimPrefix(r.URL.Path, routeRef.StripPrefix)
+				if stripped == "" {
+					stripped = "/"
+				}
+				r2 := r.Clone(r.Context())
+				r2.URL.Path = stripped
+				if r.URL.RawPath != "" {
+					r2.URL.RawPath = strings.TrimPrefix(r.URL.RawPath, routeRef.StripPrefix)
+				}
+				rtProxy.ServeHTTP(w, r2, routeRef)
+				return
+			}
 			rtProxy.ServeHTTP(w, r, routeRef)
 		})
 		routeMiddlewares, resolveErr := middleware.Resolve(routeRef.MiddlewareRefs, mwRegistry)
@@ -93,12 +111,13 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		}
 		routeHandler := middleware.Chain(final, routeMiddlewares...)
 		recoveryMW := middleware.Recovery(logger)
+		requestIDMW := middleware.RequestID()
 		loggingMW := observability.NewLoggingMiddleware(logger, routeRef.Name, routeRef.BackendName)
 		metricsMW := observability.NewMetricsMiddlewareFabric(metrics, fabricDispatch, relaySvc, routeRef.Name)
 
 		compiledRoutes[routeName] = &compiledRoute{
 			route:   routeRef,
-			handler: middleware.Chain(routeHandler, recoveryMW, loggingMW, metricsMW),
+			handler: middleware.Chain(routeHandler, recoveryMW, requestIDMW, loggingMW, metricsMW),
 		}
 	}
 

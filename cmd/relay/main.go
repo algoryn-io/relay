@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -13,12 +15,35 @@ import (
 	"algoryn.io/relay/internal/observability"
 )
 
+var (
+	version   = "dev"
+	buildTime = "unknown"
+)
+
 const defaultConfig = "config/example.yaml"
 
 func main() {
+	var (
+		configFlag   string
+		validateFlag bool
+		versionFlag  bool
+	)
+	flag.StringVar(&configFlag, "config", "", "path to config file (overrides RELAY_CONFIG)")
+	flag.BoolVar(&validateFlag, "validate", false, "validate config and exit")
+	flag.BoolVar(&versionFlag, "version", false, "print version and exit")
+	flag.Parse()
+
+	if versionFlag {
+		fmt.Printf("relay %s (built %s)\n", version, buildTime)
+		return
+	}
+
 	bootstrapLogger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	configPath := os.Getenv("RELAY_CONFIG")
+	configPath := configFlag
+	if configPath == "" {
+		configPath = os.Getenv("RELAY_CONFIG")
+	}
 	if configPath == "" {
 		configPath = defaultConfig
 	}
@@ -37,6 +62,11 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		bootstrapLogger.Error("invalid config", "error", err)
 		os.Exit(1)
+	}
+
+	if validateFlag {
+		bootstrapLogger.Info("config valid", "path", configPath)
+		return
 	}
 
 	logger, logCloser, err := observability.NewAccessLogger(cfg.Observability.Logs)
@@ -67,7 +97,11 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("relay starting", "http_port", cfg.Listener.HTTP.Port)
+		logger.Info("relay starting",
+			"http_port", cfg.Listener.HTTP.Port,
+			"version", version,
+			"built", buildTime,
+		)
 		errCh <- server.Start()
 	}()
 

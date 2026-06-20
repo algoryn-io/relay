@@ -134,12 +134,14 @@ func (c *TimeoutsConfig) UnmarshalYAML(node *yaml.Node) error {
 
 func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawRoute struct {
-		Name        string      `yaml:"name"`
-		ID          string      `yaml:"id"`
-		Match       MatchConfig `yaml:"match"`
-		Middleware  []string    `yaml:"middleware"`
-		Middlewares []string    `yaml:"middlewares"`
-		Backend     string      `yaml:"backend"`
+		Name        string       `yaml:"name"`
+		ID          string       `yaml:"id"`
+		Match       MatchConfig  `yaml:"match"`
+		Middleware  []string     `yaml:"middleware"`
+		Middlewares []string     `yaml:"middlewares"`
+		Backend     string       `yaml:"backend"`
+		StripPrefix string       `yaml:"strip_prefix"`
+		Timeout     timeDuration `yaml:"timeout"`
 	}
 
 	var raw rawRoute
@@ -153,6 +155,8 @@ func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.Middleware = raw.Middleware
 	c.Middlewares = raw.Middlewares
 	c.Backend = raw.Backend
+	c.StripPrefix = raw.StripPrefix
+	c.Timeout = raw.Timeout.Duration()
 
 	return nil
 }

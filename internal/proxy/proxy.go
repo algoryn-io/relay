@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -142,6 +143,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 			}
 		},
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
+			if errors.Is(err, context.DeadlineExceeded) {
+				if p.logger != nil {
+					p.logger.Warn("backend timeout",
+						"error", err,
+						"path", req.URL.Path,
+						"method", req.Method,
+						"backend", backendName,
+					)
+				}
+				httpx.WriteError(rw, http.StatusGatewayTimeout, "gateway_timeout")
+				return
+			}
 			if p.logger != nil {
 				p.logger.Error("backend connection error",
 					"error", err,

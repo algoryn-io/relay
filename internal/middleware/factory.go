@@ -41,6 +41,13 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, error
 			AllowedHeaders:   def.Config.AllowedHeaders,
 			AllowCredentials: def.Config.AllowCredentials,
 		})
+	case "header":
+		return NewHeader(HeaderConfig{
+			RequestSet:  def.Config.RequestSet,
+			RequestDel:  def.Config.RequestDel,
+			ResponseSet: def.Config.ResponseSet,
+			ResponseDel: def.Config.ResponseDel,
+		})
 	default:
 		return nil, fmt.Errorf("unsupported middleware type %q", def.Type)
 	}
