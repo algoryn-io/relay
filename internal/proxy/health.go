@@ -9,7 +9,8 @@ import (
 )
 
 func (p *Proxy) healthLoop(backendName string, health config.HealthCheckConfig) {
-	p.checkBackendHealth(backendName, health)
+	client := &http.Client{Timeout: health.Timeout}
+	p.checkBackendHealth(client, backendName, health)
 
 	ticker := time.NewTicker(health.Interval)
 	defer ticker.Stop()
@@ -19,14 +20,12 @@ func (p *Proxy) healthLoop(backendName string, health config.HealthCheckConfig) 
 		case <-p.ctx.Done():
 			return
 		case <-ticker.C:
-			p.checkBackendHealth(backendName, health)
+			p.checkBackendHealth(client, backendName, health)
 		}
 	}
 }
 
-func (p *Proxy) checkBackendHealth(backendName string, health config.HealthCheckConfig) {
-	client := &http.Client{Timeout: health.Timeout}
-
+func (p *Proxy) checkBackendHealth(client *http.Client, backendName string, health config.HealthCheckConfig) {
 	p.mu.RLock()
 	states := append([]*instanceState(nil), p.instances[backendName]...)
 	p.mu.RUnlock()

@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,12 +25,13 @@ type Proxy struct {
 	cancel     context.CancelFunc
 	ctx        context.Context
 	mu         sync.RWMutex
+	logger     *slog.Logger
 	backends   map[string]config.BackendRuntime
 	instances  map[string][]*instanceState
 	roundRobin map[string]int
 }
 
-func New(rt *config.RuntimeConfig) (*Proxy, error) {
+func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 	if rt == nil {
 		return nil, fmt.Errorf("runtime config is nil")
 	}
@@ -39,12 +41,17 @@ func New(rt *config.RuntimeConfig) (*Proxy, error) {
 	p := &Proxy{
 		cancel:     cancel,
 		ctx:        ctx,
+		logger:     logger,
 		backends:   rt.Backends,
 		instances:  make(map[string][]*instanceState, len(rt.Backends)),
 		roundRobin: make(map[string]int, len(rt.Backends)),
 	}
 
 	for name, backend := range rt.Backends {
+		// Start instances as unhealthy when health checks are configured so that
+		// the first check (which runs immediately in healthLoop) determines state
+		// before traffic is served. Without health checks, assume healthy.
+		hasHealthCheck := backend.HealthCheck.Path != "" && backend.HealthCheck.Interval > 0
 		states := make([]*instanceState, 0, len(backend.Instances))
 		for _, instance := range backend.Instances {
 			parsed, err := url.Parse(instance.URL)
@@ -55,10 +62,9 @@ func New(rt *config.RuntimeConfig) (*Proxy, error) {
 				})
 				continue
 			}
-
 			states = append(states, &instanceState{
 				URL:         parsed,
-				Healthy:     true,
+				Healthy:     !hasHealthCheck,
 				LastChecked: time.Now(),
 			})
 		}
@@ -66,7 +72,7 @@ func New(rt *config.RuntimeConfig) (*Proxy, error) {
 		p.instances[name] = states
 		p.roundRobin[name] = 0
 
-		if backend.HealthCheck.Path != "" && backend.HealthCheck.Interval > 0 {
+		if hasHealthCheck {
 			go p.healthLoop(name, backend.HealthCheck)
 		}
 	}
@@ -99,48 +105,56 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	}
 	defer p.releaseInstance(backend.Name, selected)
 
-	proxy := httputil.NewSingleHostReverseProxy(selected.URL)
-	director := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalHost := req.Host
-		// Preserve the forwarded scheme from an upstream TLS terminator when present.
-		proto := req.Header.Get("X-Forwarded-Proto")
-		if proto == "" {
-			if req.TLS != nil {
-				proto = "https"
-			} else {
-				proto = "http"
-			}
+	target := selected.URL
+	clientIP := httpx.ClientIP(r)
+
+	// Preserve the forwarded scheme from an upstream TLS terminator when present.
+	proto := r.Header.Get("X-Forwarded-Proto")
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
 		}
-
-		stripSensitiveForwardedHeaders(req)
-		director(req)
-		setForwardedHeaders(req, originalHost, proto)
 	}
-	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
-		httpx.WriteError(rw, http.StatusBadGateway, "bad_gateway")
+	originalHost := r.Host
+	backendName := backend.Name
+
+	rp := &httputil.ReverseProxy{
+		// Use Rewrite (Go 1.22+) instead of Director so that the stdlib does not
+		// append an extra X-Forwarded-For after our Rewrite func runs. The Rewrite
+		// path strips X-Forwarded-*, Forwarded, etc. before calling us, giving us
+		// full control over those headers.
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(target)
+
+			// Strip client-injectable sensitive headers that are not covered by the
+			// Rewrite path's automatic stripping.
+			pr.Out.Header.Del("X-Internal-Auth")
+			pr.Out.Header.Del("X-Real-IP")
+			pr.Out.Header.Del("X-Admin")
+
+			pr.Out.Header.Set("X-Forwarded-Host", originalHost)
+			pr.Out.Header.Set("X-Forwarded-Proto", proto)
+			if clientIP != "" {
+				pr.Out.Header.Set("X-Forwarded-For", clientIP)
+				pr.Out.Header.Set("X-Real-IP", clientIP)
+			}
+		},
+		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
+			if p.logger != nil {
+				p.logger.Error("backend connection error",
+					"error", err,
+					"path", req.URL.Path,
+					"method", req.Method,
+					"backend", backendName,
+				)
+			}
+			httpx.WriteError(rw, http.StatusBadGateway, "bad_gateway")
+		},
 	}
 
-	proxy.ServeHTTP(w, r)
-}
-
-func setForwardedHeaders(req *http.Request, originalHost, proto string) {
-	req.Header.Set("X-Forwarded-Host", originalHost)
-	req.Header.Set("X-Forwarded-Proto", proto)
-}
-
-// stripSensitiveForwardedHeaders drops hop/ingress headers that the external
-// client must not be allowed to set (spoofing). It intentionally does not use
-// any prefix on identity headers: names resolved from JWT (claims_to_headers in
-// config) are not listed here, so they are forwarded to backends after
-// validation. Client-originated values for those same names are removed in the
-// JWT middleware (delete-then-inject) before the request reaches the proxy
-// chain.
-func stripSensitiveForwardedHeaders(req *http.Request) {
-	req.Header.Del("X-Internal-Auth")
-	req.Header.Del("X-Real-IP")
-	req.Header.Del("X-Admin")
-	req.Header.Del("X-Forwarded-For")
+	rp.ServeHTTP(w, r)
 }
 
 func (p *Proxy) releaseInstance(backendName string, selected *instanceState) {

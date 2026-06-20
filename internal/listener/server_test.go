@@ -112,6 +112,26 @@ func TestServerMetricsRejectsNonLocalhost(t *testing.T) {
 	}
 }
 
+func TestServerHealthEndpointReturns200(t *testing.T) {
+	t.Parallel()
+
+	server := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/_relay/health", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body map[string]string
+	decodeJSON(t, rec.Body, &body)
+	if body["status"] != "ok" {
+		t.Fatalf("status = %q, want ok", body["status"])
+	}
+}
+
 func TestServerShutdown(t *testing.T) {
 	t.Parallel()
 
