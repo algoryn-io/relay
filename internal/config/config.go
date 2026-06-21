@@ -53,6 +53,18 @@ type TimeoutsConfig struct {
 	IdleTimeout  time.Duration `yaml:"-"`
 }
 
+// RewriteRule rewrites the outbound request path using a regular expression
+// before the request is forwarded to the backend. Pattern uses RE2 syntax;
+// capture groups can be referenced as $1, $2 or ${name} in Replacement.
+// Applied after strip_prefix and before the request reaches the backend.
+type RewriteRule struct {
+	// Pattern is a RE2 regular expression matched against the request path.
+	Pattern string `yaml:"pattern"`
+	// Replacement is the substitution string. Use $1/$2 or ${name} to
+	// reference numbered or named capture groups from Pattern.
+	Replacement string `yaml:"replacement"`
+}
+
 type RouteConfig struct {
 	Name        string        `yaml:"name"`
 	ID          string        `yaml:"id"`
@@ -62,6 +74,16 @@ type RouteConfig struct {
 	Backend     string        `yaml:"backend"`
 	StripPrefix string        `yaml:"-"` // set via UnmarshalYAML
 	Timeout     time.Duration `yaml:"-"` // set via UnmarshalYAML
+	// MaxBodyBytes caps the request body size for this route. Requests with a
+	// larger body are rejected with 413. 0 means no limit.
+	MaxBodyBytes int64 `yaml:"-"` // set via UnmarshalYAML
+	// Rewrite applies a regex rewrite to the request path before proxying.
+	// Leave Pattern empty to disable.
+	Rewrite RewriteRule `yaml:"-"` // set via UnmarshalYAML
+	// AddRequestHeaders injects headers into the outbound request.
+	// Values of the form "${req.HEADER-NAME}" copy the named incoming header.
+	// All other values are used verbatim.
+	AddRequestHeaders map[string]string `yaml:"-"` // set via UnmarshalYAML
 }
 
 type MatchConfig struct {

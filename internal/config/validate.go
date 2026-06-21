@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -124,8 +125,16 @@ func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[stri
 		if route.Timeout < 0 {
 			errs.Addf("%s.timeout: must be >= 0", prefix)
 		}
+		if route.MaxBodyBytes < 0 {
+			errs.Addf("%s.max_body_bytes: must be >= 0", prefix)
+		}
 		if route.StripPrefix != "" && !strings.HasPrefix(route.StripPrefix, "/") {
 			errs.Addf("%s.strip_prefix: must start with /", prefix)
+		}
+		if strings.TrimSpace(route.Rewrite.Pattern) != "" {
+			if _, err := regexp.Compile(route.Rewrite.Pattern); err != nil {
+				errs.Addf("%s.rewrite.pattern: invalid regular expression: %v", prefix, err)
+			}
 		}
 
 		if route.Backend == "" {
