@@ -116,6 +116,9 @@ type HealthCheckConfig struct {
 type InstanceConfig struct {
 	ID  string `yaml:"id"`
 	URL string `yaml:"url"`
+	// Weight controls traffic share when strategy is "weighted_random".
+	// Must be >= 0; 0 is treated as 1. Ignored by other strategies.
+	Weight int `yaml:"weight"`
 }
 
 type MiddlewareConfig struct {

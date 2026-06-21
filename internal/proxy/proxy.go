@@ -25,6 +25,7 @@ type instanceState struct {
 	Healthy        bool
 	LastChecked    time.Time
 	ActiveRequests int
+	weight         int             // effective weight >= 1
 	circuit        *CircuitBreaker // nil when circuit breaker is disabled
 }
 
@@ -91,10 +92,15 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 			if cbProto != nil {
 				cb = newCircuitBreaker(cbProto.threshold, cbProto.timeout)
 			}
+			w := instance.Weight
+			if w <= 0 {
+				w = 1
+			}
 			states = append(states, &instanceState{
 				URL:         parsed,
 				Healthy:     !hasHealthCheck,
 				LastChecked: time.Now(),
+				weight:      w,
 				circuit:     cb,
 			})
 		}
