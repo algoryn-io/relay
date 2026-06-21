@@ -35,14 +35,15 @@ type HealthNotifier interface {
 }
 
 type Proxy struct {
-	cancel         context.CancelFunc
-	ctx            context.Context
-	mu             sync.RWMutex
-	logger         *slog.Logger
-	healthNotifier HealthNotifier
-	backends       map[string]config.BackendRuntime
-	instances      map[string][]*instanceState
-	roundRobin     map[string]int
+	cancel            context.CancelFunc
+	ctx               context.Context
+	mu                sync.RWMutex
+	logger            *slog.Logger
+	healthNotifier    HealthNotifier
+	backends          map[string]config.BackendRuntime
+	instances         map[string][]*instanceState
+	roundRobin        map[string]int
+	backendTransports map[string]http.RoundTripper
 }
 
 func (p *Proxy) SetHealthNotifier(n HealthNotifier) {
@@ -59,12 +60,25 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := &Proxy{
-		cancel:     cancel,
-		ctx:        ctx,
-		logger:     logger,
-		backends:   rt.Backends,
-		instances:  make(map[string][]*instanceState, len(rt.Backends)),
-		roundRobin: make(map[string]int, len(rt.Backends)),
+		cancel:            cancel,
+		ctx:               ctx,
+		logger:            logger,
+		backends:          rt.Backends,
+		instances:         make(map[string][]*instanceState, len(rt.Backends)),
+		roundRobin:        make(map[string]int, len(rt.Backends)),
+		backendTransports: make(map[string]http.RoundTripper, len(rt.Backends)),
+	}
+
+	for name, backend := range rt.Backends {
+		btls := backend.TLS
+		if btls.CertFile != "" || btls.KeyFile != "" || btls.CAFile != "" || btls.InsecureSkipVerify {
+			tr, trErr := buildBackendTransport(btls)
+			if trErr != nil {
+				cancel()
+				return nil, fmt.Errorf("backend %q: build transport: %w", name, trErr)
+			}
+			p.backendTransports[name] = tr
+		}
 	}
 
 	for name, backend := range rt.Backends {
@@ -218,10 +232,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		}
 
 		target := selected.URL
-		var transport http.RoundTripper
-		if selected.circuit != nil {
-			transport = &circuitTransport{base: http.DefaultTransport, circuit: selected.circuit}
-		}
+		transport := p.transportFor(backendName, selected.circuit)
 
 		buf := newResponseBuffer()
 

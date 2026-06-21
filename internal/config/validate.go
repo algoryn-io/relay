@@ -177,6 +177,7 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 		}
 
 		validateRetry(prefix+".retry", backend.Retry, errs)
+		validateBackendTLS(prefix+".tls", backend.TLS, errs)
 
 		for j, instance := range backend.Instances {
 			if instance.URL == "" {
@@ -272,6 +273,17 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 	}
 
 	return seen
+}
+
+func validateBackendTLS(prefix string, cfg BackendTLSConfig, errs *ValidationErrors) {
+	hasCert := strings.TrimSpace(cfg.CertFile) != ""
+	hasKey := strings.TrimSpace(cfg.KeyFile) != ""
+	if hasCert && !hasKey {
+		errs.Addf("%s.key_file: required when cert_file is set", prefix)
+	}
+	if hasKey && !hasCert {
+		errs.Addf("%s.cert_file: required when key_file is set", prefix)
+	}
 }
 
 func validateAPIKeyMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {

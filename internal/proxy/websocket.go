@@ -63,11 +63,7 @@ func (p *Proxy) serveWebSocket(
 
 	target := selected.URL
 	backendName := backend.Name
-
-	var transport http.RoundTripper
-	if selected.circuit != nil {
-		transport = &circuitTransport{base: http.DefaultTransport, circuit: selected.circuit}
-	}
+	transport := p.transportFor(backendName, selected.circuit)
 
 	rp := &httputil.ReverseProxy{
 		Transport: transport,

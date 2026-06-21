@@ -31,6 +31,7 @@ type BackendRuntime struct {
 	HealthCheck    HealthCheckConfig
 	CircuitBreaker CircuitBreakerConfig
 	Retry          RetryConfig
+	TLS            BackendTLSConfig
 	Instances      []InstanceRuntime
 }
 
@@ -75,6 +76,7 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			HealthCheck:    backend.HealthCheck,
 			CircuitBreaker: backend.CircuitBreaker,
 			Retry:          backend.Retry,
+			TLS:            backend.TLS,
 			Instances:      instances,
 		}
 	}
