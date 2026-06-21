@@ -77,7 +77,24 @@ type BackendConfig struct {
 	HealthCheck    HealthCheckConfig    `yaml:"health_check"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Retry          RetryConfig          `yaml:"retry"`
+	TLS            BackendTLSConfig     `yaml:"tls"`
 	Instances      []InstanceConfig     `yaml:"instances"`
+}
+
+// BackendTLSConfig controls outbound TLS toward a backend.
+// All fields are optional. Set CertFile+KeyFile for mutual TLS (mTLS).
+// Set CAFile to trust a private CA instead of the system root store.
+type BackendTLSConfig struct {
+	// CertFile is the path to the PEM-encoded client certificate for mTLS.
+	CertFile string `yaml:"cert_file"`
+	// KeyFile is the path to the PEM-encoded private key for mTLS.
+	KeyFile string `yaml:"key_file"`
+	// CAFile is the path to a PEM-encoded CA certificate bundle used to
+	// verify the backend server certificate. Uses the system pool when empty.
+	CAFile string `yaml:"ca_file"`
+	// InsecureSkipVerify disables server certificate verification.
+	// For development and testing only — never use in production.
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
 }
 
 // RetryConfig enables request retries with exponential backoff for a backend.
