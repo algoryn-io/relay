@@ -1,15 +1,20 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"algoryn.io/relay/internal/config"
 	"algoryn.io/relay/internal/httpx"
@@ -123,37 +128,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		return
 	}
 
-	selected, err := p.selectInstance(backend.Name, backend.Strategy)
-	if err != nil {
-		if errors.Is(err, errAllCircuitsOpen) {
-			if p.logger != nil {
-				p.logger.Warn("all instances have open circuits", "backend", backend.Name)
-			}
-			httpx.WriteError(w, http.StatusServiceUnavailable, "circuit_open")
-		} else {
-			httpx.WriteError(w, http.StatusBadGateway, "bad_gateway")
-		}
-		return
-	}
-	defer p.releaseInstance(backend.Name, selected)
-
-	// Circuit breaker gate: IsOpen() is checked in selectInstance, but Allow()
-	// handles the Open→HalfOpen transition and acts as the definitive gate.
-	if selected.circuit != nil && !selected.circuit.Allow() {
-		if p.logger != nil {
-			p.logger.Warn("circuit open, request rejected",
-				"backend", backend.Name,
-				"instance", selected.URL.String(),
-			)
-		}
-		httpx.WriteError(w, http.StatusServiceUnavailable, "circuit_open")
-		return
-	}
-
-	target := selected.URL
+	// Preserve values derived from the original request before any mutations.
 	clientIP := httpx.ClientIP(r)
-
-	// Preserve the forwarded scheme from an upstream TLS terminator when present.
 	proto := r.Header.Get("X-Forwarded-Proto")
 	if proto == "" {
 		if r.TLS != nil {
@@ -165,59 +141,155 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	originalHost := r.Host
 	backendName := backend.Name
 
-	var transport http.RoundTripper
-	if selected.circuit != nil {
-		transport = &circuitTransport{base: http.DefaultTransport, circuit: selected.circuit}
+	retry := backend.Retry
+	maxAttempts := retry.Attempts
+	if maxAttempts <= 0 {
+		maxAttempts = 1
 	}
 
-	rp := &httputil.ReverseProxy{
-		Transport: transport,
-		// Use Rewrite (Go 1.22+) instead of Director so that the stdlib does not
-		// append an extra X-Forwarded-For after our Rewrite func runs. The Rewrite
-		// path strips X-Forwarded-*, Forwarded, etc. before calling us, giving us
-		// full control over those headers.
-		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(target)
-
-			// Strip client-injectable sensitive headers that are not covered by the
-			// Rewrite path's automatic stripping.
-			pr.Out.Header.Del("X-Internal-Auth")
-			pr.Out.Header.Del("X-Real-IP")
-			pr.Out.Header.Del("X-Admin")
-
-			pr.Out.Header.Set("X-Forwarded-Host", originalHost)
-			pr.Out.Header.Set("X-Forwarded-Proto", proto)
-			if clientIP != "" {
-				pr.Out.Header.Set("X-Forwarded-For", clientIP)
-				pr.Out.Header.Set("X-Real-IP", clientIP)
+	// Buffer the request body so it can be replayed on retries.
+	// If the body exceeds 1 MB or cannot be read, retry is disabled.
+	var bodyBytes []byte
+	bodyBuffered := false
+	if maxAttempts > 1 && r.Body != nil && r.Body != http.NoBody {
+		const maxBodyBuffer = 1 << 20 // 1 MB
+		lr := &io.LimitedReader{R: r.Body, N: int64(maxBodyBuffer) + 1}
+		data, err := io.ReadAll(lr)
+		_ = r.Body.Close()
+		if err != nil || lr.N == 0 {
+			// Body unreadable or too large: disable retry, restore what we read.
+			maxAttempts = 1
+			if err == nil {
+				r.Body = io.NopCloser(bytes.NewReader(data))
 			}
-		},
-		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-			if errors.Is(err, context.DeadlineExceeded) {
+		} else {
+			bodyBytes = data
+			bodyBuffered = true
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+	}
+
+	var lastBuf *responseBuffer
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if bodyBuffered && attempt > 0 {
+			r = r.Clone(r.Context())
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
+
+		selected, selErr := p.selectInstance(backend.Name, backend.Strategy)
+		if selErr != nil {
+			if errors.Is(selErr, errAllCircuitsOpen) {
 				if p.logger != nil {
-					p.logger.Warn("backend timeout",
+					p.logger.Warn("all instances have open circuits", "backend", backend.Name)
+				}
+				httpx.WriteError(w, http.StatusServiceUnavailable, "circuit_open")
+			} else {
+				httpx.WriteError(w, http.StatusBadGateway, "bad_gateway")
+			}
+			return
+		}
+
+		// Circuit breaker gate: Allow() handles the Open→HalfOpen transition.
+		if selected.circuit != nil && !selected.circuit.Allow() {
+			p.releaseInstance(backend.Name, selected)
+			if p.logger != nil {
+				p.logger.Warn("circuit open, request rejected",
+					"backend", backend.Name,
+					"instance", selected.URL.String(),
+				)
+			}
+			httpx.WriteError(w, http.StatusServiceUnavailable, "circuit_open")
+			return
+		}
+
+		target := selected.URL
+		var transport http.RoundTripper
+		if selected.circuit != nil {
+			transport = &circuitTransport{base: http.DefaultTransport, circuit: selected.circuit}
+		}
+
+		buf := newResponseBuffer()
+
+		rp := &httputil.ReverseProxy{
+			Transport: transport,
+			Rewrite: func(pr *httputil.ProxyRequest) {
+				pr.SetURL(target)
+				pr.Out.Header.Del("X-Internal-Auth")
+				pr.Out.Header.Del("X-Real-IP")
+				pr.Out.Header.Del("X-Admin")
+				pr.Out.Header.Set("X-Forwarded-Host", originalHost)
+				pr.Out.Header.Set("X-Forwarded-Proto", proto)
+				if clientIP != "" {
+					pr.Out.Header.Set("X-Forwarded-For", clientIP)
+					pr.Out.Header.Set("X-Real-IP", clientIP)
+				}
+			},
+			ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
+				buf.networkErr = err
+				if errors.Is(err, context.DeadlineExceeded) {
+					if p.logger != nil {
+						p.logger.Warn("backend timeout",
+							"error", err,
+							"path", req.URL.Path,
+							"method", req.Method,
+							"backend", backendName,
+						)
+					}
+					httpx.WriteError(rw, http.StatusGatewayTimeout, "gateway_timeout")
+					return
+				}
+				if p.logger != nil {
+					p.logger.Error("backend connection error",
 						"error", err,
 						"path", req.URL.Path,
 						"method", req.Method,
 						"backend", backendName,
 					)
 				}
-				httpx.WriteError(rw, http.StatusGatewayTimeout, "gateway_timeout")
-				return
-			}
-			if p.logger != nil {
-				p.logger.Error("backend connection error",
-					"error", err,
-					"path", req.URL.Path,
-					"method", req.Method,
-					"backend", backendName,
-				)
-			}
-			httpx.WriteError(rw, http.StatusBadGateway, "bad_gateway")
-		},
+				httpx.WriteError(rw, http.StatusBadGateway, "bad_gateway")
+			},
+		}
+
+		rp.ServeHTTP(buf, r)
+		p.releaseInstance(backend.Name, selected)
+		lastBuf = buf
+
+		isNetErr := buf.networkErr != nil
+		if !shouldRetry(buf.Status(), isNetErr, retry, r.Method) || attempt == maxAttempts-1 {
+			break
+		}
+
+		// Record the retry on the active OTel span so it appears in traces.
+		reason := "5xx"
+		if isNetErr {
+			reason = "network_error"
+		}
+		trace.SpanFromContext(r.Context()).AddEvent("proxy.retry",
+			trace.WithAttributes(
+				attribute.Int("retry.attempt", attempt+1),
+				attribute.String("retry.reason", reason),
+				attribute.String("relay.backend", backendName),
+			),
+		)
+
+		if p.logger != nil {
+			p.logger.Warn("retrying request",
+				"backend", backendName,
+				"attempt", attempt+1,
+				"reason", reason,
+			)
+		}
+
+		select {
+		case <-r.Context().Done():
+			httpx.WriteError(w, http.StatusServiceUnavailable, "context_canceled")
+			return
+		case <-time.After(computeBackoff(attempt, retry)):
+		}
 	}
 
-	rp.ServeHTTP(w, r)
+	lastBuf.flushTo(w)
 }
 
 func (p *Proxy) releaseInstance(backendName string, selected *instanceState) {

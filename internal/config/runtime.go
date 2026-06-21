@@ -30,6 +30,7 @@ type BackendRuntime struct {
 	Strategy       string
 	HealthCheck    HealthCheckConfig
 	CircuitBreaker CircuitBreakerConfig
+	Retry          RetryConfig
 	Instances      []InstanceRuntime
 }
 
@@ -68,7 +69,8 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			Strategy:       backend.Strategy,
 			HealthCheck:    backend.HealthCheck,
 			CircuitBreaker: backend.CircuitBreaker,
-			Instances:   instances,
+			Retry:          backend.Retry,
+			Instances:      instances,
 		}
 	}
 

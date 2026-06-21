@@ -173,6 +173,8 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 			errs.Addf("%s.circuit_breaker.timeout: must be >= 0", prefix)
 		}
 
+		validateRetry(prefix+".retry", backend.Retry, errs)
+
 		for j, instance := range backend.Instances {
 			if instance.URL == "" {
 				errs.Addf("%s.instances[%d].url: required", prefix, j)
@@ -360,6 +362,31 @@ func validateTracing(t TracingConfig, errs *ValidationErrors) {
 	}
 	if t.SampleRate < 0 || t.SampleRate > 1 {
 		errs.Addf("observability.tracing.sample_rate: must be between 0.0 and 1.0")
+	}
+}
+
+var validRetryConditions = map[string]struct{}{
+	"5xx":           {},
+	"network_error": {},
+}
+
+func validateRetry(prefix string, r RetryConfig, errs *ValidationErrors) {
+	if r.Attempts <= 1 {
+		return
+	}
+	if r.BackoffInit < 0 {
+		errs.Addf("%s.backoff_init: must be >= 0", prefix)
+	}
+	if r.BackoffMax < 0 {
+		errs.Addf("%s.backoff_max: must be >= 0", prefix)
+	}
+	if r.BackoffMax > 0 && r.BackoffInit > 0 && r.BackoffMax < r.BackoffInit {
+		errs.Addf("%s.backoff_max: must be >= backoff_init", prefix)
+	}
+	for i, cond := range r.On {
+		if _, ok := validRetryConditions[strings.ToLower(cond)]; !ok {
+			errs.Addf("%s.on[%d]: must be one of 5xx, network_error", prefix, i)
+		}
 	}
 }
 
