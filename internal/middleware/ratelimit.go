@@ -1,15 +1,10 @@
 package middleware
 
 import (
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"algoryn.io/relay/internal/httpx"
@@ -28,6 +23,11 @@ type RateLimitConfig struct {
 	Window   time.Duration
 	By       string
 	Header   string
+	// Store selects the rate limit backend: "memory" (default) or "redis".
+	Store string
+	// RedisURL is the Redis connection URL when Store == "redis".
+	// Accepts the redis:// and rediss:// schemes.
+	RedisURL string
 }
 
 type rateLimiter struct {
@@ -35,13 +35,10 @@ type rateLimiter struct {
 	window time.Duration
 	by     string
 	header string
-
-	mu      sync.Mutex
-	buckets map[string][]time.Time
-
-	apiKeySalt []byte
+	store  rateLimitStore
 }
 
+// NewRateLimit returns a sliding-window rate limit middleware.
 func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
 	if cfg.Strategy == "" {
 		cfg.Strategy = SlidingWindow
@@ -67,32 +64,53 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
 		cfg.Header = "X-API-Key"
 	}
 
-	salt := make([]byte, 32)
-	if _, err := rand.Read(salt); err != nil {
-		return nil, fmt.Errorf("generate rate limit salt: %w", err)
+	var store rateLimitStore
+	switch strings.ToLower(strings.TrimSpace(cfg.Store)) {
+	case "redis":
+		if strings.TrimSpace(cfg.RedisURL) == "" {
+			return nil, fmt.Errorf("redis_url is required when store is redis")
+		}
+		rs, err := newRedisStore(cfg.RedisURL)
+		if err != nil {
+			return nil, fmt.Errorf("create redis store: %w", err)
+		}
+		store = rs
+	default: // "" or "memory"
+		ms, err := newMemoryStore()
+		if err != nil {
+			return nil, err
+		}
+		store = ms
 	}
 
-	limiter := &rateLimiter{
-		limit:      cfg.Limit,
-		window:     cfg.Window,
-		by:         cfg.By,
-		header:     cfg.Header,
-		buckets:    make(map[string][]time.Time),
-		apiKeySalt: salt,
+	return newRateLimitWithStore(cfg, store)
+}
+
+// newRateLimitWithStore creates the middleware using an already-constructed
+// store. Used internally and in tests to inject stores (e.g. miniredis).
+func newRateLimitWithStore(cfg RateLimitConfig, store rateLimitStore) (Middleware, error) {
+	rl := &rateLimiter{
+		limit:  cfg.Limit,
+		window: cfg.Window,
+		by:     cfg.By,
+		header: cfg.Header,
+		store:  store,
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := limiter.keyFromRequest(r)
+			key := rl.keyFromRequest(r)
 			if key == "" {
 				key = "unknown"
 			}
 
 			now := time.Now()
-			allowed, remaining, reset := limiter.check(key, now)
-			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(limiter.limit))
+			allowed, remaining, reset, _ := rl.store.Check(r.Context(), key, rl.limit, rl.window, now)
+
+			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rl.limit))
 			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
+
 			if !allowed {
 				retryAfter := int(time.Until(reset).Seconds()) + 1
 				if retryAfter < 1 {
@@ -108,55 +126,6 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
 	}, nil
 }
 
-func (l *rateLimiter) check(key string, now time.Time) (allowed bool, remaining int, reset time.Time) {
-	cutoff := now.Add(-l.window)
-
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	events := l.buckets[key]
-	keep := events[:0]
-	for _, ts := range events {
-		if ts.After(cutoff) {
-			keep = append(keep, ts)
-		}
-	}
-	if len(keep) > l.limit {
-		keep = keep[len(keep)-l.limit:]
-	}
-
-	if len(keep) >= l.limit {
-		l.buckets[key] = keep
-		// Reset = when the oldest in-window event exits the window.
-		if len(keep) > 0 {
-			reset = keep[0].Add(l.window)
-		} else {
-			reset = now.Add(l.window)
-		}
-		return false, 0, reset
-	}
-
-	keep = append(keep, now)
-	l.buckets[key] = keep
-
-	// Opportunistic pruning to keep memory bounded.
-	if len(l.buckets) > 1024 {
-		for k, timestamps := range l.buckets {
-			if len(timestamps) == 0 || !timestamps[len(timestamps)-1].After(cutoff) {
-				delete(l.buckets, k)
-			}
-		}
-	}
-
-	remaining = l.limit - len(keep)
-	if len(keep) > 0 {
-		reset = keep[0].Add(l.window)
-	} else {
-		reset = now.Add(l.window)
-	}
-	return true, remaining, reset
-}
-
 func (l *rateLimiter) keyFromRequest(r *http.Request) string {
 	switch l.by {
 	case "route":
@@ -166,14 +135,8 @@ func (l *rateLimiter) keyFromRequest(r *http.Request) string {
 		if key == "" {
 			return ""
 		}
-		return l.hashAPIKey(key)
+		return l.store.HashKey(key)
 	default:
 		return httpx.ClientIP(r)
 	}
-}
-
-func (l *rateLimiter) hashAPIKey(key string) string {
-	mac := hmac.New(sha256.New, l.apiKeySalt)
-	_, _ = mac.Write([]byte(key))
-	return hex.EncodeToString(mac.Sum(nil))
 }

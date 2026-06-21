@@ -165,6 +165,15 @@ type MiddlewareSettingsConfig struct {
 	Limit              int               `yaml:"limit"`
 	Window             time.Duration     `yaml:"window"`
 	By                 string            `yaml:"by"`
+	// Rate limit store: "memory" (default, in-process) or "redis" (distributed).
+	RateLimitStore  string `yaml:"store"`
+	// RedisURL is the connection URL for the Redis rate limit store.
+	// Accepts redis:// and rediss:// (TLS) schemes. Use redis_url_env for
+	// production to avoid credentials in config files.
+	RedisURL        string `yaml:"redis_url"`
+	// RedisURLEnv is the name of an environment variable containing the
+	// Redis URL; overrides redis_url when set.
+	RedisURLEnv     string `yaml:"redis_url_env"`
 	AllowedOrigins     []string          `yaml:"allowed_origins"`
 	AllowedMethods     []string          `yaml:"allowed_methods"`
 	AllowedHeaders     []string          `yaml:"allowed_headers"`
