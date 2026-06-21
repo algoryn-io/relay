@@ -160,6 +160,13 @@ type MiddlewareSettingsConfig struct {
 	RequestDel  []string          `yaml:"request_del"`
 	ResponseSet map[string]string `yaml:"response_set"`
 	ResponseDel []string          `yaml:"response_del"`
+	// API key middleware fields
+	KeyHeader    string `yaml:"key_header"`
+	KeyQuery     string `yaml:"key_query"`
+	KeysEnv      string `yaml:"keys_env"`
+	ResolvedKeys string `yaml:"-"` // populated from KeysEnv by ResolveEnv
+	KeysFile     string `yaml:"keys_file"`
+	KeyToHeader  string `yaml:"key_to_header"`
 }
 
 type ObservabilityConfig struct {
