@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -11,18 +13,43 @@ type RuntimeConfig struct {
 	Middleware map[string]MiddlewareRuntime
 }
 
+// CompiledRewrite is a pre-compiled RewriteRule ready to use at request time.
+type CompiledRewrite struct {
+	Re          *regexp.Regexp
+	Replacement string
+}
+
+// NewCompiledRewrite compiles pattern and returns a CompiledRewrite ready for
+// use at request time. Returns an error if pattern is not valid RE2 syntax.
+func NewCompiledRewrite(pattern, replacement string) (*CompiledRewrite, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("compile rewrite pattern: %w", err)
+	}
+	return &CompiledRewrite{Re: re, Replacement: replacement}, nil
+}
+
+// Apply returns the result of applying the rewrite to path.
+// If the pattern does not match, the original path is returned unchanged.
+func (cr *CompiledRewrite) Apply(path string) string {
+	return cr.Re.ReplaceAllString(path, cr.Replacement)
+}
+
 type RouteRuntime struct {
-	Name           string
-	Path           string
-	PathPrefix     string
-	StripPrefix    string
-	Timeout        time.Duration
-	Methods        []string
-	MethodSet      map[string]struct{}
-	Backend        BackendRuntime
-	BackendName    string
-	Middleware     []MiddlewareRuntime
-	MiddlewareRefs []string
+	Name              string
+	Path              string
+	PathPrefix        string
+	StripPrefix       string
+	Timeout           time.Duration
+	MaxBodyBytes      int64
+	Rewrite           *CompiledRewrite  // nil when not configured
+	AddRequestHeaders map[string]string // nil when not configured
+	Methods           []string
+	MethodSet         map[string]struct{}
+	Backend           BackendRuntime
+	BackendName       string
+	Middleware        []MiddlewareRuntime
+	MiddlewareRefs    []string
 }
 
 type BackendRuntime struct {
@@ -108,18 +135,31 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 		path := strings.TrimSpace(route.Match.Path)
 		pathPrefix := strings.TrimSpace(route.Match.PathPrefix)
 
+		var compiled *CompiledRewrite
+		if strings.TrimSpace(route.Rewrite.Pattern) != "" {
+			re, err := regexp.Compile(route.Rewrite.Pattern)
+			if err != nil {
+				// Validation already checked this; guard against any gap.
+				return nil, fmt.Errorf("route %q: compile rewrite pattern: %w", route.Name, err)
+			}
+			compiled = &CompiledRewrite{Re: re, Replacement: route.Rewrite.Replacement}
+		}
+
 		rt.Routes[route.Name] = RouteRuntime{
-			Name:           route.Name,
-			Path:           path,
-			PathPrefix:     pathPrefix,
-			StripPrefix:    strings.TrimSpace(route.StripPrefix),
-			Timeout:        route.Timeout,
-			Methods:        methods,
-			MethodSet:      methodSet,
-			Backend:        rt.Backends[route.Backend],
-			BackendName:    route.Backend,
-			Middleware:     middleware,
-			MiddlewareRefs: append([]string(nil), route.Middleware...),
+			Name:              route.Name,
+			Path:              path,
+			PathPrefix:        pathPrefix,
+			StripPrefix:       strings.TrimSpace(route.StripPrefix),
+			Timeout:           route.Timeout,
+			MaxBodyBytes:      route.MaxBodyBytes,
+			Rewrite:           compiled,
+			AddRequestHeaders: route.AddRequestHeaders,
+			Methods:           methods,
+			MethodSet:         methodSet,
+			Backend:           rt.Backends[route.Backend],
+			BackendName:       route.Backend,
+			Middleware:        middleware,
+			MiddlewareRefs:    append([]string(nil), route.Middleware...),
 		}
 	}
 

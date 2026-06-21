@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -191,17 +192,38 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		return
 	}
 
+	// Route-level body size limit. Validated and buffered here so the retry
+	// loop can replay the body without re-reading from the (now-closed) socket.
+	// When no limit is configured this block is skipped entirely.
+	var bodyBytes []byte
+	bodyBuffered := false
+	if route.MaxBodyBytes > 0 && r.Body != nil && r.Body != http.NoBody {
+		limited := &io.LimitedReader{R: r.Body, N: route.MaxBodyBytes + 1}
+		data, readErr := io.ReadAll(limited)
+		_ = r.Body.Close()
+		if readErr != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "request_read_error")
+			return
+		}
+		if limited.N == 0 {
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request_body_too_large")
+			return
+		}
+		bodyBytes = data
+		bodyBuffered = true
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	}
+
 	retry := backend.Retry
 	maxAttempts := retry.Attempts
 	if maxAttempts <= 0 {
 		maxAttempts = 1
 	}
 
-	// Buffer the request body so it can be replayed on retries.
-	// If the body exceeds 1 MB or cannot be read, retry is disabled.
-	var bodyBytes []byte
-	bodyBuffered := false
-	if maxAttempts > 1 && r.Body != nil && r.Body != http.NoBody {
+	// Buffer the request body for retry replay when no size limit was applied
+	// above. A 1 MB cap prevents excessive memory use; bodies larger than that
+	// disable retry (the single attempt still completes normally).
+	if !bodyBuffered && maxAttempts > 1 && r.Body != nil && r.Body != http.NoBody {
 		const maxBodyBuffer = 1 << 20 // 1 MB
 		lr := &io.LimitedReader{R: r.Body, N: int64(maxBodyBuffer) + 1}
 		data, err := io.ReadAll(lr)
@@ -262,6 +284,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 			Transport: transport,
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
+
+				// Regex path rewriting — applied after SetURL so the backend
+				// host is already set and we only modify the path segment.
+				if route.Rewrite != nil {
+					rewritten := route.Rewrite.Apply(pr.Out.URL.Path)
+					if rewritten != pr.Out.URL.Path {
+						pr.Out.URL.Path = rewritten
+						pr.Out.URL.RawPath = ""
+					}
+				}
+
 				pr.Out.Header.Del("X-Internal-Auth")
 				pr.Out.Header.Del("X-Real-IP")
 				pr.Out.Header.Del("X-Admin")
@@ -270,6 +303,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 				if clientIP != "" {
 					pr.Out.Header.Set("X-Forwarded-For", clientIP)
 					pr.Out.Header.Set("X-Real-IP", clientIP)
+				}
+
+				// Route-level header injection. Values of the form
+				// "${req.HEADER-NAME}" copy the named header from the inbound
+				// request; all other values are used verbatim.
+				for hdr, tpl := range route.AddRequestHeaders {
+					pr.Out.Header.Set(hdr, resolveHeaderTpl(tpl, pr.In))
 				}
 			},
 			ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
@@ -337,6 +377,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	}
 
 	lastBuf.flushTo(w)
+}
+
+// resolveHeaderTpl resolves a header value template for add_request_headers.
+// Templates of the form "${req.HEADER-NAME}" are replaced with the value of
+// that header from the inbound request (empty string when absent). All other
+// values are returned unchanged.
+func resolveHeaderTpl(tpl string, in *http.Request) string {
+	const prefix = "${req."
+	if !strings.HasPrefix(tpl, prefix) || !strings.HasSuffix(tpl, "}") {
+		return tpl
+	}
+	name := tpl[len(prefix) : len(tpl)-1]
+	return in.Header.Get(name)
 }
 
 func (p *Proxy) releaseInstance(backendName string, selected *instanceState) {

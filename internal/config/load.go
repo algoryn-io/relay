@@ -134,14 +134,17 @@ func (c *TimeoutsConfig) UnmarshalYAML(node *yaml.Node) error {
 
 func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawRoute struct {
-		Name        string       `yaml:"name"`
-		ID          string       `yaml:"id"`
-		Match       MatchConfig  `yaml:"match"`
-		Middleware  []string     `yaml:"middleware"`
-		Middlewares []string     `yaml:"middlewares"`
-		Backend     string       `yaml:"backend"`
-		StripPrefix string       `yaml:"strip_prefix"`
-		Timeout     timeDuration `yaml:"timeout"`
+		Name              string            `yaml:"name"`
+		ID                string            `yaml:"id"`
+		Match             MatchConfig       `yaml:"match"`
+		Middleware        []string          `yaml:"middleware"`
+		Middlewares       []string          `yaml:"middlewares"`
+		Backend           string            `yaml:"backend"`
+		StripPrefix       string            `yaml:"strip_prefix"`
+		Timeout           timeDuration      `yaml:"timeout"`
+		MaxBodyBytes      int64             `yaml:"max_body_bytes"`
+		Rewrite           RewriteRule       `yaml:"rewrite"`
+		AddRequestHeaders map[string]string `yaml:"add_request_headers"`
 	}
 
 	var raw rawRoute
@@ -157,6 +160,9 @@ func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.Backend = raw.Backend
 	c.StripPrefix = raw.StripPrefix
 	c.Timeout = raw.Timeout.Duration()
+	c.MaxBodyBytes = raw.MaxBodyBytes
+	c.Rewrite = raw.Rewrite
+	c.AddRequestHeaders = raw.AddRequestHeaders
 
 	return nil
 }
