@@ -10,13 +10,6 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func newTestRedisStore(t *testing.T) (*redisStore, *miniredis.Miniredis) {
-	t.Helper()
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	return newRedisStoreFromClient(client), mr
-}
-
 func newTestRateLimitRedis(t *testing.T, cfg RateLimitConfig, mr *miniredis.Miniredis) Middleware {
 	t.Helper()
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
