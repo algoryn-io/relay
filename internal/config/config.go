@@ -78,7 +78,17 @@ type BackendConfig struct {
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Retry          RetryConfig          `yaml:"retry"`
 	TLS            BackendTLSConfig     `yaml:"tls"`
+	Bulkhead       BulkheadConfig       `yaml:"bulkhead"`
 	Instances      []InstanceConfig     `yaml:"instances"`
+}
+
+// BulkheadConfig caps the number of simultaneous in-flight requests to a
+// backend. Set MaxConcurrent > 0 to enable; 0 disables the bulkhead.
+type BulkheadConfig struct {
+	// MaxConcurrent is the maximum number of requests that may be in flight to
+	// this backend at the same time. Requests that arrive when the limit is
+	// reached are immediately rejected with 503 (fail fast, no queuing).
+	MaxConcurrent int `yaml:"max_concurrent"`
 }
 
 // BackendTLSConfig controls outbound TLS toward a backend.

@@ -44,6 +44,7 @@ type Proxy struct {
 	instances         map[string][]*instanceState
 	roundRobin        map[string]int
 	backendTransports map[string]http.RoundTripper
+	bulkheads         map[string]*bulkhead
 }
 
 func (p *Proxy) SetHealthNotifier(n HealthNotifier) {
@@ -67,9 +68,14 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		instances:         make(map[string][]*instanceState, len(rt.Backends)),
 		roundRobin:        make(map[string]int, len(rt.Backends)),
 		backendTransports: make(map[string]http.RoundTripper, len(rt.Backends)),
+		bulkheads:         make(map[string]*bulkhead, len(rt.Backends)),
 	}
 
 	for name, backend := range rt.Backends {
+		if backend.Bulkhead.MaxConcurrent > 0 {
+			p.bulkheads[name] = newBulkhead(backend.Bulkhead.MaxConcurrent)
+		}
+
 		btls := backend.TLS
 		if btls.CertFile != "" || btls.KeyFile != "" || btls.CAFile != "" || btls.InsecureSkipVerify {
 			tr, trErr := buildBackendTransport(btls)
@@ -160,6 +166,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	}
 	originalHost := r.Host
 	backendName := backend.Name
+
+	// Bulkhead: limit concurrent in-flight requests per backend.
+	if bh := p.bulkheads[backendName]; bh != nil {
+		if !bh.Acquire() {
+			if p.logger != nil {
+				p.logger.Warn("bulkhead full, request rejected",
+					"backend", backendName,
+					"limit", bh.Limit(),
+					"in_flight", bh.InFlight(),
+				)
+			}
+			httpx.WriteError(w, http.StatusServiceUnavailable, "bulkhead_full")
+			return
+		}
+		defer bh.Release()
+	}
 
 	// WebSocket (and other protocol upgrades) bypass the retry loop and
 	// responseBuffer: the real ResponseWriter must remain accessible for
