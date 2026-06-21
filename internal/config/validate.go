@@ -178,6 +178,9 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 
 		validateRetry(prefix+".retry", backend.Retry, errs)
 		validateBackendTLS(prefix+".tls", backend.TLS, errs)
+		if backend.Bulkhead.MaxConcurrent < 0 {
+			errs.Addf("%s.bulkhead.max_concurrent: must be >= 0", prefix)
+		}
 
 		for j, instance := range backend.Instances {
 			if instance.URL == "" {

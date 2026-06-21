@@ -32,6 +32,7 @@ type BackendRuntime struct {
 	CircuitBreaker CircuitBreakerConfig
 	Retry          RetryConfig
 	TLS            BackendTLSConfig
+	Bulkhead       BulkheadConfig
 	Instances      []InstanceRuntime
 }
 
@@ -77,6 +78,7 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			CircuitBreaker: backend.CircuitBreaker,
 			Retry:          backend.Retry,
 			TLS:            backend.TLS,
+			Bulkhead:       backend.Bulkhead,
 			Instances:      instances,
 		}
 	}
