@@ -345,6 +345,22 @@ func validateObservability(observability ObservabilityConfig, errs *ValidationEr
 	}
 	validatePositiveDuration("observability.metrics.flush_interval", observability.Metrics.FlushInterval, errs, false)
 	validateFabric(observability.Fabric, errs)
+	validateTracing(observability.Tracing, errs)
+}
+
+func validateTracing(t TracingConfig, errs *ValidationErrors) {
+	if !t.Enabled {
+		return
+	}
+	exp := strings.ToLower(strings.TrimSpace(t.Exporter))
+	switch exp {
+	case "otlp_grpc", "otlp_http", "stdout", "":
+	default:
+		errs.Addf("observability.tracing.exporter: must be one of otlp_grpc, otlp_http, stdout")
+	}
+	if t.SampleRate < 0 || t.SampleRate > 1 {
+		errs.Addf("observability.tracing.sample_rate: must be between 0.0 and 1.0")
+	}
 }
 
 func validateFabric(f FabricConfig, errs *ValidationErrors) {

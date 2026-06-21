@@ -328,10 +328,11 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		requestIDMW := middleware.RequestID()
 		loggingMW := observability.NewLoggingMiddleware(logger, routeRef.Name, routeRef.BackendName)
 		metricsMW := observability.NewMetricsMiddlewareFabric(metrics, promCollector, fabricDispatch, relaySvc, routeRef.Name)
+		tracingMW := observability.NewTracingMiddleware(routeRef.Name, routeRef.BackendName)
 
 		compiledRoutes[routeName] = &compiledRoute{
 			route:   routeRef,
-			handler: middleware.Chain(routeHandler, recoveryMW, requestIDMW, loggingMW, metricsMW),
+			handler: middleware.Chain(routeHandler, recoveryMW, requestIDMW, loggingMW, metricsMW, tracingMW),
 		}
 	}
 
