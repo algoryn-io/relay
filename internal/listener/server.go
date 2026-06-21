@@ -52,11 +52,12 @@ func (st *serverState) close() {
 }
 
 type Server struct {
-	httpServer  *http.Server
-	httpsServer *http.Server // nil when HTTPS is not configured
-	logger      *slog.Logger
-	state       atomic.Pointer[serverState]
-	reloadMu    sync.Mutex
+	httpServer   *http.Server
+	httpsServer  *http.Server  // nil when HTTPS is not configured
+	certReloader *CertReloader // non-nil only in manual TLS mode
+	logger       *slog.Logger
+	state        atomic.Pointer[serverState]
+	reloadMu     sync.Mutex
 }
 
 type compiledRoute struct {
@@ -109,10 +110,11 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 	}
 
 	if httpsPort > 0 {
-		tlsCfg, err := buildTLSConfig(cfg.Listener.HTTPS.TLS)
+		tlsCfg, reloader, err := buildTLSConfig(cfg.Listener.HTTPS.TLS)
 		if err != nil {
 			return nil, fmt.Errorf("tls config: %w", err)
 		}
+		s.certReloader = reloader // nil for auto mode; non-nil for manual mode
 		s.httpsServer = &http.Server{
 			Addr:         fmt.Sprintf(":%d", httpsPort),
 			Handler:      s,
@@ -152,6 +154,21 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 		srv.ReadTimeout = cfg.Listener.Timeouts.Read
 		srv.WriteTimeout = cfg.Listener.Timeouts.Write
 		srv.IdleTimeout = cfg.Listener.Timeouts.Idle
+	}
+
+	// Rotate the TLS certificate when running in manual mode. A failure here
+	// is non-fatal: the server keeps the previous certificate in service and
+	// logs a warning so operators know the rotation did not take effect.
+	if s.certReloader != nil {
+		tlsCfg := cfg.Listener.HTTPS.TLS
+		if rotateErr := s.certReloader.Reload(tlsCfg.CertFile, tlsCfg.KeyFile); rotateErr != nil {
+			s.logger.Warn("TLS certificate reload failed, keeping current certificate",
+				"cert_file", tlsCfg.CertFile,
+				"error", rotateErr,
+			)
+		} else {
+			s.logger.Info("TLS certificate reloaded", "cert_file", tlsCfg.CertFile)
+		}
 	}
 
 	return nil
@@ -379,10 +396,18 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 	return st, nil
 }
 
-// buildTLSConfig returns a *tls.Config for the given TLSConfig.
-// mode "manual": loads cert and key from files.
-// mode "auto":   uses autocert (Let's Encrypt) with an in-memory cache.
-func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
+// buildTLSConfig returns a *tls.Config for the given TLSConfig and, when the
+// mode is "manual", a *CertReloader that can hot-swap the certificate without
+// restarting the server. The reloader is nil for mode "auto".
+//
+// mode "manual": certificate is loaded from files via CertReloader; calling
+//
+//	CertReloader.Reload replaces the certificate for all subsequent handshakes.
+//
+// mode "auto":   uses autocert (Let's Encrypt) with an in-memory cache; cert
+//
+//	renewal is handled automatically by the ACME library.
+func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertReloader, error) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
 	if mode == "" {
 		mode = "manual"
@@ -390,14 +415,18 @@ func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 
 	switch mode {
 	case "manual":
-		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
+		reloader, err := NewCertReloader(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
-			return nil, fmt.Errorf("load cert/key: %w", err)
+			return nil, nil, fmt.Errorf("load cert/key: %w", err)
 		}
-		return &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-		}, nil
+		tlsCfg := &tls.Config{
+			// GetCertificate is called on every TLS handshake, so swapping the
+			// cert inside CertReloader takes effect for all new connections
+			// immediately, with no listener restart required.
+			GetCertificate: reloader.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
+		}
+		return tlsCfg, reloader, nil
 
 	case "auto":
 		m := &autocert.Manager{
@@ -405,10 +434,10 @@ func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 			HostPolicy: autocert.HostWhitelist(cfg.Domains...),
 			Cache:      autocert.DirCache(".autocert-cache"),
 		}
-		return m.TLSConfig(), nil
+		return m.TLSConfig(), nil, nil
 
 	default:
-		return nil, fmt.Errorf("unknown TLS mode %q", mode)
+		return nil, nil, fmt.Errorf("unknown TLS mode %q", mode)
 	}
 }
 
