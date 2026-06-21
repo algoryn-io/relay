@@ -50,10 +50,41 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 		errs.Addf("listener.https.port: must be greater than 0")
 	}
 
+	if listener.HTTPS.Port > 0 {
+		validateTLS("listener.https.tls", listener.HTTPS.TLS, errs)
+	}
+
 	validatePositiveDuration("listener.timeouts.read", listener.Timeouts.Read, errs, false)
 	validatePositiveDuration("listener.timeouts.write", listener.Timeouts.Write, errs, false)
 	validatePositiveDuration("listener.timeouts.idle", listener.Timeouts.Idle, errs, false)
 	validateIPFilterEntries("listener.trusted_proxies", listener.TrustedProxies, errs)
+}
+
+func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {
+	mode := strings.ToLower(strings.TrimSpace(tls.Mode))
+	if mode == "" {
+		mode = "manual"
+	}
+	switch mode {
+	case "manual":
+		if strings.TrimSpace(tls.CertFile) == "" {
+			errs.Addf("%s.cert_file: required for mode manual", prefix)
+		}
+		if strings.TrimSpace(tls.KeyFile) == "" {
+			errs.Addf("%s.key_file: required for mode manual", prefix)
+		}
+	case "auto":
+		if len(tls.Domains) == 0 {
+			errs.Addf("%s.domains: at least one domain is required for mode auto", prefix)
+		}
+		for i, d := range tls.Domains {
+			if strings.TrimSpace(d) == "" {
+				errs.Addf("%s.domains[%d]: must not be empty", prefix, i)
+			}
+		}
+	default:
+		errs.Addf("%s.mode: must be one of manual, auto", prefix)
+	}
 }
 
 func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[string]struct{}, errs *ValidationErrors) {
