@@ -18,6 +18,14 @@ type ListenerConfig struct {
 	TLS            TLSConfig      `yaml:"tls"`
 	Timeouts       TimeoutsConfig `yaml:"timeouts"`
 	TrustedProxies []string       `yaml:"trusted_proxies"`
+	Admin          AdminConfig    `yaml:"admin"`
+}
+
+// AdminConfig controls access to the /_relay/admin/* management endpoints.
+type AdminConfig struct {
+	// AllowedCIDRs is the list of IP ranges that may call admin endpoints.
+	// Defaults to loopback only (127.0.0.0/8 and ::1/128) when empty.
+	AllowedCIDRs []string `yaml:"allowed_cidrs"`
 }
 
 type HTTPConfig struct {

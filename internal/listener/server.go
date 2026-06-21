@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/crypto/acme/autocert"
 
+	"algoryn.io/relay/internal/admin"
 	"algoryn.io/relay/internal/config"
 	"algoryn.io/relay/internal/httpx"
 	"algoryn.io/relay/internal/middleware"
@@ -35,6 +36,7 @@ type serverState struct {
 	trustedNets      []*net.IPNet
 	fabricDispatch   *observability.EventDispatcher
 	relayServiceName string
+	adminH           http.Handler
 }
 
 func (st *serverState) close() {
@@ -216,8 +218,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	req = httpx.WithResolvedClientIP(req, st.trustedNets)
 
-	switch req.URL.Path {
-	case "/_relay/metrics":
+	switch {
+	case req.URL.Path == "/_relay/metrics":
 		clientIP := httpx.ClientIP(req)
 		if clientIP != "127.0.0.1" && clientIP != "::1" {
 			httpx.WriteError(w, http.StatusForbidden, "forbidden")
@@ -225,13 +227,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		st.metricsH.ServeHTTP(w, req)
 		return
-	case "/_relay/health":
+	case req.URL.Path == "/_relay/health":
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 		return
-	case st.prometheusPath:
+	case req.URL.Path == st.prometheusPath:
 		st.prometheusH.ServeHTTP(w, req)
+		return
+	case strings.HasPrefix(req.URL.Path, "/_relay/admin"):
+		st.adminH.ServeHTTP(w, req)
 		return
 	}
 
@@ -343,6 +348,8 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		promPath = "/_relay/metrics/prometheus"
 	}
 
+	adminH := admin.New(rtProxy, rt.Routes, cfg.Listener.Admin.AllowedCIDRs)
+
 	st := &serverState{
 		proxy:            rtProxy,
 		router:           rtRouter,
@@ -354,6 +361,7 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		trustedNets:      trustedNets,
 		fabricDispatch:   fabricDispatch,
 		relayServiceName: relaySvc,
+		adminH:           adminH,
 	}
 
 	if fabricDispatch != nil {

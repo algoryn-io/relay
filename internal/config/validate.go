@@ -58,6 +58,7 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 	validatePositiveDuration("listener.timeouts.write", listener.Timeouts.Write, errs, false)
 	validatePositiveDuration("listener.timeouts.idle", listener.Timeouts.Idle, errs, false)
 	validateIPFilterEntries("listener.trusted_proxies", listener.TrustedProxies, errs)
+	validateIPFilterEntries("listener.admin.allowed_cidrs", listener.Admin.AllowedCIDRs, errs)
 }
 
 func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {
