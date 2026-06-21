@@ -1,14 +1,19 @@
 package middleware
 
 import (
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"algoryn.io/relay/internal/httpx"
 	"github.com/golang-jwt/jwt/v5"
@@ -39,7 +44,16 @@ func normalizeClaimsToHeaders(in map[string]string) map[string]string {
 }
 
 type JWTConfig struct {
+	// Algorithm selects the verification strategy: "hs256" (default) or "rs256".
+	Algorithm       string
+	// HS256
 	Secret          string
+	// RS256 with static PEM key
+	PublicKeyFile   string
+	// RS256 with JWKS endpoint
+	JWKSUrl         string
+	JWKSCacheTTL    time.Duration
+	// Common
 	Header          string
 	ClaimsToHeaders map[string]string
 	Logger          *slog.Logger
@@ -47,28 +61,91 @@ type JWTConfig struct {
 }
 
 func NewJWT(cfg JWTConfig) (Middleware, error) {
-	if strings.TrimSpace(cfg.Secret) == "" {
-		return nil, fmt.Errorf("jwt secret is required")
-	}
-	secret := strings.TrimSpace(cfg.Secret)
-	if len(secret) < 32 {
-		return nil, fmt.Errorf("jwt secret must be at least 32 bytes")
-	}
 	if strings.TrimSpace(cfg.Header) == "" {
 		cfg.Header = "Authorization"
 	}
-
 	claimsToHeaders := normalizeClaimsToHeaders(cfg.ClaimsToHeaders)
 
-	if cfg.Logger != nil {
-		cfg.Logger.Info("jwt middleware initialized",
-			"authorization_header", cfg.Header,
-			"secret_byte_length", len(secret),
-			"claims_to_headers_mappings", len(claimsToHeaders),
-			"jwt_log_failures", cfg.LogFailures,
-		)
+	alg := strings.ToLower(strings.TrimSpace(cfg.Algorithm))
+	if alg == "" {
+		alg = "hs256"
 	}
 
+	switch alg {
+	case "hs256":
+		return newJWTHS256(cfg, claimsToHeaders)
+	case "rs256":
+		if strings.TrimSpace(cfg.JWKSUrl) != "" {
+			return newJWTJWKS(cfg, claimsToHeaders)
+		}
+		return newJWTRS256Static(cfg, claimsToHeaders)
+	default:
+		return nil, fmt.Errorf("jwt: unsupported algorithm %q", alg)
+	}
+}
+
+func newJWTHS256(cfg JWTConfig, claimsToHeaders map[string]string) (Middleware, error) {
+	secret := strings.TrimSpace(cfg.Secret)
+	if secret == "" {
+		return nil, fmt.Errorf("jwt: secret is required for hs256")
+	}
+	if len(secret) < 32 {
+		return nil, fmt.Errorf("jwt: secret must be at least 32 bytes")
+	}
+	if cfg.Logger != nil {
+		cfg.Logger.Info("jwt middleware initialized",
+			"algorithm", "hs256",
+			"header", cfg.Header,
+			"claims_to_headers", len(claimsToHeaders),
+		)
+	}
+	keyfunc := func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return []byte(secret), nil
+	}
+	return jwtHandler(cfg, claimsToHeaders, keyfunc, []string{"HS256", "HS384", "HS512"}), nil
+}
+
+func newJWTRS256Static(cfg JWTConfig, claimsToHeaders map[string]string) (Middleware, error) {
+	pubKey, err := loadRSAPublicKeyPEM(cfg.PublicKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("jwt: %w", err)
+	}
+	if cfg.Logger != nil {
+		cfg.Logger.Info("jwt middleware initialized",
+			"algorithm", "rs256",
+			"header", cfg.Header,
+			"public_key_file", cfg.PublicKeyFile,
+			"claims_to_headers", len(claimsToHeaders),
+		)
+	}
+	keyfunc := func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method")
+		}
+		return pubKey, nil
+	}
+	return jwtHandler(cfg, claimsToHeaders, keyfunc, []string{"RS256", "RS384", "RS512"}), nil
+}
+
+func newJWTJWKS(cfg JWTConfig, claimsToHeaders map[string]string) (Middleware, error) {
+	cache := newJWKSCache(strings.TrimSpace(cfg.JWKSUrl), cfg.JWKSCacheTTL)
+	if cfg.Logger != nil {
+		cfg.Logger.Info("jwt middleware initialized",
+			"algorithm", "rs256",
+			"header", cfg.Header,
+			"jwks_url", cfg.JWKSUrl,
+			"jwks_cache_ttl", cache.ttl,
+			"claims_to_headers", len(claimsToHeaders),
+		)
+	}
+	return jwtHandler(cfg, claimsToHeaders, cache.Keyfunc, []string{"RS256"}), nil
+}
+
+// jwtHandler builds the actual middleware handler given a keyfunc and allowed methods.
+func jwtHandler(cfg JWTConfig, claimsToHeaders map[string]string, keyfunc jwt.Keyfunc, validMethods []string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString, ok := readTokenFromHeader(r, cfg.Header)
@@ -79,14 +156,14 @@ func NewJWT(cfg JWTConfig) (Middleware, error) {
 				return
 			}
 
-			token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, fmt.Errorf("unexpected signing method")
-				}
-				return []byte(secret), nil
-			}, jwt.WithValidMethods([]string{"HS256", "HS384", "HS512"}), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
+			token, err := jwt.Parse(tokenString, keyfunc,
+				jwt.WithValidMethods(validMethods),
+				jwt.WithExpirationRequired(),
+				jwt.WithIssuedAt(),
+			)
 			if err != nil || token == nil || !token.Valid {
-				cfg.logReject(r, "invalid_token", err, tokenString, slog.Bool("parser_reports_valid", token != nil && token.Valid))
+				cfg.logReject(r, "invalid_token", err, tokenString,
+					slog.Bool("parser_reports_valid", token != nil && token.Valid))
 				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -100,13 +177,41 @@ func NewJWT(cfg JWTConfig) (Middleware, error) {
 
 			if len(claimsToHeaders) == 0 {
 				stripAndSetSubOnly(r, claims)
-				next.ServeHTTP(w, r)
-				return
+			} else {
+				stripAndInjectMappedClaims(r, claims, claimsToHeaders)
 			}
-			stripAndInjectMappedClaims(r, claims, claimsToHeaders)
 			next.ServeHTTP(w, r)
 		})
-	}, nil
+	}
+}
+
+// loadRSAPublicKeyPEM reads a PEM file and returns the RSA public key.
+// Supports PKIX ("PUBLIC KEY") and PKCS1 ("RSA PUBLIC KEY") formats.
+func loadRSAPublicKeyPEM(path string) (*rsa.PublicKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read public key file %q: %w", path, err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found in %q", path)
+	}
+	switch block.Type {
+	case "RSA PUBLIC KEY":
+		return x509.ParsePKCS1PublicKey(block.Bytes)
+	case "PUBLIC KEY":
+		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		rsaPub, ok := pub.(*rsa.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("PEM key is not RSA")
+		}
+		return rsaPub, nil
+	default:
+		return nil, fmt.Errorf("unsupported PEM block type %q", block.Type)
+	}
 }
 
 func (cfg JWTConfig) logReject(r *http.Request, reason string, parseErr error, rawJWT string, extra ...slog.Attr) {

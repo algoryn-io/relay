@@ -181,10 +181,7 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 
 		if middleware.Type == "jwt" {
-			if strings.TrimSpace(middleware.Config.SecretEnv) == "" {
-				errs.Addf("%s.config.secret_env: must not be empty", prefix)
-			}
-			validateJWTClaimsToHeaders(prefix+".config", middleware.Config.ClaimsToHeaders, errs)
+			validateJWTMiddleware(prefix+".config", middleware.Config, errs)
 		}
 		if middleware.Type == "rate_limit" {
 			if middleware.Config.Strategy != "sliding_window" {
@@ -251,6 +248,35 @@ func validateIPFilterEntries(field string, entries []string, errs *ValidationErr
 		}
 		errs.Addf("%s[%d]: must be a valid IP or CIDR", field, i)
 	}
+}
+
+func validateJWTMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
+	alg := strings.ToLower(strings.TrimSpace(cfg.Algorithm))
+	if alg == "" {
+		alg = "hs256"
+	}
+
+	switch alg {
+	case "hs256":
+		if strings.TrimSpace(cfg.SecretEnv) == "" {
+			errs.Addf("%s.secret_env: required for algorithm hs256", prefix)
+		}
+	case "rs256":
+		hasFile := strings.TrimSpace(cfg.PublicKeyFile) != ""
+		hasJWKS := strings.TrimSpace(cfg.JWKSUrl) != ""
+		switch {
+		case hasFile && hasJWKS:
+			errs.Addf("%s: public_key_file and jwks_url are mutually exclusive", prefix)
+		case !hasFile && !hasJWKS:
+			errs.Addf("%s: one of public_key_file or jwks_url is required for algorithm rs256", prefix)
+		case hasJWKS && cfg.JWKSCacheTTL < 0:
+			errs.Addf("%s.jwks_cache_ttl: must be >= 0", prefix)
+		}
+	default:
+		errs.Addf("%s.algorithm: must be one of hs256, rs256", prefix)
+	}
+
+	validateJWTClaimsToHeaders(prefix, cfg.ClaimsToHeaders, errs)
 }
 
 func validateJWTClaimsToHeaders(field string, m map[string]string, errs *ValidationErrors) {

@@ -346,8 +346,8 @@ func TestJWTRejectsShortSecret(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewJWT() error = nil, want error")
 	}
-	if err.Error() != "jwt secret must be at least 32 bytes" {
-		t.Fatalf("error = %q, want jwt secret must be at least 32 bytes", err.Error())
+	if err.Error() != "jwt: secret must be at least 32 bytes" {
+		t.Fatalf("error = %q, want jwt: secret must be at least 32 bytes", err.Error())
 	}
 }
 

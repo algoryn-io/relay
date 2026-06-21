@@ -104,6 +104,14 @@ type MiddlewareSettingsConfig struct {
 	ResolvedSecret     string            `yaml:"-"`
 	Header             string            `yaml:"header"`
 	ClaimsToHeaders    map[string]string `yaml:"claims_to_headers"`
+	// JWT algorithm selection: hs256 (default), rs256.
+	Algorithm    string        `yaml:"algorithm"`
+	// PublicKeyFile is the path to a PEM-encoded RSA public key for rs256.
+	PublicKeyFile string       `yaml:"public_key_file"`
+	// JWKSUrl is a JWKS endpoint URL for rs256 key discovery.
+	JWKSUrl      string        `yaml:"jwks_url"`
+	// JWKSCacheTTL is how long JWKS keys are cached. Defaults to 5m when zero.
+	JWKSCacheTTL time.Duration `yaml:"jwks_cache_ttl"`
 	MaxBytes           int64             `yaml:"max_bytes"`
 	Allow              []string          `yaml:"allow"`
 	Deny               []string          `yaml:"deny"`
