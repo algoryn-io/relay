@@ -141,6 +141,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	originalHost := r.Host
 	backendName := backend.Name
 
+	// WebSocket (and other protocol upgrades) bypass the retry loop and
+	// responseBuffer: the real ResponseWriter must remain accessible for
+	// http.Hijacker, and replaying a half-established connection is not possible.
+	if isWebSocketUpgrade(r) {
+		p.serveWebSocket(w, r, backend, clientIP, proto, originalHost)
+		return
+	}
+
 	retry := backend.Retry
 	maxAttempts := retry.Attempts
 	if maxAttempts <= 0 {
