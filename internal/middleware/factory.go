@@ -11,7 +11,11 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, error
 	switch def.Type {
 	case "jwt":
 		return NewJWT(JWTConfig{
+			Algorithm:       def.Config.Algorithm,
 			Secret:          def.Config.ResolvedSecret,
+			PublicKeyFile:   def.Config.PublicKeyFile,
+			JWKSUrl:         def.Config.JWKSUrl,
+			JWKSCacheTTL:    def.Config.JWKSCacheTTL,
 			Header:          def.Config.Header,
 			ClaimsToHeaders: def.Config.ClaimsToHeaders,
 			Logger:          logger,
