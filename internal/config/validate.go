@@ -21,6 +21,7 @@ var (
 		"ip_filter":  {},
 		"cors":       {},
 		"header":     {},
+		"api_key":    {},
 	}
 )
 
@@ -215,7 +216,7 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 
 		if _, ok := validMiddlewareTypes[middleware.Type]; !ok {
-			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors", prefix)
+			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors, header, api_key", prefix)
 		}
 
 		if middleware.Type == "jwt" {
@@ -265,9 +266,20 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 				errs.Addf("%s.config: at least one of request_set, request_del, response_set, response_del must be provided", prefix)
 			}
 		}
+		if middleware.Type == "api_key" {
+			validateAPIKeyMiddleware(prefix+".config", middleware.Config, errs)
+		}
 	}
 
 	return seen
+}
+
+func validateAPIKeyMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
+	hasEnv := strings.TrimSpace(cfg.KeysEnv) != ""
+	hasFile := strings.TrimSpace(cfg.KeysFile) != ""
+	if !hasEnv && !hasFile {
+		errs.Addf("%s: at least one of keys_env or keys_file is required", prefix)
+	}
 }
 
 func validateIPFilterEntries(field string, entries []string, errs *ValidationErrors) {

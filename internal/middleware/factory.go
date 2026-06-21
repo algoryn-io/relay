@@ -52,6 +52,17 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, error
 			ResponseSet: def.Config.ResponseSet,
 			ResponseDel: def.Config.ResponseDel,
 		})
+	case "api_key":
+		keys, err := LoadAPIKeys(def.Config.ResolvedKeys, def.Config.KeysFile)
+		if err != nil {
+			return nil, fmt.Errorf("api_key middleware %q: %w", def.Name, err)
+		}
+		return NewAPIKey(APIKeyConfig{
+			KeyHeader:   def.Config.KeyHeader,
+			KeyQuery:    def.Config.KeyQuery,
+			Keys:        keys,
+			KeyToHeader: def.Config.KeyToHeader,
+		})
 	default:
 		return nil, fmt.Errorf("unsupported middleware type %q", def.Type)
 	}
