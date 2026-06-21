@@ -168,7 +168,7 @@ func TestJWTJWKSCacheRefreshOnKidMiss(t *testing.T) {
 	currentKeys = []*rsaKidPair{{kid: "key-1", priv: priv1}}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(buildJWKS(currentKeys))
+		_ = json.NewEncoder(w).Encode(buildJWKS(currentKeys))
 	}))
 	t.Cleanup(server.Close)
 
@@ -234,7 +234,7 @@ func jwksServerFixture(t *testing.T, kid string) (*rsa.PrivateKey, *httptest.Ser
 	}
 	pairs := []*rsaKidPair{{kid: kid, priv: priv}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(buildJWKS(pairs))
+		_ = json.NewEncoder(w).Encode(buildJWKS(pairs))
 	}))
 	t.Cleanup(server.Close)
 	return priv, server
