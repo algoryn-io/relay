@@ -68,7 +68,25 @@ type BackendConfig struct {
 	Strategy       string               `yaml:"strategy"`
 	HealthCheck    HealthCheckConfig    `yaml:"health_check"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+	Retry          RetryConfig          `yaml:"retry"`
 	Instances      []InstanceConfig     `yaml:"instances"`
+}
+
+// RetryConfig enables request retries with exponential backoff for a backend.
+// Set Attempts > 1 and at least one entry in On to enable retries.
+type RetryConfig struct {
+	// Attempts is the maximum total number of attempts (including the first).
+	// 0 or 1 disables retry.
+	Attempts int `yaml:"attempts"`
+	// BackoffInit is the initial backoff duration. Defaults to 100ms.
+	BackoffInit time.Duration `yaml:"backoff_init"`
+	// BackoffMax caps the backoff duration. Defaults to 1s.
+	BackoffMax time.Duration `yaml:"backoff_max"`
+	// On lists the conditions that trigger a retry: "5xx" and/or "network_error".
+	On []string `yaml:"on"`
+	// AllowUnsafe, when true, permits retrying non-safe HTTP methods
+	// (POST, PUT, PATCH, DELETE). Use only when the upstream is idempotent.
+	AllowUnsafe bool `yaml:"allow_unsafe"`
 }
 
 // CircuitBreakerConfig enables a per-instance circuit breaker for a backend.
