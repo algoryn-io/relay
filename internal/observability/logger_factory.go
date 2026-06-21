@@ -38,7 +38,7 @@ func NewAccessLogger(cfg config.LogsConfig) (*slog.Logger, io.Closer, error) {
 		return nil, nil, err
 	}
 
-	writer, err := newRotatingFileWriter(filePath, int64(maxSizeMB)*1024*1024)
+	writer, err := newRotatingFileWriter(filePath, int64(maxSizeMB)*1024*1024, cfg.MaxAgeDays, cfg.Compress)
 	if err != nil {
 		return nil, nil, err
 	}
