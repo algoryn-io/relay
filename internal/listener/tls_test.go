@@ -24,7 +24,7 @@ func TestBuildTLSConfigManualLoadsKeyPair(t *testing.T) {
 	t.Parallel()
 
 	certFile, keyFile := selfSignedCert(t)
-	tlsCfg, err := buildTLSConfig(config.TLSConfig{
+	tlsCfg, _, err := buildTLSConfig(config.TLSConfig{
 		Mode:     "manual",
 		CertFile: certFile,
 		KeyFile:  keyFile,
@@ -32,8 +32,8 @@ func TestBuildTLSConfigManualLoadsKeyPair(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTLSConfig() error = %v", err)
 	}
-	if len(tlsCfg.Certificates) != 1 {
-		t.Fatalf("certificates = %d, want 1", len(tlsCfg.Certificates))
+	if tlsCfg.GetCertificate == nil {
+		t.Fatal("GetCertificate callback is nil; expected CertReloader to be wired")
 	}
 	if tlsCfg.MinVersion != tls.VersionTLS12 {
 		t.Fatalf("MinVersion = %d, want TLS 1.2", tlsCfg.MinVersion)
@@ -43,7 +43,7 @@ func TestBuildTLSConfigManualLoadsKeyPair(t *testing.T) {
 func TestBuildTLSConfigManualMissingFileErrors(t *testing.T) {
 	t.Parallel()
 
-	_, err := buildTLSConfig(config.TLSConfig{
+	_, _, err := buildTLSConfig(config.TLSConfig{
 		Mode:     "manual",
 		CertFile: "/nonexistent/cert.pem",
 		KeyFile:  "/nonexistent/key.pem",
@@ -56,7 +56,7 @@ func TestBuildTLSConfigManualMissingFileErrors(t *testing.T) {
 func TestBuildTLSConfigAutoReturnsTLSConfig(t *testing.T) {
 	t.Parallel()
 
-	tlsCfg, err := buildTLSConfig(config.TLSConfig{
+	tlsCfg, _, err := buildTLSConfig(config.TLSConfig{
 		Mode:    "auto",
 		Domains: []string{"example.com"},
 	})
@@ -71,7 +71,7 @@ func TestBuildTLSConfigAutoReturnsTLSConfig(t *testing.T) {
 func TestBuildTLSConfigUnknownModeErrors(t *testing.T) {
 	t.Parallel()
 
-	_, err := buildTLSConfig(config.TLSConfig{Mode: "invalid"})
+	_, _, err := buildTLSConfig(config.TLSConfig{Mode: "invalid"})
 	if err == nil {
 		t.Fatal("expected error for unknown mode, got nil")
 	}
