@@ -3,6 +3,7 @@ package proxy
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 )
 
 // errAllCircuitsOpen is returned by selectInstance when every healthy instance
@@ -42,7 +43,26 @@ func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, er
 				selected = state
 			}
 		}
-	default:
+
+	case "weighted_random":
+		total := 0
+		for _, state := range healthy {
+			total += state.weight
+		}
+		pick := rand.IntN(total)
+		acc := 0
+		for _, state := range healthy {
+			acc += state.weight
+			if pick < acc {
+				selected = state
+				break
+			}
+		}
+		if selected == nil {
+			selected = healthy[len(healthy)-1]
+		}
+
+	default: // round_robin
 		idx := p.roundRobin[backendName] % len(healthy)
 		selected = healthy[idx]
 		p.roundRobin[backendName] = (p.roundRobin[backendName] + 1) % len(healthy)

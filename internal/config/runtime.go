@@ -35,7 +35,8 @@ type BackendRuntime struct {
 }
 
 type InstanceRuntime struct {
-	URL string
+	URL    string
+	Weight int // effective weight >= 1; 0 in config is normalised to 1
 }
 
 type MiddlewareRuntime struct {
@@ -61,7 +62,11 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 	for _, backend := range c.Backends {
 		instances := make([]InstanceRuntime, 0, len(backend.Instances))
 		for _, instance := range backend.Instances {
-			instances = append(instances, InstanceRuntime{URL: instance.URL})
+			w := instance.Weight
+			if w <= 0 {
+				w = 1
+			}
+			instances = append(instances, InstanceRuntime{URL: instance.URL, Weight: w})
 		}
 
 		rt.Backends[backend.Name] = BackendRuntime{

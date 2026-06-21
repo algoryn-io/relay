@@ -12,6 +12,7 @@ var (
 	validBackendStrategies = map[string]struct{}{
 		"round_robin":       {},
 		"least_connections": {},
+		"weighted_random":   {},
 	}
 	validMiddlewareTypes = map[string]struct{}{
 		"jwt":        {},
@@ -188,6 +189,9 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 			}
 			if parsed.Scheme != "http" && parsed.Scheme != "https" {
 				errs.Addf("%s.instances[%d].url: scheme must be http or https", prefix, j)
+			}
+			if instance.Weight < 0 {
+				errs.Addf("%s.instances[%d].weight: must be >= 0", prefix, j)
 			}
 		}
 	}
