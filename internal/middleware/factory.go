@@ -22,12 +22,17 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, error
 			LogFailures:     def.Config.JWTLogFailures,
 		})
 	case "rate_limit":
+		redisURL := def.Config.RedisURL
+		// ResolveEnv writes the resolved env var into RedisURL when RedisURLEnv
+		// is set, so by this point RedisURL already holds the final value.
 		return NewRateLimit(RateLimitConfig{
 			Strategy: Strategy(def.Config.Strategy),
 			Limit:    def.Config.Limit,
 			Window:   def.Config.Window,
 			By:       def.Config.By,
 			Header:   def.Config.Header,
+			Store:    def.Config.RateLimitStore,
+			RedisURL: redisURL,
 		})
 	case "body_limit":
 		return NewBodyLimit(BodyLimitConfig{

@@ -238,6 +238,19 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 			default:
 				errs.Addf("%s.config.by: must be one of ip, route, api_key", prefix)
 			}
+			store := strings.ToLower(strings.TrimSpace(middleware.Config.RateLimitStore))
+			switch store {
+			case "", "memory", "redis":
+			default:
+				errs.Addf("%s.config.store: must be one of memory, redis", prefix)
+			}
+			if store == "redis" {
+				hasURL := strings.TrimSpace(middleware.Config.RedisURL) != ""
+				hasURLEnv := strings.TrimSpace(middleware.Config.RedisURLEnv) != ""
+				if !hasURL && !hasURLEnv {
+					errs.Addf("%s.config: redis_url or redis_url_env is required when store is redis", prefix)
+				}
+			}
 		}
 		if middleware.Type == "cors" {
 			if len(middleware.Config.AllowedOrigins) == 0 {

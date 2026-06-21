@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -100,19 +101,22 @@ func TestRateLimitWindowExpirationAllowsAgain(t *testing.T) {
 func TestRateLimitAPIKeyHashesMapKey(t *testing.T) {
 	t.Parallel()
 
-	limiter := &rateLimiter{
-		limit:      2,
-		window:     time.Minute,
-		by:         "api_key",
-		header:     "X-API-Key",
-		buckets:    make(map[string][]time.Time),
-		apiKeySalt: []byte("01234567890123456789012345678901"),
+	store, err := newMemoryStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rl := &rateLimiter{
+		limit:  2,
+		window: time.Minute,
+		by:     "api_key",
+		header: "X-API-Key",
+		store:  store,
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/orders", nil)
 	req.Header.Set("X-API-Key", "plain-api-key")
 
-	key := limiter.keyFromRequest(req)
+	key := rl.keyFromRequest(req)
 	if key == "" {
 		t.Fatal("keyFromRequest() = empty, want hashed value")
 	}
@@ -122,13 +126,19 @@ func TestRateLimitAPIKeyHashesMapKey(t *testing.T) {
 	if len(key) != 64 {
 		t.Fatalf("len(key) = %d, want 64", len(key))
 	}
-	if allowed, _, _ := limiter.check(key, time.Now()); !allowed {
-		t.Fatal("check() = false, want true")
+	// Verify the key ends up in the bucket (not the raw value).
+	allowed, _, _, _ := store.Check(context.Background(), key, 2, time.Minute, time.Now())
+	if !allowed {
+		t.Fatal("Check() = false, want true")
 	}
-	if _, ok := limiter.buckets["plain-api-key"]; ok {
+	store.mu.Lock()
+	_, hasRaw := store.buckets["plain-api-key"]
+	_, hasHashed := store.buckets[key]
+	store.mu.Unlock()
+	if hasRaw {
 		t.Fatal("buckets contains raw API key")
 	}
-	if _, ok := limiter.buckets[key]; !ok {
+	if !hasHashed {
 		t.Fatal("buckets missing hashed API key")
 	}
 }
@@ -136,22 +146,27 @@ func TestRateLimitAPIKeyHashesMapKey(t *testing.T) {
 func TestRateLimitCapsTimestampSliceAtLimit(t *testing.T) {
 	t.Parallel()
 
-	limiter := &rateLimiter{
-		limit:   2,
-		window:  time.Minute,
-		buckets: make(map[string][]time.Time),
+	store, err := newMemoryStore()
+	if err != nil {
+		t.Fatal(err)
 	}
 	now := time.Now()
-	limiter.buckets["client"] = []time.Time{
+	store.mu.Lock()
+	store.buckets["client"] = []time.Time{
 		now.Add(-3 * time.Second),
 		now.Add(-2 * time.Second),
 		now.Add(-1 * time.Second),
 	}
+	store.mu.Unlock()
 
-	if allowed, _, _ := limiter.check("client", now); allowed {
-		t.Fatal("check() = true, want false")
+	allowed, _, _, _ := store.Check(context.Background(), "client", 2, time.Minute, now)
+	if allowed {
+		t.Fatal("Check() = true, want false")
 	}
-	if got := len(limiter.buckets["client"]); got != 2 {
+	store.mu.Lock()
+	got := len(store.buckets["client"])
+	store.mu.Unlock()
+	if got != 2 {
 		t.Fatalf("len(bucket) = %d, want 2", got)
 	}
 }
