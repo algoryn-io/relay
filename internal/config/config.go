@@ -139,6 +139,23 @@ type ObservabilityConfig struct {
 	Metrics    MetricsConfig    `yaml:"metrics"`
 	Fabric     FabricConfig     `yaml:"fabric"`
 	Prometheus PrometheusConfig `yaml:"prometheus"`
+	Tracing    TracingConfig    `yaml:"tracing"`
+}
+
+// TracingConfig controls OpenTelemetry distributed tracing.
+type TracingConfig struct {
+	// Enabled activates tracing. When false, a no-op tracer is used.
+	Enabled bool `yaml:"enabled"`
+	// Exporter selects the trace exporter: "otlp_grpc", "otlp_http", or "stdout".
+	Exporter string `yaml:"exporter"`
+	// Endpoint is the collector address (e.g. "localhost:4317" for OTLP gRPC).
+	// Defaults to the OpenTelemetry SDK default when empty.
+	Endpoint string `yaml:"endpoint"`
+	// SampleRate is the fraction of traces to sample (0.0–1.0). Default 1.0.
+	SampleRate float64 `yaml:"sample_rate"`
+	// ServiceName overrides the service name reported to the collector.
+	// Falls back to observability.fabric.service_name, then "relay".
+	ServiceName string `yaml:"service_name"`
 }
 
 type PrometheusConfig struct {

@@ -82,6 +82,21 @@ func main() {
 		}
 	}()
 
+	tracingCtx := context.Background()
+	fallbackSvc := cfg.Observability.Fabric.ServiceName
+	shutdownTracing, err := observability.InitTracing(tracingCtx, cfg.Observability.Tracing, fallbackSvc)
+	if err != nil {
+		logger.Error("failed to initialize tracing", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(flushCtx); err != nil {
+			logger.Warn("tracing shutdown error", "error", err)
+		}
+	}()
+
 	rt, err := config.BuildRuntime(cfg)
 	if err != nil {
 		logger.Error("failed to build runtime config", "error", err)

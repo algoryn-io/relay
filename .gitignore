@@ -51,3 +51,6 @@ docker-compose.override.yml
 # Misc temp files
 *.tmp
 *.swp
+
+# Local planning docs (not for the repo)
+ROADMAP.md
