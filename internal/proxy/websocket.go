@@ -67,7 +67,9 @@ func (p *Proxy) serveWebSocket(
 
 	target := selected.URL
 	backendName := backend.Name
-	transport := p.transportFor(backendName, selected.circuit)
+	// Use a WS-aware transport so the upstream connection also honors the idle
+	// timeout (the client side is handled by idleHijackWriter below).
+	transport := p.wsTransportFor(backendName, selected.circuit)
 
 	rp := &httputil.ReverseProxy{
 		Transport: transport,

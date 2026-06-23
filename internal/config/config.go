@@ -56,6 +56,15 @@ type TLSConfig struct {
 	Domains  []string `yaml:"domains"`
 	CertFile string   `yaml:"cert_file"`
 	KeyFile  string   `yaml:"key_file"`
+	// MinVersion is the minimum accepted TLS version: "1.2" (default) or "1.3".
+	MinVersion string `yaml:"min_version"`
+	// ClientCAFile, when set, enables inbound mTLS: clients must present a
+	// certificate signed by a CA in this PEM bundle.
+	ClientCAFile string `yaml:"client_ca_file"`
+	// ClientAuth selects the client-certificate policy when ClientCAFile is set:
+	// "require" (default) verifies a cert is presented and valid; "verify_if_given"
+	// verifies only when one is presented; "request" asks but does not enforce.
+	ClientAuth string `yaml:"client_auth"`
 }
 
 type TimeoutsConfig struct {

@@ -3,12 +3,14 @@ package listener
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -484,7 +486,9 @@ func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertReloader, error) {
 			// cert inside CertReloader takes effect for all new connections
 			// immediately, with no listener restart required.
 			GetCertificate: reloader.GetCertificate,
-			MinVersion:     tls.VersionTLS12,
+		}
+		if err := applyTLSHardening(tlsCfg, cfg); err != nil {
+			return nil, nil, err
 		}
 		return tlsCfg, reloader, nil
 
@@ -494,11 +498,59 @@ func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertReloader, error) {
 			HostPolicy: autocert.HostWhitelist(cfg.Domains...),
 			Cache:      autocert.DirCache(".autocert-cache"),
 		}
-		return m.TLSConfig(), nil, nil
+		tlsCfg := m.TLSConfig()
+		if err := applyTLSHardening(tlsCfg, cfg); err != nil {
+			return nil, nil, err
+		}
+		return tlsCfg, nil, nil
 
 	default:
 		return nil, nil, fmt.Errorf("unknown TLS mode %q", mode)
 	}
+}
+
+// hardenedTLS12Ciphers is a conservative TLS 1.2 cipher list (AEAD + forward
+// secrecy only). It is ignored when MinVersion is 1.3 (1.3 suites are fixed).
+var hardenedTLS12Ciphers = []uint16{
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+}
+
+// applyTLSHardening sets the minimum version, a hardened cipher list, and inbound
+// mTLS (client certificate verification) on tlsCfg according to cfg.
+func applyTLSHardening(tlsCfg *tls.Config, cfg config.TLSConfig) error {
+	switch strings.TrimSpace(cfg.MinVersion) {
+	case "1.3":
+		tlsCfg.MinVersion = tls.VersionTLS13
+	default: // "" or "1.2"
+		tlsCfg.MinVersion = tls.VersionTLS12
+		tlsCfg.CipherSuites = hardenedTLS12Ciphers
+	}
+
+	if strings.TrimSpace(cfg.ClientCAFile) != "" {
+		pem, err := os.ReadFile(cfg.ClientCAFile)
+		if err != nil {
+			return fmt.Errorf("read client_ca_file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return fmt.Errorf("no valid certificates in client_ca_file %q", cfg.ClientCAFile)
+		}
+		tlsCfg.ClientCAs = pool
+		switch strings.ToLower(strings.TrimSpace(cfg.ClientAuth)) {
+		case "request":
+			tlsCfg.ClientAuth = tls.RequestClientCert
+		case "verify_if_given":
+			tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
+		default: // "" or "require"
+			tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+	}
+	return nil
 }
 
 // relayManagedHeaders are identity/hop headers that only Relay's own middleware

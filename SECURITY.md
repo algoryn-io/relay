@@ -33,3 +33,22 @@ Relay is pre-1.0; security fixes are applied to `main` and the latest release.
   network. The Prometheus endpoint is loopback-gated by default.
 - **Secrets**: provide secrets via environment variables (`*_env` fields), never
   in plaintext config.
+- **Inbound mTLS / TLS version**: set `listener.https.tls.min_version: "1.3"` for
+  the strongest default, or rely on the hardened TLS 1.2 cipher list. For
+  zero-trust, set `client_ca_file` (and optionally `client_auth`) to require
+  client certificates.
+
+## Release artifact verification
+
+Releases ship a CycloneDX SBOM per archive and a cosign (keyless) signature of
+the checksums file and the Docker image(s). Verify before deploying:
+
+```sh
+cosign verify-blob --certificate checksums.txt.pem \
+  --signature checksums.txt.sig checksums.txt
+cosign verify algoryn/relay:<version> \
+  --certificate-identity-regexp '.*' --certificate-oidc-issuer-regexp '.*'
+```
+
+Signing runs in CI and requires the `cosign`/`syft` binaries and OIDC token
+permission (`id-token: write` in GitHub Actions).

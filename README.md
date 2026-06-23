@@ -106,6 +106,19 @@ listener:
   strip_request_headers: # extra inbound identity headers to drop at the edge
     - X-User-Id
     - X-Roles
+  max_concurrent_requests: 0  # global in-flight cap (0 = unlimited); fast 503 over it
+  https:
+    port: 8443
+    tls:
+      mode: manual          # or "auto" (ACME/Let's Encrypt)
+      cert_file: ./tls/server.crt
+      key_file: ./tls/server.key
+      min_version: "1.3"    # "1.2" (default, hardened ciphers) or "1.3"
+      client_ca_file: ./tls/client-ca.crt  # set to require inbound mTLS
+      client_auth: require  # require | verify_if_given | request
+  admin:
+    allowed_cidrs: ["127.0.0.0/8"]
+    token_env: RELAY_ADMIN_TOKEN  # optional bearer token on top of the allowlist
 
 routes:
   - name: test-route

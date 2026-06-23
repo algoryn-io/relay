@@ -41,3 +41,36 @@ dockers:
 
 checksum:
   name_template: "checksums.txt"
+
+# Software Bill of Materials for each archive (requires `syft` on the runner).
+sboms:
+  - id: archive
+    artifacts: archive
+
+# Keyless signing of the checksums file via cosign + Sigstore (Fulcio/Rekor).
+# Works in CI with OIDC (e.g. GitHub Actions `id-token: write`); requires the
+# `cosign` binary. Verify with:
+#   cosign verify-blob --certificate checksums.txt.pem \
+#     --signature checksums.txt.sig checksums.txt
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    signature: "${artifact}.sig"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
+# Keyless signing of the published Docker image(s).
+docker_signs:
+  - cmd: cosign
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}@${digest}"
+    artifacts: images
+    output: true

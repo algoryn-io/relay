@@ -94,6 +94,20 @@ func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {
 	default:
 		errs.Addf("%s.mode: must be one of manual, auto", prefix)
 	}
+
+	switch strings.TrimSpace(tls.MinVersion) {
+	case "", "1.2", "1.3":
+	default:
+		errs.Addf("%s.min_version: must be 1.2 or 1.3", prefix)
+	}
+	switch strings.ToLower(strings.TrimSpace(tls.ClientAuth)) {
+	case "", "require", "verify_if_given", "request":
+	default:
+		errs.Addf("%s.client_auth: must be one of require, verify_if_given, request", prefix)
+	}
+	if strings.TrimSpace(tls.ClientAuth) != "" && strings.TrimSpace(tls.ClientCAFile) == "" {
+		errs.Addf("%s.client_auth: requires client_ca_file to be set", prefix)
+	}
 }
 
 func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[string]struct{}, errs *ValidationErrors) {

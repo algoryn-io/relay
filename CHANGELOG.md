@@ -7,6 +7,11 @@ All notable changes to Relay are documented here. The format is based on
 ## [Unreleased]
 
 ### Security
+- Inbound mTLS: `listener.https.tls.client_ca_file` + `client_auth` require/verify
+  client certificates. Configurable `min_version` (1.2 default / 1.3) and a
+  hardened TLS 1.2 cipher list.
+- Release artifacts ship a CycloneDX SBOM and cosign (keyless) signatures for the
+  checksums file and Docker images.
 - JWT: validate `iss` and `aud` when configured (`issuer` / `audience`).
 - JWKS: require an `https` URL, cap the response body size, and reject RSA keys
   smaller than 2048 bits.
@@ -28,7 +33,8 @@ All notable changes to Relay are documented here. The format is based on
 - Prometheus metrics: `relay_retry_total`, `relay_circuit_breaker_state`,
   `relay_bulkhead_in_flight`, `relay_bulkhead_rejected_total`,
   `relay_upstream_duration_seconds`.
-- `timeouts.websocket_idle` to close idle proxied WebSocket tunnels.
+- `timeouts.websocket_idle` to close idle proxied WebSocket tunnels (now enforced
+  on the upstream/backend side of the tunnel as well as the client side).
 - `timeouts.read_header` and a default `MaxHeaderBytes` on the listener.
 - CI: `-race` test run, `govulncheck` job, and Dependabot configuration.
 

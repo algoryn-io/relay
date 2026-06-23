@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -89,4 +90,38 @@ func (p *Proxy) transportFor(backendName string, cb *CircuitBreaker) http.RoundT
 		return &circuitTransport{base: base, circuit: cb}
 	}
 	return base
+}
+
+// wsTransportFor returns the RoundTripper for a WebSocket upgrade. When a
+// WebSocket idle timeout is configured it clones the backend transport and wraps
+// its DialContext so the upstream (backend) connection also enforces the idle
+// deadline — the downstream/client side is handled by idleHijackWriter. The
+// clone preserves the backend's TLS settings (mTLS, custom CA). Falls back to the
+// regular transport when no idle timeout is set.
+func (p *Proxy) wsTransportFor(backendName string, cb *CircuitBreaker) http.RoundTripper {
+	if p.wsIdleTimeout <= 0 {
+		return p.transportFor(backendName, cb)
+	}
+	base, ok := p.backendTransports[backendName]
+	tr, isTransport := base.(*http.Transport)
+	if !ok || !isTransport || tr == nil {
+		return p.transportFor(backendName, cb)
+	}
+
+	clone := tr.Clone()
+	idle := p.wsIdleTimeout
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	clone.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dialer.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &idleConn{Conn: conn, idle: idle}, nil
+	}
+
+	var rt http.RoundTripper = clone
+	if cb != nil {
+		rt = &circuitTransport{base: clone, circuit: cb}
+	}
+	return rt
 }
