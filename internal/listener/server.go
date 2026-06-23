@@ -240,7 +240,8 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.state.Load().close()
+	// Drain the HTTP servers first so in-flight requests finish while the
+	// proxy/dispatcher are still alive; only then tear down the state.
 	var firstErr error
 	for _, srv := range []*http.Server{s.httpServer, s.httpsServer} {
 		if srv == nil {
@@ -332,6 +333,7 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 	metrics := observability.NewMetrics(100)
 	promCollector := observability.NewPrometheusCollector()
 	rtProxy.SetHealthNotifier(promCollector)
+	rtProxy.SetMetrics(promCollector)
 	for backendName, backend := range rt.Backends {
 		hasHealthCheck := backend.HealthCheck.Path != "" && backend.HealthCheck.Interval > 0
 		for _, inst := range backend.Instances {

@@ -31,7 +31,7 @@ func (p *Proxy) BackendSnapshots() []BackendSnapshot {
 		for _, inst := range insts {
 			s := InstanceSnapshot{
 				Healthy:        inst.Healthy,
-				ActiveRequests: inst.ActiveRequests,
+				ActiveRequests: int(inst.activeRequests.Load()),
 			}
 			if inst.URL != nil {
 				s.URL = inst.URL.String()
@@ -65,7 +65,7 @@ func (p *Proxy) BackendSnapshot(name string) (BackendSnapshot, bool) {
 	for _, inst := range insts {
 		s := InstanceSnapshot{
 			Healthy:        inst.Healthy,
-			ActiveRequests: inst.ActiveRequests,
+			ActiveRequests: int(inst.activeRequests.Load()),
 		}
 		if inst.URL != nil {
 			s.URL = inst.URL.String()

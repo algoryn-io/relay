@@ -11,8 +11,11 @@ import (
 var errAllCircuitsOpen = errors.New("all instances have open circuits")
 
 func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	// Read lock only: instance health is written under the write lock (health
+	// loop / drain), while activeRequests and the round-robin counter are atomic.
+	// This lets concurrent requests select instances without serializing.
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
 	states := p.instances[backendName]
 	healthy := make([]*instanceState, 0, len(states))
@@ -39,7 +42,7 @@ func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, er
 	case "least_connections":
 		selected = healthy[0]
 		for _, state := range healthy[1:] {
-			if state.ActiveRequests < selected.ActiveRequests {
+			if state.activeRequests.Load() < selected.activeRequests.Load() {
 				selected = state
 			}
 		}
@@ -63,11 +66,14 @@ func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, er
 		}
 
 	default: // round_robin
-		idx := p.roundRobin[backendName] % len(healthy)
-		selected = healthy[idx]
-		p.roundRobin[backendName] = (p.roundRobin[backendName] + 1) % len(healthy)
+		if c := p.roundRobin[backendName]; c != nil {
+			idx := int((c.Add(1) - 1) % uint64(len(healthy)))
+			selected = healthy[idx]
+		} else {
+			selected = healthy[0]
+		}
 	}
 
-	selected.ActiveRequests++
+	selected.activeRequests.Add(1)
 	return selected, nil
 }
