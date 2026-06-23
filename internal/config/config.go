@@ -19,6 +19,15 @@ type ListenerConfig struct {
 	Timeouts       TimeoutsConfig `yaml:"timeouts"`
 	TrustedProxies []string       `yaml:"trusted_proxies"`
 	Admin          AdminConfig    `yaml:"admin"`
+	// StripRequestHeaders lists additional inbound headers to remove at the edge
+	// before any routing or proxying, on top of the always-stripped Relay-managed
+	// identity headers. Use it for app-specific identity headers a backend trusts
+	// (e.g. X-User-Id, X-Roles) so clients cannot spoof them.
+	StripRequestHeaders []string `yaml:"strip_request_headers"`
+	// MaxConcurrentRequests caps in-flight proxied requests across all routes
+	// (global overload backpressure on top of per-backend bulkheads). Excess
+	// requests get a fast 503. 0 means unlimited.
+	MaxConcurrentRequests int `yaml:"max_concurrent_requests"`
 }
 
 // AdminConfig controls access to the /_relay/admin/* management endpoints.
@@ -178,38 +187,42 @@ type MiddlewareConfig struct {
 }
 
 type MiddlewareSettingsConfig struct {
-	SecretEnv          string            `yaml:"secret_env"`
-	ResolvedSecret     string            `yaml:"-"`
-	Header             string            `yaml:"header"`
-	ClaimsToHeaders    map[string]string `yaml:"claims_to_headers"`
+	SecretEnv       string            `yaml:"secret_env"`
+	ResolvedSecret  string            `yaml:"-"`
+	Header          string            `yaml:"header"`
+	ClaimsToHeaders map[string]string `yaml:"claims_to_headers"`
 	// JWT algorithm selection: hs256 (default), rs256.
-	Algorithm    string        `yaml:"algorithm"`
+	Algorithm string `yaml:"algorithm"`
 	// PublicKeyFile is the path to a PEM-encoded RSA public key for rs256.
-	PublicKeyFile string       `yaml:"public_key_file"`
+	PublicKeyFile string `yaml:"public_key_file"`
 	// JWKSUrl is a JWKS endpoint URL for rs256 key discovery.
-	JWKSUrl      string        `yaml:"jwks_url"`
+	JWKSUrl string `yaml:"jwks_url"`
 	// JWKSCacheTTL is how long JWKS keys are cached. Defaults to 5m when zero.
 	JWKSCacheTTL time.Duration `yaml:"jwks_cache_ttl"`
-	MaxBytes           int64             `yaml:"max_bytes"`
-	Allow              []string          `yaml:"allow"`
-	Deny               []string          `yaml:"deny"`
-	Strategy           string            `yaml:"strategy"`
-	Limit              int               `yaml:"limit"`
-	Window             time.Duration     `yaml:"window"`
-	By                 string            `yaml:"by"`
+	// ExpectedIssuer, when set, requires the JWT "iss" claim to match exactly.
+	ExpectedIssuer string `yaml:"issuer"`
+	// ExpectedAudience, when set, requires the JWT "aud" claim to contain it.
+	ExpectedAudience string        `yaml:"audience"`
+	MaxBytes         int64         `yaml:"max_bytes"`
+	Allow            []string      `yaml:"allow"`
+	Deny             []string      `yaml:"deny"`
+	Strategy         string        `yaml:"strategy"`
+	Limit            int           `yaml:"limit"`
+	Window           time.Duration `yaml:"window"`
+	By               string        `yaml:"by"`
 	// Rate limit store: "memory" (default, in-process) or "redis" (distributed).
-	RateLimitStore  string `yaml:"store"`
+	RateLimitStore string `yaml:"store"`
 	// RedisURL is the connection URL for the Redis rate limit store.
 	// Accepts redis:// and rediss:// (TLS) schemes. Use redis_url_env for
 	// production to avoid credentials in config files.
-	RedisURL        string `yaml:"redis_url"`
+	RedisURL string `yaml:"redis_url"`
 	// RedisURLEnv is the name of an environment variable containing the
 	// Redis URL; overrides redis_url when set.
-	RedisURLEnv     string `yaml:"redis_url_env"`
-	AllowedOrigins     []string          `yaml:"allowed_origins"`
-	AllowedMethods     []string          `yaml:"allowed_methods"`
-	AllowedHeaders     []string          `yaml:"allowed_headers"`
-	AllowCredentials   bool              `yaml:"allow_credentials"`
+	RedisURLEnv      string   `yaml:"redis_url_env"`
+	AllowedOrigins   []string `yaml:"allowed_origins"`
+	AllowedMethods   []string `yaml:"allowed_methods"`
+	AllowedHeaders   []string `yaml:"allowed_headers"`
+	AllowCredentials bool     `yaml:"allow_credentials"`
 	// JWTLogFailures emits structured Warn logs on JWT rejection (missing header, parse/signature/claims).
 	// Does not log the raw token or secret; payload inspection lists claim keys and exp only.
 	JWTLogFailures bool `yaml:"jwt_log_failures"`

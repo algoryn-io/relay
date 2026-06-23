@@ -82,6 +82,26 @@ func (p *Proxy) BackendSnapshot(name string) (BackendSnapshot, bool) {
 	}, true
 }
 
+// Readiness reports aggregate backend health for the readiness probe.
+// total is the number of configured backends; healthy is the number of backends
+// that have at least one healthy instance. The gateway is considered ready when
+// it has no backends, or when at least one backend can still serve traffic.
+func (p *Proxy) Readiness() (healthy, total int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	for name := range p.backends {
+		total++
+		for _, inst := range p.instances[name] {
+			if inst.Healthy {
+				healthy++
+				break
+			}
+		}
+	}
+	return healthy, total
+}
+
 // DrainInstance marks the given instance as unhealthy, removing it from the
 // load-balancing pool until a health check restores it or the config is reloaded.
 func (p *Proxy) DrainInstance(backendName, instanceURL string) error {

@@ -359,6 +359,13 @@ func validateJWTMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *Va
 		case hasJWKS && cfg.JWKSCacheTTL < 0:
 			errs.Addf("%s.jwks_cache_ttl: must be >= 0", prefix)
 		}
+		if hasJWKS {
+			// The JWKS endpoint is the trust anchor for RS256 verification; a
+			// plaintext URL is exploitable via MITM key substitution.
+			if u, err := url.Parse(strings.TrimSpace(cfg.JWKSUrl)); err != nil || !strings.EqualFold(u.Scheme, "https") {
+				errs.Addf("%s.jwks_url: must be an https URL", prefix)
+			}
+		}
 	default:
 		errs.Addf("%s.algorithm: must be one of hs256, rs256", prefix)
 	}

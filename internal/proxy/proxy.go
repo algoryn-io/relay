@@ -77,15 +77,14 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 			p.bulkheads[name] = newBulkhead(backend.Bulkhead.MaxConcurrent)
 		}
 
-		btls := backend.TLS
-		if btls.CertFile != "" || btls.KeyFile != "" || btls.CAFile != "" || btls.InsecureSkipVerify {
-			tr, trErr := buildBackendTransport(btls)
-			if trErr != nil {
-				cancel()
-				return nil, fmt.Errorf("backend %q: build transport: %w", name, trErr)
-			}
-			p.backendTransports[name] = tr
+		// Every backend gets its own tuned transport (with TLS applied when
+		// configured) so connection pooling is never left to http.DefaultTransport.
+		tr, trErr := buildBackendTransport(backend.TLS)
+		if trErr != nil {
+			cancel()
+			return nil, fmt.Errorf("backend %q: build transport: %w", name, trErr)
 		}
+		p.backendTransports[name] = tr
 	}
 
 	for name, backend := range rt.Backends {
@@ -220,10 +219,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		maxAttempts = 1
 	}
 
+	// A request is retry-eligible only when more than one attempt is configured,
+	// at least one retry condition is set, and the method is safe (or unsafe
+	// methods are explicitly allowed). When it is not eligible there is no reason
+	// to buffer: the response streams straight to the client. This keeps the hot
+	// path allocation-free and preserves streaming/SSE for the common case.
+	retryEligible := maxAttempts > 1 &&
+		len(retry.On) > 0 &&
+		(retry.AllowUnsafe || isSafeMethod(r.Method))
+	if !retryEligible {
+		maxAttempts = 1
+	}
+
 	// Buffer the request body for retry replay when no size limit was applied
 	// above. A 1 MB cap prevents excessive memory use; bodies larger than that
 	// disable retry (the single attempt still completes normally).
-	if !bodyBuffered && maxAttempts > 1 && r.Body != nil && r.Body != http.NoBody {
+	if !bodyBuffered && retryEligible && r.Body != nil && r.Body != http.NoBody {
 		const maxBodyBuffer = 1 << 20 // 1 MB
 		lr := &io.LimitedReader{R: r.Body, N: int64(maxBodyBuffer) + 1}
 		data, err := io.ReadAll(lr)
@@ -231,6 +242,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		if err != nil || lr.N == 0 {
 			// Body unreadable or too large: disable retry, restore what we read.
 			maxAttempts = 1
+			retryEligible = false
 			if err == nil {
 				r.Body = io.NopCloser(bytes.NewReader(data))
 			}
@@ -278,7 +290,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		target := selected.URL
 		transport := p.transportFor(backendName, selected.circuit)
 
-		buf := newResponseBuffer()
+		// When the request is retry-eligible, capture the response in a bounded
+		// buffer so the status can be inspected before bytes reach the client.
+		// Otherwise stream straight to the real ResponseWriter: no buffering, so
+		// large responses and SSE/streaming work and memory stays flat.
+		var dst http.ResponseWriter = w
+		var buf *responseBuffer
+		if retryEligible {
+			buf = newResponseBuffer(w, maxRetryResponseBuffer)
+			dst = buf
+		}
+		var netErr error
 
 		rp := &httputil.ReverseProxy{
 			Transport: transport,
@@ -313,7 +335,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 				}
 			},
 			ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-				buf.networkErr = err
+				netErr = err
 				if errors.Is(err, context.DeadlineExceeded) {
 					if p.logger != nil {
 						p.logger.Warn("backend timeout",
@@ -338,11 +360,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 			},
 		}
 
-		rp.ServeHTTP(buf, r)
+		attemptStart := time.Now()
+		rp.ServeHTTP(dst, r)
 		p.releaseInstance(backend.Name, selected)
+
+		p.metrics.ObserveUpstreamLatency(backendName, time.Since(attemptStart))
+		if selected.circuit != nil {
+			p.metrics.SetCircuitState(backendName, selected.URL.String(), selected.circuit.State())
+		}
+
+		// Non-retryable request: the response has already streamed to the client.
+		if !retryEligible {
+			return
+		}
+
 		lastBuf = buf
 
-		isNetErr := buf.networkErr != nil
+		// Once the buffer committed (response exceeded the cap and streamed
+		// through), bytes are on the wire and the request can no longer be retried.
+		if buf.committed {
+			return
+		}
+
+		isNetErr := netErr != nil
 		if !shouldRetry(buf.Status(), isNetErr, retry, r.Method) || attempt == maxAttempts-1 {
 			break
 		}
@@ -376,7 +416,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		}
 	}
 
-	lastBuf.flushTo(w)
+	if lastBuf != nil {
+		lastBuf.flushTo(w)
+	}
 }
 
 // resolveHeaderTpl resolves a header value template for add_request_headers.

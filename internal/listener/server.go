@@ -37,6 +37,8 @@ type serverState struct {
 	fabricDispatch   *observability.EventDispatcher
 	relayServiceName string
 	adminH           http.Handler
+	stripHeaders     []string    // extra inbound headers to remove at the edge
+	mwClosers        []io.Closer // middleware resources (redis pools, prune loops)
 }
 
 func (st *serverState) close() {
@@ -227,29 +229,43 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			firstErr = err
 		}
 	}
+	s.state.Load().close()
 	return firstErr
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	st := s.state.Load()
 
+	// Resolve the client IP (honoring trusted proxies) into the request context
+	// first, then strip spoofable inbound headers. Resolution happens before the
+	// strip so removing X-Forwarded-* here never affects client-IP resolution.
 	req = httpx.WithResolvedClientIP(req, st.trustedNets)
+	stripUntrustedHeaders(req, st.trustedNets, st.stripHeaders)
 
 	switch {
 	case req.URL.Path == "/_relay/metrics":
-		clientIP := httpx.ClientIP(req)
-		if clientIP != "127.0.0.1" && clientIP != "::1" {
+		// Gate on the real TCP peer, not the (spoofable) forwarded client IP.
+		if !isLoopbackPeer(req) {
 			httpx.WriteError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 		st.metricsH.ServeHTTP(w, req)
 		return
 	case req.URL.Path == "/_relay/health":
+		// Liveness: the process is up and serving.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 		return
+	case req.URL.Path == "/_relay/ready":
+		writeReadiness(w, st.proxy)
+		return
 	case req.URL.Path == st.prometheusPath:
+		// Same exposure as the JSON metrics endpoint: restrict to the local peer.
+		if !isLoopbackPeer(req) {
+			httpx.WriteError(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		st.prometheusH.ServeHTTP(w, req)
 		return
 	case strings.HasPrefix(req.URL.Path, "/_relay/admin"):
@@ -379,6 +395,8 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		fabricDispatch:   fabricDispatch,
 		relayServiceName: relaySvc,
 		adminH:           adminH,
+		stripHeaders:     cfg.Listener.StripRequestHeaders,
+		mwClosers:        mwClosers,
 	}
 
 	if fabricDispatch != nil {
@@ -439,6 +457,69 @@ func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertReloader, error) {
 	default:
 		return nil, nil, fmt.Errorf("unknown TLS mode %q", mode)
 	}
+}
+
+// relayManagedHeaders are identity/hop headers that only Relay's own middleware
+// or proxy may set. They are always stripped from inbound requests at the edge
+// so a client can never spoof an authenticated identity to a backend.
+var relayManagedHeaders = []string{
+	"X-Authenticated-Sub",
+	"X-Internal-Auth",
+	"X-Admin",
+	"X-Real-IP",
+}
+
+// forwardedHeaders are stripped from inbound requests unless the immediate peer
+// is a trusted proxy, in which case they are preserved (the proxy is the
+// authority for the forwarding chain and scheme).
+var forwardedHeaders = []string{
+	"X-Forwarded-For",
+	"X-Forwarded-Host",
+	"X-Forwarded-Proto",
+	"X-Forwarded-Port",
+	"Forwarded",
+}
+
+// stripUntrustedHeaders removes headers a client must not be able to spoof.
+// Relay-managed identity headers (and any operator-configured extras) are always
+// removed; the X-Forwarded-* family is removed only when the peer is not a
+// trusted proxy. Client IP must already be resolved before this runs.
+func stripUntrustedHeaders(r *http.Request, trustedNets []*net.IPNet, extra []string) {
+	for _, h := range relayManagedHeaders {
+		r.Header.Del(h)
+	}
+	for _, h := range extra {
+		r.Header.Del(h)
+	}
+	if !httpx.PeerTrusted(r, trustedNets) {
+		for _, h := range forwardedHeaders {
+			r.Header.Del(h)
+		}
+	}
+}
+
+// isLoopbackPeer reports whether the immediate TCP peer is a loopback address.
+// It uses the real peer (RemoteAddr), so it cannot be bypassed via forwarding
+// headers.
+func isLoopbackPeer(r *http.Request) bool {
+	ip := net.ParseIP(httpx.PeerIP(r))
+	return ip != nil && ip.IsLoopback()
+}
+
+// writeReadiness reports whether the gateway can serve traffic: ready (200) when
+// there are no backends or at least one backend has a healthy instance; not
+// ready (503) when backends exist but none can serve. Intended for a k8s
+// readiness probe.
+func writeReadiness(w http.ResponseWriter, px *proxy.Proxy) {
+	healthy, total := px.Readiness()
+	w.Header().Set("Content-Type", "application/json")
+	if total > 0 && healthy == 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"unavailable"}`))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ready"}`))
 }
 
 // httpsRedirectHandler returns an http.Handler that permanently redirects

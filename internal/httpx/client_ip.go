@@ -26,6 +26,24 @@ func ClientIP(r *http.Request) string {
 	return remoteAddrIP(r)
 }
 
+// PeerIP returns the IP of the immediate TCP peer (RemoteAddr), ignoring any
+// forwarding headers. Unlike ClientIP it cannot be spoofed via X-Forwarded-For,
+// so it must be used for trust decisions that gate privileged endpoints (admin,
+// metrics).
+func PeerIP(r *http.Request) string {
+	return remoteAddrIP(r)
+}
+
+// PeerTrusted reports whether the immediate TCP peer is within one of the
+// trusted networks. With no trusted networks configured, no peer is trusted.
+func PeerTrusted(r *http.Request, trustedNets []*net.IPNet) bool {
+	if len(trustedNets) == 0 {
+		return false
+	}
+	ip := net.ParseIP(remoteAddrIP(r))
+	return ip != nil && isTrustedNet(ip, trustedNets)
+}
+
 // ParseTrustedNets parses IP or CIDR strings into networks.
 // Invalid entries are silently skipped; they should have been caught by config validation.
 func ParseTrustedNets(entries []string) []*net.IPNet {

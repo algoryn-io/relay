@@ -76,8 +76,8 @@ func TestJWTRS256ExpiredTokenReturns401(t *testing.T) {
 func TestJWTRS256WrongKeyReturns401(t *testing.T) {
 	t.Parallel()
 
-	priv, _ := rsaKeyFixture(t)          // key used to sign
-	_, pemPath := rsaKeyFixture(t)        // different key for verification
+	priv, _ := rsaKeyFixture(t)    // key used to sign
+	_, pemPath := rsaKeyFixture(t) // different key for verification
 
 	token := signRS256(t, priv, "kid-1", time.Now().Add(5*time.Minute))
 
@@ -118,6 +118,7 @@ func TestJWTJWKSValidTokenPasses(t *testing.T) {
 		Algorithm:    "rs256",
 		JWKSUrl:      jwksServer.URL + "/jwks",
 		JWKSCacheTTL: time.Minute,
+		JWKSClient:   jwksServer.Client(),
 	})
 	if err != nil {
 		t.Fatalf("NewJWT() error = %v", err)
@@ -142,8 +143,9 @@ func TestJWTJWKSUnknownKidReturns401(t *testing.T) {
 	token := signRS256(t, priv, "key-unknown", time.Now().Add(5*time.Minute))
 
 	mw, err := NewJWT(JWTConfig{
-		Algorithm: "rs256",
-		JWKSUrl:   jwksServer.URL + "/jwks",
+		Algorithm:  "rs256",
+		JWKSUrl:    jwksServer.URL + "/jwks",
+		JWKSClient: jwksServer.Client(),
 	})
 	if err != nil {
 		t.Fatalf("NewJWT() error = %v", err)
@@ -167,13 +169,13 @@ func TestJWTJWKSCacheRefreshOnKidMiss(t *testing.T) {
 	var currentKeys []*rsaKidPair
 	currentKeys = []*rsaKidPair{{kid: "key-1", priv: priv1}}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(buildJWKS(currentKeys))
 	}))
 	t.Cleanup(server.Close)
 
 	// Very short TTL so the cache expires quickly.
-	cache := newJWKSCache(server.URL, 50*time.Millisecond)
+	cache := newJWKSCache(server.URL, 50*time.Millisecond, server.Client())
 
 	// Prime the cache with key-1.
 	_, _ = cache.getKey("key-1")
@@ -233,7 +235,7 @@ func jwksServerFixture(t *testing.T, kid string) (*rsa.PrivateKey, *httptest.Ser
 		t.Fatalf("rsa.GenerateKey() error = %v", err)
 	}
 	pairs := []*rsaKidPair{{kid: kid, priv: priv}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(buildJWKS(pairs))
 	}))
 	t.Cleanup(server.Close)

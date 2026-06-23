@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -45,19 +46,27 @@ func normalizeClaimsToHeaders(in map[string]string) map[string]string {
 
 type JWTConfig struct {
 	// Algorithm selects the verification strategy: "hs256" (default) or "rs256".
-	Algorithm       string
+	Algorithm string
 	// HS256
-	Secret          string
+	Secret string
 	// RS256 with static PEM key
-	PublicKeyFile   string
+	PublicKeyFile string
 	// RS256 with JWKS endpoint
-	JWKSUrl         string
-	JWKSCacheTTL    time.Duration
+	JWKSUrl      string
+	JWKSCacheTTL time.Duration
 	// Common
 	Header          string
 	ClaimsToHeaders map[string]string
-	Logger          *slog.Logger
-	LogFailures     bool
+	// ExpectedIssuer, when set, requires the token "iss" claim to match exactly.
+	ExpectedIssuer string
+	// ExpectedAudience, when set, requires the token "aud" claim to contain it.
+	ExpectedAudience string
+	// JWKSClient overrides the HTTP client used to fetch the JWKS endpoint.
+	// Left nil in production (a default client is used); set in tests to trust a
+	// local TLS test server.
+	JWKSClient  *http.Client
+	Logger      *slog.Logger
+	LogFailures bool
 }
 
 func NewJWT(cfg JWTConfig) (Middleware, error) {
@@ -131,7 +140,14 @@ func newJWTRS256Static(cfg JWTConfig, claimsToHeaders map[string]string) (Middle
 }
 
 func newJWTJWKS(cfg JWTConfig, claimsToHeaders map[string]string) (Middleware, error) {
-	cache := newJWKSCache(strings.TrimSpace(cfg.JWKSUrl), cfg.JWKSCacheTTL)
+	jwksURL := strings.TrimSpace(cfg.JWKSUrl)
+	// The JWKS endpoint is the trust anchor for every RS256 token. Fetching it
+	// over plaintext HTTP would let a network attacker substitute keys and forge
+	// tokens, so require HTTPS.
+	if u, err := url.Parse(jwksURL); err != nil || !strings.EqualFold(u.Scheme, "https") {
+		return nil, fmt.Errorf("jwt: jwks_url must be an https URL")
+	}
+	cache := newJWKSCache(jwksURL, cfg.JWKSCacheTTL, cfg.JWKSClient)
 	if cfg.Logger != nil {
 		cfg.Logger.Info("jwt middleware initialized",
 			"algorithm", "rs256",
@@ -146,6 +162,21 @@ func newJWTJWKS(cfg JWTConfig, claimsToHeaders map[string]string) (Middleware, e
 
 // jwtHandler builds the actual middleware handler given a keyfunc and allowed methods.
 func jwtHandler(cfg JWTConfig, claimsToHeaders map[string]string, keyfunc jwt.Keyfunc, validMethods []string) Middleware {
+	parserOpts := []jwt.ParserOption{
+		jwt.WithValidMethods(validMethods),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuedAt(),
+	}
+	// Bind the token to this gateway's expected issuer/audience when configured,
+	// preventing tokens minted for a different issuer or audience (common with a
+	// shared IdP/JWKS) from being accepted here.
+	if iss := strings.TrimSpace(cfg.ExpectedIssuer); iss != "" {
+		parserOpts = append(parserOpts, jwt.WithIssuer(iss))
+	}
+	if aud := strings.TrimSpace(cfg.ExpectedAudience); aud != "" {
+		parserOpts = append(parserOpts, jwt.WithAudience(aud))
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tokenString, ok := readTokenFromHeader(r, cfg.Header)
@@ -156,11 +187,7 @@ func jwtHandler(cfg JWTConfig, claimsToHeaders map[string]string, keyfunc jwt.Ke
 				return
 			}
 
-			token, err := jwt.Parse(tokenString, keyfunc,
-				jwt.WithValidMethods(validMethods),
-				jwt.WithExpirationRequired(),
-				jwt.WithIssuedAt(),
-			)
+			token, err := jwt.Parse(tokenString, keyfunc, parserOpts...)
 			if err != nil || token == nil || !token.Valid {
 				cfg.logReject(r, "invalid_token", err, tokenString,
 					slog.Bool("parser_reports_valid", token != nil && token.Valid))
