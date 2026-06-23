@@ -25,7 +25,9 @@ func NewMetricsMiddlewareFabric(metrics *Metrics, prom *PrometheusCollector, fab
 			}
 			prom.RequestFinished(routeName, r.Method, rec.Status(), duration)
 
-			if fabric != nil {
+			// Build the protobuf only when the queue can accept it, avoiding wasted
+			// allocations on the hot path when telemetry would be dropped anyway.
+			if fabric != nil && fabric.HasCapacity() {
 				snap, evt := BuildRequestFabricTelemetry(
 					relayServiceName,
 					routeName,

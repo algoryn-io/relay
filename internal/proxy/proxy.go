@@ -179,9 +179,15 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 }
 
 func (p *Proxy) Close() {
-	if p != nil && p.cancel != nil {
+	if p == nil {
+		return
+	}
+	if p.cancel != nil {
 		p.cancel()
 	}
+	// Wait for health-check goroutines to observe the cancellation and exit, so
+	// no background checks outlive the proxy after a reload or shutdown.
+	p.healthWG.Wait()
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.RouteRuntime) {

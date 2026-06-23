@@ -197,6 +197,35 @@ func TestJWTJWKSCacheRefreshOnKidMiss(t *testing.T) {
 	}
 }
 
+func TestJWKSStaleKeyServedWithinGraceThenFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	_, jwksServer := jwksServerFixture(t, "key-1")
+	cache := newJWKSCache(jwksServer.URL, time.Minute, jwksServer.Client())
+
+	// Prime the cache, then take the endpoint down.
+	if _, err := cache.getKey("key-1"); err != nil {
+		t.Fatalf("priming getKey error = %v", err)
+	}
+	jwksServer.Close()
+
+	// Just past TTL but within the grace window: stale key is still served.
+	cache.mu.Lock()
+	cache.fetchedAt = time.Now().Add(-(cache.ttl + jwksStaleGrace/2))
+	cache.mu.Unlock()
+	if _, err := cache.getKey("key-1"); err != nil {
+		t.Fatalf("within grace: getKey error = %v, want stale key served", err)
+	}
+
+	// Beyond TTL+grace: fail closed.
+	cache.mu.Lock()
+	cache.fetchedAt = time.Now().Add(-(cache.ttl + jwksStaleGrace + time.Minute))
+	cache.mu.Unlock()
+	if _, err := cache.getKey("key-1"); err == nil {
+		t.Fatal("beyond grace: getKey returned nil error, want fail-closed")
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 type rsaKidPair struct {

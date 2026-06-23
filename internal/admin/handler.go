@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"crypto/subtle"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -14,30 +16,48 @@ import (
 const pathPrefix = "/_relay/admin"
 
 // Handler serves the /_relay/admin/* management endpoints.
-// All endpoints require the client IP to be in the configured allowlist.
+// All endpoints require the client IP to be in the configured allowlist, and,
+// when a token is configured, a matching bearer token.
 type Handler struct {
 	px          *proxy.Proxy
 	routes      map[string]config.RouteRuntime
 	allowedNets []*net.IPNet
+	token       string
+	logger      *slog.Logger
 }
 
 // New builds an admin Handler. allowedCIDRs restricts access by IP range;
-// if empty, only loopback addresses are allowed.
-func New(px *proxy.Proxy, routes map[string]config.RouteRuntime, allowedCIDRs []string) *Handler {
+// if empty, only loopback addresses are allowed. token, when non-empty, is
+// required as an "Authorization: Bearer <token>" header. logger, when non-nil,
+// receives audit entries for admin access and mutations.
+func New(px *proxy.Proxy, routes map[string]config.RouteRuntime, allowedCIDRs []string, token string, logger *slog.Logger) *Handler {
 	nets := httpx.ParseTrustedNets(allowedCIDRs)
 	if len(nets) == 0 {
 		_, lo4, _ := net.ParseCIDR("127.0.0.0/8")
 		_, lo6, _ := net.ParseCIDR("::1/128")
 		nets = []*net.IPNet{lo4, lo6}
 	}
-	return &Handler{px: px, routes: routes, allowedNets: nets}
+	return &Handler{px: px, routes: routes, allowedNets: nets, token: strings.TrimSpace(token), logger: logger}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	clientIP := net.ParseIP(httpx.ClientIP(r))
-	if clientIP == nil || !h.ipAllowed(clientIP) {
+	// Gate on the real TCP peer (RemoteAddr), not the forwarded client IP, so the
+	// allowlist cannot be bypassed by spoofing X-Forwarded-For.
+	peer := httpx.PeerIP(r)
+	peerIP := net.ParseIP(peer)
+	if peerIP == nil || !h.ipAllowed(peerIP) {
+		h.audit("admin access denied (ip)", peer, r)
 		httpx.WriteError(w, http.StatusForbidden, "forbidden")
 		return
+	}
+	if !h.tokenOK(r) {
+		h.audit("admin access denied (token)", peer, r)
+		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	// Audit every state-changing call with the resolved peer.
+	if r.Method != http.MethodGet {
+		h.audit("admin action", peer, r)
 	}
 
 	// Strip the fixed prefix and split into path segments.
@@ -177,6 +197,33 @@ func (h *Handler) ipAllowed(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+// tokenOK reports whether the request carries the configured bearer token.
+// When no token is configured, access is permitted (IP-allowlist only).
+func (h *Handler) tokenOK(r *http.Request) bool {
+	if h.token == "" {
+		return true
+	}
+	const prefix = "Bearer "
+	raw := r.Header.Get("Authorization")
+	if len(raw) <= len(prefix) || !strings.EqualFold(raw[:len(prefix)], prefix) {
+		return false
+	}
+	got := strings.TrimSpace(raw[len(prefix):])
+	return subtle.ConstantTimeCompare([]byte(got), []byte(h.token)) == 1
+}
+
+func (h *Handler) audit(msg, peer string, r *http.Request) {
+	if h.logger == nil {
+		return
+	}
+	h.logger.Info(msg,
+		"event", "admin_audit",
+		"peer", peer,
+		"method", r.Method,
+		"path", r.URL.Path,
+	)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

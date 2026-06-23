@@ -71,6 +71,9 @@ type Server struct {
 	logger       *slog.Logger
 	state        atomic.Pointer[serverState]
 	reloadMu     sync.Mutex
+
+	inFlight    atomic.Int64 // currently in-flight proxied requests
+	maxInFlight atomic.Int64 // global cap; 0 = unlimited (resizable on reload)
 }
 
 type compiledRoute struct {
@@ -169,6 +172,8 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 
 	old := s.state.Swap(newState)
 	go old.close()
+
+	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
 
 	for _, srv := range []*http.Server{s.httpServer, s.httpsServer} {
 		if srv == nil {
@@ -295,6 +300,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Global backpressure: cap in-flight proxied requests. Internal endpoints
+	// above are exempt so health/readiness/metrics stay reachable under overload.
+	if max := s.maxInFlight.Load(); max > 0 {
+		n := s.inFlight.Add(1)
+		defer s.inFlight.Add(-1)
+		if n > max {
+			httpx.WriteError(w, http.StatusServiceUnavailable, "overloaded")
+			return
+		}
+	}
+
 	route, err := st.router.Match(req)
 	switch {
 	case err == nil:
@@ -407,7 +423,7 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		promPath = "/_relay/metrics/prometheus"
 	}
 
-	adminH := admin.New(rtProxy, rt.Routes, cfg.Listener.Admin.AllowedCIDRs)
+	adminH := admin.New(rtProxy, rt.Routes, cfg.Listener.Admin.AllowedCIDRs, cfg.Listener.Admin.ResolvedToken, logger)
 
 	st := &serverState{
 		proxy:            rtProxy,

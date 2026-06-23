@@ -83,16 +83,18 @@ func (c *jwksCache) Keyfunc(token *jwt.Token) (any, error) {
 func (c *jwksCache) getKey(kid string) (*rsa.PublicKey, error) {
 	c.mu.Lock()
 	key, ok := c.keys[kid]
-	stale := time.Since(c.fetchedAt) > c.ttl
+	age := time.Since(c.fetchedAt)
 	c.mu.Unlock()
 
-	if ok && !stale {
+	if ok && age <= c.ttl {
 		return key, nil
 	}
 
 	if err := c.refresh(); err != nil {
-		if ok {
-			// Use stale key rather than fail when the endpoint is temporarily down.
+		// Serve a stale key only within a bounded grace window beyond the TTL, so
+		// a temporary endpoint outage doesn't reject traffic, but a revoked key is
+		// not honored forever.
+		if ok && age <= c.ttl+jwksStaleGrace {
 			return key, nil
 		}
 		return nil, fmt.Errorf("jwks: %w", err)

@@ -61,15 +61,16 @@ RELAY_CONFIG=./config/example.yaml go run ./cmd/relay
 ### Test a route
 
 ```bash
-curl -i http://localhost:8080/test
+curl -i http://localhost:8088/test
 ```
 
-Adjust host, port, and path based on your config.
+Adjust host, port, and path based on your config (the shipped `example.yaml`
+listens on `8088`).
 
 ### Check metrics
 
 ```bash
-curl -s http://localhost:8080/_relay/metrics | jq
+curl -s http://localhost:8088/_relay/metrics | jq
 ```
 
 ### Example: API gateway with prefix routes
@@ -94,11 +95,17 @@ Or set `RELAY_CONFIG` to that path manually. The helper script lives at [`script
 ```yaml
 listener:
   http:
-    port: 8080
+    port: 8088
   timeouts:
     read: 30s
     write: 30s
     idle: 60s
+    read_header: 10s      # header-read timeout (Slowloris mitigation)
+    websocket_idle: 5m    # close idle proxied WebSocket tunnels (0 = off)
+  trusted_proxies: []     # CIDRs/IPs of proxies allowed to set X-Forwarded-For
+  strip_request_headers: # extra inbound identity headers to drop at the edge
+    - X-User-Id
+    - X-Roles
 
 routes:
   - name: test-route
@@ -174,7 +181,10 @@ observability:
 
 - Configurable header (`Authorization` by default)
 - Supports `Bearer <token>`
-- Validates HMAC signature and expiration
+- HS256 (shared secret via `secret_env`) or RS256 (static `public_key_file` or a
+  JWKS endpoint via `jwks_url`, which must be `https`)
+- Validates signature and expiration; optionally enforces `issuer` and `audience`
+  so tokens minted for another issuer/audience are rejected
 
 ### Rate Limit (`type: rate_limit`)
 
@@ -201,17 +211,23 @@ observability:
 
 ## Observability
 
+### Health & readiness
+
+- `GET /_relay/health` — liveness; always 200 while the process is up.
+- `GET /_relay/ready` — readiness; 503 when backends exist but none has a healthy
+  instance. Use it for Kubernetes readiness probes.
+
 ### Metrics
 
-Endpoint:
+Endpoints (loopback-gated):
 
-- `GET /_relay/metrics`
+- `GET /_relay/metrics` — JSON snapshot
+- `GET /_relay/metrics/prometheus` — Prometheus exposition
 
-Includes:
-
-- `total_requests`
-- Per-route request and latency stats (avg, p95)
-- Status code counters
+Includes per-route request/latency/status metrics plus resilience metrics:
+`relay_upstream_duration_seconds` (by backend), `relay_retry_total`,
+`relay_circuit_breaker_state`, `relay_bulkhead_in_flight`,
+`relay_bulkhead_rejected_total`, and `relay_backend_healthy`.
 
 ### Access Logs
 

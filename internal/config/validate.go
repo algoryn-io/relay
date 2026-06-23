@@ -60,6 +60,11 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 	validatePositiveDuration("listener.timeouts.read", listener.Timeouts.Read, errs, false)
 	validatePositiveDuration("listener.timeouts.write", listener.Timeouts.Write, errs, false)
 	validatePositiveDuration("listener.timeouts.idle", listener.Timeouts.Idle, errs, false)
+	validatePositiveDuration("listener.timeouts.read_header", listener.Timeouts.ReadHeader, errs, true)
+	validatePositiveDuration("listener.timeouts.websocket_idle", listener.Timeouts.WebSocketIdle, errs, true)
+	if listener.MaxConcurrentRequests < 0 {
+		errs.Addf("listener.max_concurrent_requests: must be >= 0")
+	}
 	validateIPFilterEntries("listener.trusted_proxies", listener.TrustedProxies, errs)
 	validateIPFilterEntries("listener.admin.allowed_cidrs", listener.Admin.AllowedCIDRs, errs)
 }

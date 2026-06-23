@@ -35,6 +35,11 @@ type AdminConfig struct {
 	// AllowedCIDRs is the list of IP ranges that may call admin endpoints.
 	// Defaults to loopback only (127.0.0.0/8 and ::1/128) when empty.
 	AllowedCIDRs []string `yaml:"allowed_cidrs"`
+	// TokenEnv names an environment variable holding a bearer token. When set,
+	// admin requests must present "Authorization: Bearer <token>" in addition to
+	// passing the IP allowlist. Leave empty for IP-only access.
+	TokenEnv      string `yaml:"token_env"`
+	ResolvedToken string `yaml:"-"`
 }
 
 type HTTPConfig struct {
