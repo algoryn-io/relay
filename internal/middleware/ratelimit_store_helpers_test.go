@@ -41,7 +41,7 @@ func TestMemoryStorePruneRemovesStaleBuckets(t *testing.T) {
 
 	now := time.Now()
 	// One recent key, one stale key; window is 1s.
-	store.Check(context.Background(), "fresh", 10, time.Second, now)
+	_, _, _, _ = store.Check(context.Background(), "fresh", 10, time.Second, now)
 	store.seedBucket("stale", []time.Time{now.Add(-time.Hour)})
 
 	// Drive the pruner directly with a "now" past the stale key's window.
