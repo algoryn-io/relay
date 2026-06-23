@@ -43,7 +43,11 @@ func NewAccessLogger(cfg config.LogsConfig) (*slog.Logger, io.Closer, error) {
 		return nil, nil, err
 	}
 
-	return slog.New(slog.NewJSONHandler(writer, opts)), writer, nil
+	// Wrap the file in an async, buffered writer so request handlers never block
+	// on disk I/O or the file lock. Closing the asyncWriter flushes and closes
+	// the underlying rotating file.
+	async := newAsyncWriter(writer, asyncQueueSize)
+	return slog.New(slog.NewJSONHandler(async, opts)), async, nil
 }
 
 func parseLogLevel(level string) slog.Level {

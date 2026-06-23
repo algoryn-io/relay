@@ -7,12 +7,18 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 )
+
+// redisCheckTimeout bounds a single Redis rate-limit call. If Redis is slow or
+// unreachable (e.g. a black-holed network), the call fails fast and the limiter
+// fails open instead of stalling the request for the full dial timeout.
+const redisCheckTimeout = 100 * time.Millisecond
 
 // rateLimitStore is the pluggable backend for the sliding-window rate limiter.
 // Implementations must be safe for concurrent use.
@@ -33,11 +39,28 @@ type rateLimitStore interface {
 // In-process memory store
 // ──────────────────────────────────────────────────────────────────────────────
 
-type memoryStore struct {
-	salt []byte
+const (
+	// memoryStoreShards splits the bucket map into independently-locked shards so
+	// requests for different keys don't serialize on one global mutex.
+	memoryStoreShards = 256
+	// memoryPruneInterval is how often the background sweeper removes stale
+	// buckets, keeping pruning off the request hot path.
+	memoryPruneInterval = time.Minute
+)
 
+type memoryShard struct {
 	mu      sync.Mutex
 	buckets map[string][]time.Time
+}
+
+type memoryStore struct {
+	salt      []byte
+	shards    []*memoryShard
+	maxWindow atomic.Int64 // largest window (ns) seen; drives the pruner cutoff
+
+	stop     chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 func newMemoryStore() (*memoryStore, error) {
@@ -45,7 +68,17 @@ func newMemoryStore() (*memoryStore, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return nil, fmt.Errorf("generate rate limit salt: %w", err)
 	}
-	return &memoryStore{salt: salt, buckets: make(map[string][]time.Time)}, nil
+	s := &memoryStore{
+		salt:   salt,
+		shards: make([]*memoryShard, memoryStoreShards),
+		stop:   make(chan struct{}),
+	}
+	for i := range s.shards {
+		s.shards[i] = &memoryShard{buckets: make(map[string][]time.Time)}
+	}
+	s.wg.Add(1)
+	go s.pruneLoop()
+	return s, nil
 }
 
 func (s *memoryStore) HashKey(key string) string {
@@ -54,13 +87,27 @@ func (s *memoryStore) HashKey(key string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// shardFor selects the shard for a key via FNV-1a hashing.
+func (s *memoryStore) shardFor(key string) *memoryShard {
+	var h uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		h ^= uint32(key[i])
+		h *= 16777619
+	}
+	return s.shards[h%uint32(len(s.shards))]
+}
+
 func (s *memoryStore) Check(_ context.Context, key string, limit int, window time.Duration, now time.Time) (bool, int, time.Time, error) {
+	if w := int64(window); w > s.maxWindow.Load() {
+		s.maxWindow.Store(w) // best-effort; only used to size the prune cutoff
+	}
 	cutoff := now.Add(-window)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	sh := s.shardFor(key)
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
 
-	events := s.buckets[key]
+	events := sh.buckets[key]
 	keep := events[:0]
 	for _, ts := range events {
 		if ts.After(cutoff) {
@@ -72,7 +119,7 @@ func (s *memoryStore) Check(_ context.Context, key string, limit int, window tim
 	}
 
 	if len(keep) >= limit {
-		s.buckets[key] = keep
+		sh.buckets[key] = keep
 		var reset time.Time
 		if len(keep) > 0 {
 			reset = keep[0].Add(window)
@@ -83,16 +130,7 @@ func (s *memoryStore) Check(_ context.Context, key string, limit int, window tim
 	}
 
 	keep = append(keep, now)
-	s.buckets[key] = keep
-
-	// Opportunistic pruning when the bucket map grows large.
-	if len(s.buckets) > 1024 {
-		for k, ts := range s.buckets {
-			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
-				delete(s.buckets, k)
-			}
-		}
-	}
+	sh.buckets[key] = keep
 
 	remaining := limit - len(keep)
 	var reset time.Time
@@ -102,6 +140,47 @@ func (s *memoryStore) Check(_ context.Context, key string, limit int, window tim
 		reset = now.Add(window)
 	}
 	return true, remaining, reset, nil
+}
+
+// pruneLoop periodically removes buckets whose newest event is older than the
+// largest window seen, bounding memory for high-cardinality keyspaces (e.g.
+// per-IP) without touching the request path.
+func (s *memoryStore) pruneLoop() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(memoryPruneInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stop:
+			return
+		case <-ticker.C:
+			s.pruneOnce(time.Now())
+		}
+	}
+}
+
+func (s *memoryStore) pruneOnce(now time.Time) {
+	w := time.Duration(s.maxWindow.Load())
+	if w <= 0 {
+		return
+	}
+	cutoff := now.Add(-w)
+	for _, sh := range s.shards {
+		sh.mu.Lock()
+		for k, ts := range sh.buckets {
+			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
+				delete(sh.buckets, k)
+			}
+		}
+		sh.mu.Unlock()
+	}
+}
+
+// Close stops the background pruner. Safe to call multiple times.
+func (s *memoryStore) Close() error {
+	s.stopOnce.Do(func() { close(s.stop) })
+	s.wg.Wait()
+	return nil
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -145,6 +224,7 @@ return {1, remaining, oldest_ms + win}
 
 type redisStore struct {
 	client redis.Cmdable
+	closer io.Closer // underlying client to close on shutdown/reload; nil in tests
 	seq    atomic.Int64
 }
 
@@ -153,13 +233,23 @@ func newRedisStore(rawURL string) (*redisStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse redis URL: %w", err)
 	}
-	return &redisStore{client: redis.NewClient(opts)}, nil
+	c := redis.NewClient(opts)
+	return &redisStore{client: c, closer: c}, nil
 }
 
 // newRedisStoreFromClient creates a redisStore from an existing Cmdable.
 // Used in tests to inject miniredis.
 func newRedisStoreFromClient(c redis.Cmdable) *redisStore {
 	return &redisStore{client: c}
+}
+
+// Close releases the underlying Redis client's connection pool. Without this,
+// every config reload would leak a pool (and its background goroutines).
+func (s *redisStore) Close() error {
+	if s.closer != nil {
+		return s.closer.Close()
+	}
+	return nil
 }
 
 // HashKey uses plain SHA-256 so that all relay instances produce the same
@@ -173,6 +263,9 @@ func (s *redisStore) Check(ctx context.Context, key string, limit int, window ti
 	nowMs := now.UnixMilli()
 	windowMs := window.Milliseconds()
 	member := fmt.Sprintf("%d:%d", nowMs, s.seq.Add(1))
+
+	ctx, cancel := context.WithTimeout(ctx, redisCheckTimeout)
+	defer cancel()
 
 	res, err := slidingWindowScript.Run(ctx, s.client,
 		[]string{key},

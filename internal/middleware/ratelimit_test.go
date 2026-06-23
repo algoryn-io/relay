@@ -131,14 +131,10 @@ func TestRateLimitAPIKeyHashesMapKey(t *testing.T) {
 	if !allowed {
 		t.Fatal("Check() = false, want true")
 	}
-	store.mu.Lock()
-	_, hasRaw := store.buckets["plain-api-key"]
-	_, hasHashed := store.buckets[key]
-	store.mu.Unlock()
-	if hasRaw {
+	if store.hasBucket("plain-api-key") {
 		t.Fatal("buckets contains raw API key")
 	}
-	if !hasHashed {
+	if !store.hasBucket(key) {
 		t.Fatal("buckets missing hashed API key")
 	}
 }
@@ -151,31 +147,29 @@ func TestRateLimitCapsTimestampSliceAtLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	store.mu.Lock()
-	store.buckets["client"] = []time.Time{
+	store.seedBucket("client", []time.Time{
 		now.Add(-3 * time.Second),
 		now.Add(-2 * time.Second),
 		now.Add(-1 * time.Second),
-	}
-	store.mu.Unlock()
+	})
 
 	allowed, _, _, _ := store.Check(context.Background(), "client", 2, time.Minute, now)
 	if allowed {
 		t.Fatal("Check() = true, want false")
 	}
-	store.mu.Lock()
-	got := len(store.buckets["client"])
-	store.mu.Unlock()
-	if got != 2 {
+	if got := store.bucketLen("client"); got != 2 {
 		t.Fatalf("len(bucket) = %d, want 2", got)
 	}
 }
 
 func mustRateLimit(t *testing.T, cfg RateLimitConfig) Middleware {
 	t.Helper()
-	mw, err := NewRateLimit(cfg)
+	mw, closer, err := NewRateLimit(cfg)
 	if err != nil {
 		t.Fatalf("NewRateLimit() error = %v", err)
+	}
+	if closer != nil {
+		t.Cleanup(func() { _ = closer.Close() })
 	}
 	return mw
 }

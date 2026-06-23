@@ -54,6 +54,20 @@ func (p *Proxy) SetHealthNotifier(n HealthNotifier) {
 	p.healthNotifier = n
 }
 
+// SetWebSocketIdleTimeout configures the idle timeout applied to proxied
+// WebSocket/upgrade tunnels. Must be called before serving traffic.
+func (p *Proxy) SetWebSocketIdleTimeout(d time.Duration) {
+	p.wsIdleTimeout = d
+}
+
+// SetMetrics wires the resilience metrics sink. Must be called before serving.
+func (p *Proxy) SetMetrics(m ProxyMetrics) {
+	if m == nil {
+		m = nopMetrics{}
+	}
+	p.metrics = m
+}
+
 func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 	if rt == nil {
 		return nil, fmt.Errorf("runtime config is nil")

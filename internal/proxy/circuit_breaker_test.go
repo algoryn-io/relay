@@ -103,6 +103,47 @@ func TestCircuitBreakerHalfOpenFailureReopens(t *testing.T) {
 	}
 }
 
+func TestCircuitBreakerHalfOpenAdmitsSingleProbe(t *testing.T) {
+	t.Parallel()
+	cb := newCircuitBreaker(1, 10*time.Millisecond)
+	cb.RecordFailure()
+	time.Sleep(20 * time.Millisecond)
+
+	// First Allow after timeout admits the probe.
+	if !cb.Allow() {
+		t.Fatal("first Allow() after timeout = false, want true (probe)")
+	}
+	// While the probe is in flight, all other callers are rejected.
+	if cb.Allow() {
+		t.Fatal("second concurrent Allow() = true, want false (single probe)")
+	}
+	if cb.Allow() {
+		t.Fatal("third concurrent Allow() = true, want false (single probe)")
+	}
+
+	// Probe fails → reopen; within the new timeout window Allow stays false.
+	cb.RecordFailure()
+	if cb.Allow() {
+		t.Fatal("Allow() = true right after probe failure, want false (reopened)")
+	}
+}
+
+func TestCircuitBreakerOldBurstDoesNotRetripAfterSuccess(t *testing.T) {
+	t.Parallel()
+	cb := newCircuitBreaker(3, time.Hour)
+
+	// Two failures (below threshold), then a success resets the counter.
+	cb.RecordFailure()
+	cb.RecordFailure()
+	cb.RecordSuccess()
+
+	// A single later failure must not trip — the old burst decayed.
+	cb.RecordFailure()
+	if cb.State() != "closed" {
+		t.Fatalf("state = %q, want closed (old burst should not count)", cb.State())
+	}
+}
+
 func TestCircuitBreakerIsOpenReadOnly(t *testing.T) {
 	t.Parallel()
 	cb := newCircuitBreaker(1, 10*time.Millisecond)

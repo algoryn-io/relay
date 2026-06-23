@@ -5,12 +5,14 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 
@@ -21,6 +23,14 @@ import (
 	"algoryn.io/relay/internal/observability"
 	"algoryn.io/relay/internal/proxy"
 	"algoryn.io/relay/internal/router"
+)
+
+const (
+	// defaultReadHeaderTimeout bounds request-header reads to mitigate Slowloris
+	// when no explicit value is configured.
+	defaultReadHeaderTimeout = 10 * time.Second
+	// defaultMaxHeaderBytes caps request header size (matches Go's default).
+	defaultMaxHeaderBytes = 1 << 20
 )
 
 // serverState holds all hot-reloadable request-handling state.
@@ -51,6 +61,7 @@ func (st *serverState) close() {
 	if st.proxy != nil {
 		st.proxy.Close()
 	}
+	middleware.CloseAll(st.mwClosers)
 }
 
 type Server struct {
@@ -91,9 +102,15 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 
 	s := &Server{logger: logger}
 	s.state.Store(st)
+	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
 
 	timeouts := cfg.Listener.Timeouts
 	httpsPort := cfg.Listener.HTTPS.Port
+
+	readHeaderTimeout := timeouts.ReadHeader
+	if readHeaderTimeout <= 0 {
+		readHeaderTimeout = defaultReadHeaderTimeout
+	}
 
 	// HTTP server: either serves requests directly, or redirects to HTTPS.
 	httpHandler := http.Handler(s)
@@ -103,11 +120,13 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 
 	if cfg.Listener.HTTP.Port > 0 {
 		s.httpServer = &http.Server{
-			Addr:         fmt.Sprintf(":%d", cfg.Listener.HTTP.Port),
-			Handler:      httpHandler,
-			ReadTimeout:  timeouts.Read,
-			WriteTimeout: timeouts.Write,
-			IdleTimeout:  timeouts.Idle,
+			Addr:              fmt.Sprintf(":%d", cfg.Listener.HTTP.Port),
+			Handler:           httpHandler,
+			ReadTimeout:       timeouts.Read,
+			ReadHeaderTimeout: readHeaderTimeout,
+			WriteTimeout:      timeouts.Write,
+			IdleTimeout:       timeouts.Idle,
+			MaxHeaderBytes:    defaultMaxHeaderBytes,
 		}
 	}
 
@@ -118,12 +137,14 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		}
 		s.certReloader = reloader // nil for auto mode; non-nil for manual mode
 		s.httpsServer = &http.Server{
-			Addr:         fmt.Sprintf(":%d", httpsPort),
-			Handler:      s,
-			TLSConfig:    tlsCfg,
-			ReadTimeout:  timeouts.Read,
-			WriteTimeout: timeouts.Write,
-			IdleTimeout:  timeouts.Idle,
+			Addr:              fmt.Sprintf(":%d", httpsPort),
+			Handler:           s,
+			TLSConfig:         tlsCfg,
+			ReadTimeout:       timeouts.Read,
+			ReadHeaderTimeout: readHeaderTimeout,
+			WriteTimeout:      timeouts.Write,
+			IdleTimeout:       timeouts.Idle,
+			MaxHeaderBytes:    defaultMaxHeaderBytes,
 		}
 		// When only HTTPS is configured, the HTTP server is nil; Start() still
 		// works because it only starts the servers that are non-nil.
@@ -302,7 +323,8 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 	if err != nil {
 		return nil, err
 	}
-	mwRegistry, err := middleware.BuildRegistry(rt.Middleware, logger)
+	rtProxy.SetWebSocketIdleTimeout(cfg.Listener.Timeouts.WebSocketIdle)
+	mwRegistry, mwClosers, err := middleware.BuildRegistry(rt.Middleware, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -359,6 +381,8 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 
 		routeMiddlewares, resolveErr := middleware.Resolve(routeRef.MiddlewareRefs, mwRegistry)
 		if resolveErr != nil {
+			rtProxy.Close()
+			middleware.CloseAll(mwClosers)
 			return nil, fmt.Errorf("resolve middleware for route %q: %w", routeRef.Name, resolveErr)
 		}
 		routeHandler := middleware.Chain(final, routeMiddlewares...)

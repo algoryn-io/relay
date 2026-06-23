@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,19 +39,22 @@ type rateLimiter struct {
 	store  rateLimitStore
 }
 
-// NewRateLimit returns a sliding-window rate limit middleware.
-func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
+// NewRateLimit returns a sliding-window rate limit middleware. The returned
+// io.Closer releases store resources (the in-memory pruner goroutine or the
+// Redis connection pool) and must be closed when the middleware is discarded
+// (e.g. on config reload). It is nil when the store holds no resources.
+func NewRateLimit(cfg RateLimitConfig) (Middleware, io.Closer, error) {
 	if cfg.Strategy == "" {
 		cfg.Strategy = SlidingWindow
 	}
 	if cfg.Strategy != SlidingWindow {
-		return nil, fmt.Errorf("unsupported rate limit strategy %q", cfg.Strategy)
+		return nil, nil, fmt.Errorf("unsupported rate limit strategy %q", cfg.Strategy)
 	}
 	if cfg.Limit <= 0 {
-		return nil, fmt.Errorf("rate limit must be greater than 0")
+		return nil, nil, fmt.Errorf("rate limit must be greater than 0")
 	}
 	if cfg.Window <= 0 {
-		return nil, fmt.Errorf("rate limit window must be greater than 0")
+		return nil, nil, fmt.Errorf("rate limit window must be greater than 0")
 	}
 	if strings.TrimSpace(cfg.By) == "" {
 		cfg.By = "ip"
@@ -58,7 +62,7 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
 	switch cfg.By {
 	case "ip", "route", "api_key":
 	default:
-		return nil, fmt.Errorf("unsupported rate limit key %q", cfg.By)
+		return nil, nil, fmt.Errorf("unsupported rate limit key %q", cfg.By)
 	}
 	if cfg.By == "api_key" && strings.TrimSpace(cfg.Header) == "" {
 		cfg.Header = "X-API-Key"
@@ -68,22 +72,30 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, error) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Store)) {
 	case "redis":
 		if strings.TrimSpace(cfg.RedisURL) == "" {
-			return nil, fmt.Errorf("redis_url is required when store is redis")
+			return nil, nil, fmt.Errorf("redis_url is required when store is redis")
 		}
 		rs, err := newRedisStore(cfg.RedisURL)
 		if err != nil {
-			return nil, fmt.Errorf("create redis store: %w", err)
+			return nil, nil, fmt.Errorf("create redis store: %w", err)
 		}
 		store = rs
 	default: // "" or "memory"
 		ms, err := newMemoryStore()
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		store = ms
 	}
 
-	return newRateLimitWithStore(cfg, store)
+	mw, err := newRateLimitWithStore(cfg, store)
+	if err != nil {
+		if c, ok := store.(io.Closer); ok {
+			_ = c.Close()
+		}
+		return nil, nil, err
+	}
+	closer, _ := store.(io.Closer)
+	return mw, closer, nil
 }
 
 // newRateLimitWithStore creates the middleware using an already-constructed

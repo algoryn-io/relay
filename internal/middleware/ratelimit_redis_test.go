@@ -265,7 +265,7 @@ func TestRedisRateLimitRateLimitHeaders(t *testing.T) {
 func TestNewRateLimitRedisStoreURLRequired(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewRateLimit(RateLimitConfig{
+	_, _, err := NewRateLimit(RateLimitConfig{
 		Strategy: SlidingWindow,
 		Limit:    10,
 		Window:   time.Minute,

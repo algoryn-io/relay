@@ -54,12 +54,18 @@ type TLSConfig struct {
 }
 
 type TimeoutsConfig struct {
-	Read         time.Duration `yaml:"read"`
-	Write        time.Duration `yaml:"write"`
-	Idle         time.Duration `yaml:"idle"`
-	ReadTimeout  time.Duration `yaml:"-"`
-	WriteTimeout time.Duration `yaml:"-"`
-	IdleTimeout  time.Duration `yaml:"-"`
+	Read  time.Duration `yaml:"read"`
+	Write time.Duration `yaml:"write"`
+	Idle  time.Duration `yaml:"idle"`
+	// ReadHeader bounds how long reading request headers may take (Slowloris
+	// mitigation). Defaults to 10s when zero.
+	ReadHeader time.Duration `yaml:"read_header"`
+	// WebSocketIdle closes a proxied WebSocket/upgrade tunnel after this much
+	// idle time on the client connection. 0 disables it (no idle timeout).
+	WebSocketIdle time.Duration `yaml:"websocket_idle"`
+	ReadTimeout   time.Duration `yaml:"-"`
+	WriteTimeout  time.Duration `yaml:"-"`
+	IdleTimeout   time.Duration `yaml:"-"`
 }
 
 // RewriteRule rewrites the outbound request path using a regular expression
