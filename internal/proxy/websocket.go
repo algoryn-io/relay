@@ -1,11 +1,15 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"strings"
+	"time"
 
 	"algoryn.io/relay/internal/config"
 	"algoryn.io/relay/internal/httpx"
@@ -63,7 +67,9 @@ func (p *Proxy) serveWebSocket(
 
 	target := selected.URL
 	backendName := backend.Name
-	transport := p.transportFor(backendName, selected.circuit)
+	// Use a WS-aware transport so the upstream connection also honors the idle
+	// timeout (the client side is handled by idleHijackWriter below).
+	transport := p.wsTransportFor(backendName, selected.circuit)
 
 	rp := &httputil.ReverseProxy{
 		Transport: transport,
@@ -105,5 +111,51 @@ func (p *Proxy) serveWebSocket(
 	// Write directly to w so that http.Hijacker remains accessible for the
 	// protocol switch. The ReverseProxy propagates the Upgrade/Connection
 	// headers and tunnels the bidirectional stream after the 101 response.
-	rp.ServeHTTP(w, r)
+	//
+	// When a WebSocket idle timeout is configured, wrap the writer so the
+	// hijacked client connection gets a read/write deadline that resets on every
+	// byte. A silent (e.g. dead/NATed) client then times out instead of holding
+	// the tunnel, goroutine, FD and bulkhead slot forever.
+	dst := w
+	if p.wsIdleTimeout > 0 {
+		dst = &idleHijackWriter{ResponseWriter: w, idle: p.wsIdleTimeout}
+	}
+	rp.ServeHTTP(dst, r)
+}
+
+// idleHijackWriter wraps a ResponseWriter so the hijacked connection enforces an
+// idle deadline. ReverseProxy hijacks the connection for the protocol switch and
+// tunnels through it, so the deadline transparently bounds tunnel inactivity.
+type idleHijackWriter struct {
+	http.ResponseWriter
+	idle time.Duration
+}
+
+func (w *idleHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
+	}
+	conn, brw, err := hj.Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	return &idleConn{Conn: conn, idle: w.idle}, brw, nil
+}
+
+// idleConn resets the connection deadline on every Read/Write so the tunnel is
+// closed only after `idle` elapses with no traffic in either direction.
+type idleConn struct {
+	net.Conn
+	idle time.Duration
+}
+
+func (c *idleConn) Read(b []byte) (int, error) {
+	_ = c.Conn.SetReadDeadline(time.Now().Add(c.idle))
+	return c.Conn.Read(b)
+}
+
+func (c *idleConn) Write(b []byte) (int, error) {
+	_ = c.Conn.SetWriteDeadline(time.Now().Add(c.idle))
+	return c.Conn.Write(b)
 }

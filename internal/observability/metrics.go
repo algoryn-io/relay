@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"algoryn.io/relay/internal/httpx"
@@ -14,14 +15,22 @@ import (
 
 const defaultLatencySamples = 100
 
+// routeMetrics holds the counters for a single route behind a small mutex, so
+// requests to different routes never contend on a shared lock.
+type routeMetrics struct {
+	mu       sync.Mutex
+	requests uint64
+	statuses map[int]uint64
+	latency  []time.Duration
+}
+
+// Metrics records a lightweight in-process summary for the JSON /_relay/metrics
+// endpoint. It is sharded per route (via sync.Map) with only a per-route mutex,
+// so the request hot path has no global lock. Prometheus remains the primary,
+// lock-free metrics source.
 type Metrics struct {
-	mu sync.RWMutex
-
-	totalRequests uint64
-	byRoute       map[string]uint64
-	byStatus      map[int]uint64
-	latency       map[string][]time.Duration
-
+	total             atomic.Uint64
+	routes            sync.Map // route(string) -> *routeMetrics
 	maxLatencySamples int
 }
 
@@ -29,12 +38,15 @@ func NewMetrics(maxLatencySamples int) *Metrics {
 	if maxLatencySamples <= 0 {
 		maxLatencySamples = defaultLatencySamples
 	}
-	return &Metrics{
-		byRoute:           make(map[string]uint64),
-		byStatus:          make(map[int]uint64),
-		latency:           make(map[string][]time.Duration),
-		maxLatencySamples: maxLatencySamples,
+	return &Metrics{maxLatencySamples: maxLatencySamples}
+}
+
+func (m *Metrics) routeMetrics(route string) *routeMetrics {
+	if v, ok := m.routes.Load(route); ok {
+		return v.(*routeMetrics)
 	}
+	actual, _ := m.routes.LoadOrStore(route, &routeMetrics{statuses: make(map[int]uint64)})
+	return actual.(*routeMetrics)
 }
 
 func (m *Metrics) Record(route string, status int, latency time.Duration) {
@@ -48,20 +60,20 @@ func (m *Metrics) Record(route string, status int, latency time.Duration) {
 		status = http.StatusOK
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.total.Add(1)
+	rm := m.routeMetrics(route)
 
-	m.totalRequests++
-	m.byRoute[route]++
-	m.byStatus[status]++
-
-	samples := append(m.latency[route], latency)
+	rm.mu.Lock()
+	rm.requests++
+	rm.statuses[status]++
+	samples := append(rm.latency, latency)
 	if len(samples) > m.maxLatencySamples {
 		overflow := len(samples) - m.maxLatencySamples
 		copy(samples, samples[overflow:])
 		samples = samples[:m.maxLatencySamples]
 	}
-	m.latency[route] = samples
+	rm.latency = samples
+	rm.mu.Unlock()
 }
 
 func (m *Metrics) Snapshot() map[string]any {
@@ -73,41 +85,36 @@ func (m *Metrics) Snapshot() map[string]any {
 		}
 	}
 
-	m.mu.RLock()
-	total := m.totalRequests
-	byRoute := make(map[string]uint64, len(m.byRoute))
-	for route, count := range m.byRoute {
-		byRoute[route] = count
-	}
-	byStatus := make(map[int]uint64, len(m.byStatus))
-	for status, count := range m.byStatus {
-		byStatus[status] = count
-	}
-	latencyCopy := make(map[string][]time.Duration, len(m.latency))
-	for route, samples := range m.latency {
-		cloned := make([]time.Duration, len(samples))
-		copy(cloned, samples)
-		latencyCopy[route] = cloned
-	}
-	m.mu.RUnlock()
+	routes := map[string]any{}
+	statusCodes := map[string]uint64{}
 
-	routes := make(map[string]any, len(byRoute))
-	for route, count := range byRoute {
-		samples := latencyCopy[route]
+	m.routes.Range(func(k, v any) bool {
+		route := k.(string)
+		rm := v.(*routeMetrics)
+
+		rm.mu.Lock()
+		requests := rm.requests
+		samples := make([]time.Duration, len(rm.latency))
+		copy(samples, rm.latency)
+		statuses := make(map[int]uint64, len(rm.statuses))
+		for s, c := range rm.statuses {
+			statuses[s] = c
+		}
+		rm.mu.Unlock()
+
 		routes[route] = map[string]any{
-			"requests":       count,
+			"requests":       requests,
 			"avg_latency_ms": avgLatencyMS(samples),
 			"p95_latency_ms": p95LatencyMS(samples),
 		}
-	}
-
-	statusCodes := make(map[string]uint64, len(byStatus))
-	for status, count := range byStatus {
-		statusCodes[strconv.Itoa(status)] = count
-	}
+		for s, c := range statuses {
+			statusCodes[strconv.Itoa(s)] += c
+		}
+		return true
+	})
 
 	return map[string]any{
-		"total_requests": total,
+		"total_requests": m.total.Load(),
 		"routes":         routes,
 		"status_codes":   statusCodes,
 	}

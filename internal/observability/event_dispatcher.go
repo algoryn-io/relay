@@ -82,6 +82,15 @@ func (d *EventDispatcher) loop() {
 	}
 }
 
+// HasCapacity reports whether the queue currently has room. It is a best-effort
+// hint so callers can skip building telemetry payloads that would be dropped.
+func (d *EventDispatcher) HasCapacity() bool {
+	if d == nil {
+		return false
+	}
+	return len(d.ch) < cap(d.ch)
+}
+
 // TryEnqueue forwards an item to the async processor. It never blocks the caller:
 // if the buffer is full, the item is dropped and an error is logged.
 func (d *EventDispatcher) TryEnqueue(item FabricDispatchItem) {

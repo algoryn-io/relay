@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"io"
 	"net/http"
 	"net/url"
 	"time"
@@ -9,6 +10,7 @@ import (
 )
 
 func (p *Proxy) healthLoop(backendName string, health config.HealthCheckConfig) {
+	defer p.healthWG.Done()
 	client := &http.Client{Timeout: health.Timeout}
 	p.checkBackendHealth(client, backendName, health)
 
@@ -37,7 +39,9 @@ func (p *Proxy) checkBackendHealth(client *http.Client, backendName string, heal
 		}
 
 		target := state.URL.ResolveReference(&url.URL{Path: health.Path})
-		req, err := http.NewRequest(http.MethodGet, target.String(), nil)
+		// Tie the probe to the proxy context so it aborts promptly on shutdown
+		// instead of blocking Close for the full health timeout.
+		req, err := http.NewRequestWithContext(p.ctx, http.MethodGet, target.String(), nil)
 		if err != nil {
 			p.updateInstanceHealth(backendName, state, false)
 			continue
@@ -46,6 +50,8 @@ func (p *Proxy) checkBackendHealth(client *http.Client, backendName string, heal
 		resp, err := client.Do(req)
 		healthy := err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300
 		if resp != nil && resp.Body != nil {
+			// Drain before closing so the keep-alive connection can be reused.
+			_, _ = io.Copy(io.Discard, resp.Body)
 			_ = resp.Body.Close()
 		}
 

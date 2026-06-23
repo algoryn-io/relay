@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"sync"
@@ -14,6 +15,20 @@ import (
 )
 
 const defaultJWKSCacheTTL = 5 * time.Minute
+
+// maxJWKSBytes caps the JWKS response body. A JWKS document is a handful of keys;
+// the cap prevents a hostile or misconfigured endpoint from streaming an
+// oversized body and exhausting memory.
+const maxJWKSBytes = 1 << 20 // 1 MB
+
+// minRSAKeyBits is the smallest RSA modulus accepted from a JWKS endpoint.
+// Anything weaker is rejected so a downgraded/forged small key cannot be trusted.
+const minRSAKeyBits = 2048
+
+// jwksStaleGrace bounds how long a cached key is served after its TTL expires
+// when the endpoint cannot be refreshed. Beyond TTL+grace the cache fails closed
+// so a key revoked during an IdP outage stops being accepted.
+const jwksStaleGrace = 5 * time.Minute
 
 type jwkSet struct {
 	Keys []jwk `json:"keys"`
@@ -37,15 +52,18 @@ type jwksCache struct {
 	client    *http.Client
 }
 
-func newJWKSCache(url string, ttl time.Duration) *jwksCache {
+func newJWKSCache(url string, ttl time.Duration, client *http.Client) *jwksCache {
 	if ttl <= 0 {
 		ttl = defaultJWKSCacheTTL
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	return &jwksCache{
 		url:    url,
 		ttl:    ttl,
 		keys:   make(map[string]*rsa.PublicKey),
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: client,
 	}
 }
 
@@ -65,16 +83,18 @@ func (c *jwksCache) Keyfunc(token *jwt.Token) (any, error) {
 func (c *jwksCache) getKey(kid string) (*rsa.PublicKey, error) {
 	c.mu.Lock()
 	key, ok := c.keys[kid]
-	stale := time.Since(c.fetchedAt) > c.ttl
+	age := time.Since(c.fetchedAt)
 	c.mu.Unlock()
 
-	if ok && !stale {
+	if ok && age <= c.ttl {
 		return key, nil
 	}
 
 	if err := c.refresh(); err != nil {
-		if ok {
-			// Use stale key rather than fail when the endpoint is temporarily down.
+		// Serve a stale key only within a bounded grace window beyond the TTL, so
+		// a temporary endpoint outage doesn't reject traffic, but a revoked key is
+		// not honored forever.
+		if ok && age <= c.ttl+jwksStaleGrace {
 			return key, nil
 		}
 		return nil, fmt.Errorf("jwks: %w", err)
@@ -110,7 +130,7 @@ func (c *jwksCache) refresh() error {
 	}
 
 	var set jwkSet
-	if err := json.NewDecoder(resp.Body).Decode(&set); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxJWKSBytes)).Decode(&set); err != nil {
 		return fmt.Errorf("parse: %w", err)
 	}
 
@@ -144,5 +164,9 @@ func parseRSAJWK(k jwk) (*rsa.PublicKey, error) {
 	if e == 0 {
 		return nil, fmt.Errorf("invalid exponent")
 	}
-	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}, nil
+	n := new(big.Int).SetBytes(nBytes)
+	if n.BitLen() < minRSAKeyBits {
+		return nil, fmt.Errorf("rsa key too small: %d bits (min %d)", n.BitLen(), minRSAKeyBits)
+	}
+	return &rsa.PublicKey{N: n, E: e}, nil
 }

@@ -312,17 +312,19 @@ func TestBuildBackendTransportInvalidKeyPair(t *testing.T) {
 	}
 }
 
-// TestTransportForFallback verifies that transportFor returns http.DefaultTransport
-// when no custom transport is registered for a backend.
+// TestTransportForFallback verifies that transportFor returns the proxy's tuned
+// default transport when no custom transport is registered for a backend.
 func TestTransportForFallback(t *testing.T) {
 	t.Parallel()
 
+	def := newBaseTransport()
 	p := &Proxy{
 		backendTransports: map[string]http.RoundTripper{},
+		defaultTransport:  def,
 	}
 	tr := p.transportFor("unknown-backend", nil)
-	if tr != http.DefaultTransport {
-		t.Errorf("want http.DefaultTransport, got %T", tr)
+	if tr != def {
+		t.Errorf("want proxy default transport, got %T", tr)
 	}
 }
 
@@ -331,17 +333,19 @@ func TestTransportForFallback(t *testing.T) {
 func TestTransportForCircuitBreaker(t *testing.T) {
 	t.Parallel()
 
+	def := newBaseTransport()
 	cb := newCircuitBreaker(5, 30*time.Second)
 	p := &Proxy{
 		backendTransports: map[string]http.RoundTripper{},
+		defaultTransport:  def,
 	}
 	tr := p.transportFor("b", cb)
 	ct, ok := tr.(*circuitTransport)
 	if !ok {
 		t.Fatalf("want *circuitTransport, got %T", tr)
 	}
-	if ct.base != http.DefaultTransport {
-		t.Errorf("circuitTransport.base = %T, want http.DefaultTransport", ct.base)
+	if ct.base != def {
+		t.Errorf("circuitTransport.base = %T, want proxy default transport", ct.base)
 	}
 	if ct.circuit != cb {
 		t.Error("circuitTransport.circuit does not match provided circuit breaker")

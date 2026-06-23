@@ -3,14 +3,18 @@ package listener
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 
@@ -21,6 +25,14 @@ import (
 	"algoryn.io/relay/internal/observability"
 	"algoryn.io/relay/internal/proxy"
 	"algoryn.io/relay/internal/router"
+)
+
+const (
+	// defaultReadHeaderTimeout bounds request-header reads to mitigate Slowloris
+	// when no explicit value is configured.
+	defaultReadHeaderTimeout = 10 * time.Second
+	// defaultMaxHeaderBytes caps request header size (matches Go's default).
+	defaultMaxHeaderBytes = 1 << 20
 )
 
 // serverState holds all hot-reloadable request-handling state.
@@ -37,6 +49,8 @@ type serverState struct {
 	fabricDispatch   *observability.EventDispatcher
 	relayServiceName string
 	adminH           http.Handler
+	stripHeaders     []string    // extra inbound headers to remove at the edge
+	mwClosers        []io.Closer // middleware resources (redis pools, prune loops)
 }
 
 func (st *serverState) close() {
@@ -49,6 +63,7 @@ func (st *serverState) close() {
 	if st.proxy != nil {
 		st.proxy.Close()
 	}
+	middleware.CloseAll(st.mwClosers)
 }
 
 type Server struct {
@@ -58,6 +73,9 @@ type Server struct {
 	logger       *slog.Logger
 	state        atomic.Pointer[serverState]
 	reloadMu     sync.Mutex
+
+	inFlight    atomic.Int64 // currently in-flight proxied requests
+	maxInFlight atomic.Int64 // global cap; 0 = unlimited (resizable on reload)
 }
 
 type compiledRoute struct {
@@ -89,9 +107,15 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 
 	s := &Server{logger: logger}
 	s.state.Store(st)
+	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
 
 	timeouts := cfg.Listener.Timeouts
 	httpsPort := cfg.Listener.HTTPS.Port
+
+	readHeaderTimeout := timeouts.ReadHeader
+	if readHeaderTimeout <= 0 {
+		readHeaderTimeout = defaultReadHeaderTimeout
+	}
 
 	// HTTP server: either serves requests directly, or redirects to HTTPS.
 	httpHandler := http.Handler(s)
@@ -101,11 +125,13 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 
 	if cfg.Listener.HTTP.Port > 0 {
 		s.httpServer = &http.Server{
-			Addr:         fmt.Sprintf(":%d", cfg.Listener.HTTP.Port),
-			Handler:      httpHandler,
-			ReadTimeout:  timeouts.Read,
-			WriteTimeout: timeouts.Write,
-			IdleTimeout:  timeouts.Idle,
+			Addr:              fmt.Sprintf(":%d", cfg.Listener.HTTP.Port),
+			Handler:           httpHandler,
+			ReadTimeout:       timeouts.Read,
+			ReadHeaderTimeout: readHeaderTimeout,
+			WriteTimeout:      timeouts.Write,
+			IdleTimeout:       timeouts.Idle,
+			MaxHeaderBytes:    defaultMaxHeaderBytes,
 		}
 	}
 
@@ -116,12 +142,14 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		}
 		s.certReloader = reloader // nil for auto mode; non-nil for manual mode
 		s.httpsServer = &http.Server{
-			Addr:         fmt.Sprintf(":%d", httpsPort),
-			Handler:      s,
-			TLSConfig:    tlsCfg,
-			ReadTimeout:  timeouts.Read,
-			WriteTimeout: timeouts.Write,
-			IdleTimeout:  timeouts.Idle,
+			Addr:              fmt.Sprintf(":%d", httpsPort),
+			Handler:           s,
+			TLSConfig:         tlsCfg,
+			ReadTimeout:       timeouts.Read,
+			ReadHeaderTimeout: readHeaderTimeout,
+			WriteTimeout:      timeouts.Write,
+			IdleTimeout:       timeouts.Idle,
+			MaxHeaderBytes:    defaultMaxHeaderBytes,
 		}
 		// When only HTTPS is configured, the HTTP server is nil; Start() still
 		// works because it only starts the servers that are non-nil.
@@ -146,6 +174,8 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 
 	old := s.state.Swap(newState)
 	go old.close()
+
+	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
 
 	for _, srv := range []*http.Server{s.httpServer, s.httpsServer} {
 		if srv == nil {
@@ -217,7 +247,8 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	s.state.Load().close()
+	// Drain the HTTP servers first so in-flight requests finish while the
+	// proxy/dispatcher are still alive; only then tear down the state.
 	var firstErr error
 	for _, srv := range []*http.Server{s.httpServer, s.httpsServer} {
 		if srv == nil {
@@ -227,34 +258,59 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			firstErr = err
 		}
 	}
+	s.state.Load().close()
 	return firstErr
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	st := s.state.Load()
 
+	// Resolve the client IP (honoring trusted proxies) into the request context
+	// first, then strip spoofable inbound headers. Resolution happens before the
+	// strip so removing X-Forwarded-* here never affects client-IP resolution.
 	req = httpx.WithResolvedClientIP(req, st.trustedNets)
+	stripUntrustedHeaders(req, st.trustedNets, st.stripHeaders)
 
 	switch {
 	case req.URL.Path == "/_relay/metrics":
-		clientIP := httpx.ClientIP(req)
-		if clientIP != "127.0.0.1" && clientIP != "::1" {
+		// Gate on the real TCP peer, not the (spoofable) forwarded client IP.
+		if !isLoopbackPeer(req) {
 			httpx.WriteError(w, http.StatusForbidden, "forbidden")
 			return
 		}
 		st.metricsH.ServeHTTP(w, req)
 		return
 	case req.URL.Path == "/_relay/health":
+		// Liveness: the process is up and serving.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 		return
+	case req.URL.Path == "/_relay/ready":
+		writeReadiness(w, st.proxy)
+		return
 	case req.URL.Path == st.prometheusPath:
+		// Same exposure as the JSON metrics endpoint: restrict to the local peer.
+		if !isLoopbackPeer(req) {
+			httpx.WriteError(w, http.StatusForbidden, "forbidden")
+			return
+		}
 		st.prometheusH.ServeHTTP(w, req)
 		return
 	case strings.HasPrefix(req.URL.Path, "/_relay/admin"):
 		st.adminH.ServeHTTP(w, req)
 		return
+	}
+
+	// Global backpressure: cap in-flight proxied requests. Internal endpoints
+	// above are exempt so health/readiness/metrics stay reachable under overload.
+	if max := s.maxInFlight.Load(); max > 0 {
+		n := s.inFlight.Add(1)
+		defer s.inFlight.Add(-1)
+		if n > max {
+			httpx.WriteError(w, http.StatusServiceUnavailable, "overloaded")
+			return
+		}
 	}
 
 	route, err := st.router.Match(req)
@@ -286,7 +342,8 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 	if err != nil {
 		return nil, err
 	}
-	mwRegistry, err := middleware.BuildRegistry(rt.Middleware, logger)
+	rtProxy.SetWebSocketIdleTimeout(cfg.Listener.Timeouts.WebSocketIdle)
+	mwRegistry, mwClosers, err := middleware.BuildRegistry(rt.Middleware, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -294,6 +351,7 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 	metrics := observability.NewMetrics(100)
 	promCollector := observability.NewPrometheusCollector()
 	rtProxy.SetHealthNotifier(promCollector)
+	rtProxy.SetMetrics(promCollector)
 	for backendName, backend := range rt.Backends {
 		hasHealthCheck := backend.HealthCheck.Path != "" && backend.HealthCheck.Interval > 0
 		for _, inst := range backend.Instances {
@@ -343,6 +401,8 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 
 		routeMiddlewares, resolveErr := middleware.Resolve(routeRef.MiddlewareRefs, mwRegistry)
 		if resolveErr != nil {
+			rtProxy.Close()
+			middleware.CloseAll(mwClosers)
 			return nil, fmt.Errorf("resolve middleware for route %q: %w", routeRef.Name, resolveErr)
 		}
 		routeHandler := middleware.Chain(final, routeMiddlewares...)
@@ -365,7 +425,7 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		promPath = "/_relay/metrics/prometheus"
 	}
 
-	adminH := admin.New(rtProxy, rt.Routes, cfg.Listener.Admin.AllowedCIDRs)
+	adminH := admin.New(rtProxy, rt.Routes, cfg.Listener.Admin.AllowedCIDRs, cfg.Listener.Admin.ResolvedToken, logger)
 
 	st := &serverState{
 		proxy:            rtProxy,
@@ -379,6 +439,8 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		fabricDispatch:   fabricDispatch,
 		relayServiceName: relaySvc,
 		adminH:           adminH,
+		stripHeaders:     cfg.Listener.StripRequestHeaders,
+		mwClosers:        mwClosers,
 	}
 
 	if fabricDispatch != nil {
@@ -424,7 +486,9 @@ func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertReloader, error) {
 			// cert inside CertReloader takes effect for all new connections
 			// immediately, with no listener restart required.
 			GetCertificate: reloader.GetCertificate,
-			MinVersion:     tls.VersionTLS12,
+		}
+		if err := applyTLSHardening(tlsCfg, cfg); err != nil {
+			return nil, nil, err
 		}
 		return tlsCfg, reloader, nil
 
@@ -434,11 +498,122 @@ func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertReloader, error) {
 			HostPolicy: autocert.HostWhitelist(cfg.Domains...),
 			Cache:      autocert.DirCache(".autocert-cache"),
 		}
-		return m.TLSConfig(), nil, nil
+		tlsCfg := m.TLSConfig()
+		if err := applyTLSHardening(tlsCfg, cfg); err != nil {
+			return nil, nil, err
+		}
+		return tlsCfg, nil, nil
 
 	default:
 		return nil, nil, fmt.Errorf("unknown TLS mode %q", mode)
 	}
+}
+
+// hardenedTLS12Ciphers is a conservative TLS 1.2 cipher list (AEAD + forward
+// secrecy only). It is ignored when MinVersion is 1.3 (1.3 suites are fixed).
+var hardenedTLS12Ciphers = []uint16{
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+}
+
+// applyTLSHardening sets the minimum version, a hardened cipher list, and inbound
+// mTLS (client certificate verification) on tlsCfg according to cfg.
+func applyTLSHardening(tlsCfg *tls.Config, cfg config.TLSConfig) error {
+	switch strings.TrimSpace(cfg.MinVersion) {
+	case "1.3":
+		tlsCfg.MinVersion = tls.VersionTLS13
+	default: // "" or "1.2"
+		tlsCfg.MinVersion = tls.VersionTLS12
+		tlsCfg.CipherSuites = hardenedTLS12Ciphers
+	}
+
+	if strings.TrimSpace(cfg.ClientCAFile) != "" {
+		pem, err := os.ReadFile(cfg.ClientCAFile)
+		if err != nil {
+			return fmt.Errorf("read client_ca_file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return fmt.Errorf("no valid certificates in client_ca_file %q", cfg.ClientCAFile)
+		}
+		tlsCfg.ClientCAs = pool
+		switch strings.ToLower(strings.TrimSpace(cfg.ClientAuth)) {
+		case "request":
+			tlsCfg.ClientAuth = tls.RequestClientCert
+		case "verify_if_given":
+			tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
+		default: // "" or "require"
+			tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+	}
+	return nil
+}
+
+// relayManagedHeaders are identity/hop headers that only Relay's own middleware
+// or proxy may set. They are always stripped from inbound requests at the edge
+// so a client can never spoof an authenticated identity to a backend.
+var relayManagedHeaders = []string{
+	"X-Authenticated-Sub",
+	"X-Internal-Auth",
+	"X-Admin",
+	"X-Real-IP",
+}
+
+// forwardedHeaders are stripped from inbound requests unless the immediate peer
+// is a trusted proxy, in which case they are preserved (the proxy is the
+// authority for the forwarding chain and scheme).
+var forwardedHeaders = []string{
+	"X-Forwarded-For",
+	"X-Forwarded-Host",
+	"X-Forwarded-Proto",
+	"X-Forwarded-Port",
+	"Forwarded",
+}
+
+// stripUntrustedHeaders removes headers a client must not be able to spoof.
+// Relay-managed identity headers (and any operator-configured extras) are always
+// removed; the X-Forwarded-* family is removed only when the peer is not a
+// trusted proxy. Client IP must already be resolved before this runs.
+func stripUntrustedHeaders(r *http.Request, trustedNets []*net.IPNet, extra []string) {
+	for _, h := range relayManagedHeaders {
+		r.Header.Del(h)
+	}
+	for _, h := range extra {
+		r.Header.Del(h)
+	}
+	if !httpx.PeerTrusted(r, trustedNets) {
+		for _, h := range forwardedHeaders {
+			r.Header.Del(h)
+		}
+	}
+}
+
+// isLoopbackPeer reports whether the immediate TCP peer is a loopback address.
+// It uses the real peer (RemoteAddr), so it cannot be bypassed via forwarding
+// headers.
+func isLoopbackPeer(r *http.Request) bool {
+	ip := net.ParseIP(httpx.PeerIP(r))
+	return ip != nil && ip.IsLoopback()
+}
+
+// writeReadiness reports whether the gateway can serve traffic: ready (200) when
+// there are no backends or at least one backend has a healthy instance; not
+// ready (503) when backends exist but none can serve. Intended for a k8s
+// readiness probe.
+func writeReadiness(w http.ResponseWriter, px *proxy.Proxy) {
+	healthy, total := px.Readiness()
+	w.Header().Set("Content-Type", "application/json")
+	if total > 0 && healthy == 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"status":"unavailable"}`))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ready"}`))
 }
 
 // httpsRedirectHandler returns an http.Handler that permanently redirects

@@ -60,6 +60,11 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 	validatePositiveDuration("listener.timeouts.read", listener.Timeouts.Read, errs, false)
 	validatePositiveDuration("listener.timeouts.write", listener.Timeouts.Write, errs, false)
 	validatePositiveDuration("listener.timeouts.idle", listener.Timeouts.Idle, errs, false)
+	validatePositiveDuration("listener.timeouts.read_header", listener.Timeouts.ReadHeader, errs, true)
+	validatePositiveDuration("listener.timeouts.websocket_idle", listener.Timeouts.WebSocketIdle, errs, true)
+	if listener.MaxConcurrentRequests < 0 {
+		errs.Addf("listener.max_concurrent_requests: must be >= 0")
+	}
 	validateIPFilterEntries("listener.trusted_proxies", listener.TrustedProxies, errs)
 	validateIPFilterEntries("listener.admin.allowed_cidrs", listener.Admin.AllowedCIDRs, errs)
 }
@@ -88,6 +93,20 @@ func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {
 		}
 	default:
 		errs.Addf("%s.mode: must be one of manual, auto", prefix)
+	}
+
+	switch strings.TrimSpace(tls.MinVersion) {
+	case "", "1.2", "1.3":
+	default:
+		errs.Addf("%s.min_version: must be 1.2 or 1.3", prefix)
+	}
+	switch strings.ToLower(strings.TrimSpace(tls.ClientAuth)) {
+	case "", "require", "verify_if_given", "request":
+	default:
+		errs.Addf("%s.client_auth: must be one of require, verify_if_given, request", prefix)
+	}
+	if strings.TrimSpace(tls.ClientAuth) != "" && strings.TrimSpace(tls.ClientCAFile) == "" {
+		errs.Addf("%s.client_auth: requires client_ca_file to be set", prefix)
 	}
 }
 
@@ -358,6 +377,13 @@ func validateJWTMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *Va
 			errs.Addf("%s: one of public_key_file or jwks_url is required for algorithm rs256", prefix)
 		case hasJWKS && cfg.JWKSCacheTTL < 0:
 			errs.Addf("%s.jwks_cache_ttl: must be >= 0", prefix)
+		}
+		if hasJWKS {
+			// The JWKS endpoint is the trust anchor for RS256 verification; a
+			// plaintext URL is exploitable via MITM key substitution.
+			if u, err := url.Parse(strings.TrimSpace(cfg.JWKSUrl)); err != nil || !strings.EqualFold(u.Scheme, "https") {
+				errs.Addf("%s.jwks_url: must be an https URL", prefix)
+			}
 		}
 	default:
 		errs.Addf("%s.algorithm: must be one of hs256, rs256", prefix)

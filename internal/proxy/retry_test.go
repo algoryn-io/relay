@@ -100,7 +100,7 @@ func TestComputeBackoffDefaultsWhenZero(t *testing.T) {
 
 func TestResponseBufferCapturesStatusAndBody(t *testing.T) {
 	t.Parallel()
-	buf := newResponseBuffer()
+	buf := newResponseBuffer(httptest.NewRecorder(), maxRetryResponseBuffer)
 	buf.WriteHeader(http.StatusTeapot)
 	_, _ = buf.Write([]byte("body"))
 
@@ -114,7 +114,7 @@ func TestResponseBufferCapturesStatusAndBody(t *testing.T) {
 
 func TestResponseBufferDefaultStatus200(t *testing.T) {
 	t.Parallel()
-	buf := newResponseBuffer()
+	buf := newResponseBuffer(httptest.NewRecorder(), maxRetryResponseBuffer)
 	_, _ = buf.Write([]byte("ok"))
 	if buf.Status() != http.StatusOK {
 		t.Errorf("status = %d, want 200", buf.Status())
@@ -123,7 +123,7 @@ func TestResponseBufferDefaultStatus200(t *testing.T) {
 
 func TestResponseBufferFlushToWriter(t *testing.T) {
 	t.Parallel()
-	buf := newResponseBuffer()
+	buf := newResponseBuffer(httptest.NewRecorder(), maxRetryResponseBuffer)
 	buf.header.Set("X-Custom", "relay")
 	buf.WriteHeader(http.StatusAccepted)
 	_, _ = buf.Write([]byte("content"))
@@ -139,6 +139,78 @@ func TestResponseBufferFlushToWriter(t *testing.T) {
 	}
 	if rr.Body.String() != "content" {
 		t.Errorf("flushed body = %q, want %q", rr.Body.String(), "content")
+	}
+}
+
+func TestResponseBufferCommitsWhenCapExceeded(t *testing.T) {
+	t.Parallel()
+	rr := httptest.NewRecorder()
+	buf := newResponseBuffer(rr, 4) // tiny cap to force a commit
+	buf.header.Set("X-Custom", "relay")
+	buf.WriteHeader(http.StatusOK)
+
+	// First write fits within the cap: stays buffered, nothing on the wire yet.
+	_, _ = buf.Write([]byte("ab"))
+	if buf.committed {
+		t.Fatal("buffer committed too early")
+	}
+	if rr.Body.Len() != 0 {
+		t.Fatalf("nothing should be written before commit, got %q", rr.Body.String())
+	}
+
+	// Second write exceeds the cap: buffer commits and passes through.
+	_, _ = buf.Write([]byte("cdef"))
+	if !buf.committed {
+		t.Fatal("buffer should have committed after exceeding cap")
+	}
+	if rr.Code != http.StatusOK {
+		t.Errorf("committed status = %d, want 200", rr.Code)
+	}
+	if rr.Header().Get("X-Custom") != "relay" {
+		t.Error("X-Custom header missing after commit")
+	}
+	if rr.Body.String() != "abcdef" {
+		t.Errorf("body = %q, want %q", rr.Body.String(), "abcdef")
+	}
+
+	// flushTo must be a no-op once committed (no duplicate writes).
+	buf.flushTo(rr)
+	if rr.Body.String() != "abcdef" {
+		t.Errorf("flushTo after commit duplicated body: %q", rr.Body.String())
+	}
+}
+
+// ── integration: streaming (no buffering) ─────────────────────────────────────
+
+// TestProxyStreamsLargeResponseWithoutRetry verifies a response larger than the
+// retry buffer cap is delivered intact when retry is not configured — i.e. it is
+// streamed straight through, never held fully in memory.
+func TestProxyStreamsLargeResponseWithoutRetry(t *testing.T) {
+	t.Parallel()
+
+	payload := strings.Repeat("x", 4*maxRetryResponseBuffer)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer backend.Close()
+
+	rt := retryRuntime(backend.URL, config.RetryConfig{}) // no retry
+	proxy, err := New(rt, nil)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer proxy.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	proxy.ServeHTTP(rr, req, routeFor(rt))
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rr.Code)
+	}
+	if rr.Body.Len() != len(payload) {
+		t.Errorf("body length = %d, want %d", rr.Body.Len(), len(payload))
 	}
 }
 

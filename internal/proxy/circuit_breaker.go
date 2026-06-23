@@ -31,10 +31,15 @@ func (s cbState) String() string {
 //
 // Transitions:
 //
-//	Closed   --(failures >= threshold)--> Open
-//	Open     --(timeout elapsed)-------> HalfOpen
-//	HalfOpen --(next success)----------> Closed
-//	HalfOpen --(next failure)----------> Open (timer reset)
+//	Closed   --(consecutive failures >= threshold)--> Open
+//	Open     --(timeout elapsed, one probe admitted)--> HalfOpen
+//	HalfOpen --(probe success)----------------------> Closed
+//	HalfOpen --(probe failure)----------------------> Open (timer reset)
+//
+// In HalfOpen exactly one probe request is admitted; all others are rejected
+// until the probe resolves, so a recovering backend is not flooded. The failure
+// counter only counts *consecutive* failures — any success resets it to zero, so
+// an old burst of errors cannot re-trip the circuit on its own.
 type CircuitBreaker struct {
 	mu        sync.Mutex
 	state     cbState
@@ -42,6 +47,7 @@ type CircuitBreaker struct {
 	threshold int
 	timeout   time.Duration
 	trippedAt time.Time
+	probing   bool // true while a half-open probe is in flight
 }
 
 func newCircuitBreaker(threshold int, timeout time.Duration) *CircuitBreaker {
@@ -62,18 +68,32 @@ func (cb *CircuitBreaker) IsOpen() bool {
 	return cb.state == cbOpen && time.Since(cb.trippedAt) < cb.timeout
 }
 
-// Allow transitions Open→HalfOpen once the timeout elapses and returns
-// whether the request should proceed. Returns false only while fully Open.
+// Allow reports whether the request should proceed, transitioning Open→HalfOpen
+// once the timeout elapses. In HalfOpen it admits exactly one probe: the first
+// caller proceeds and subsequent callers are rejected until the probe resolves.
 func (cb *CircuitBreaker) Allow() bool {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	if cb.state == cbOpen {
+	switch cb.state {
+	case cbClosed:
+		return true
+	case cbOpen:
 		if time.Since(cb.trippedAt) < cb.timeout {
 			return false
 		}
+		// Timeout elapsed: enter half-open and admit this caller as the probe.
 		cb.state = cbHalfOpen
+		cb.probing = true
+		return true
+	case cbHalfOpen:
+		if cb.probing {
+			return false // a probe is already in flight
+		}
+		cb.probing = true
+		return true
+	default:
+		return true
 	}
-	return true
 }
 
 // RecordSuccess closes the circuit and resets the failure counter.
@@ -81,18 +101,32 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 	cb.failures = 0
+	cb.probing = false
 	cb.state = cbClosed
 }
 
-// RecordFailure increments the failure counter. Trips the circuit when
-// failures >= threshold, or immediately if already in HalfOpen.
+// RecordFailure records a failed outcome. A probe failure in HalfOpen reopens
+// the circuit immediately; in Closed it counts consecutive failures and trips
+// when the threshold is reached. Failures recorded while already Open are
+// ignored (they belong to requests that started before the trip).
 func (cb *CircuitBreaker) RecordFailure() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	cb.failures++
-	if cb.state == cbHalfOpen || cb.failures >= cb.threshold {
+	switch cb.state {
+	case cbHalfOpen:
 		cb.state = cbOpen
 		cb.trippedAt = time.Now()
+		cb.probing = false
+		cb.failures = 0
+	case cbClosed:
+		cb.failures++
+		if cb.failures >= cb.threshold {
+			cb.state = cbOpen
+			cb.trippedAt = time.Now()
+			cb.failures = 0
+		}
+	case cbOpen:
+		// Already open; ignore late failures from in-flight requests.
 	}
 }
 

@@ -31,7 +31,7 @@ func (p *Proxy) BackendSnapshots() []BackendSnapshot {
 		for _, inst := range insts {
 			s := InstanceSnapshot{
 				Healthy:        inst.Healthy,
-				ActiveRequests: inst.ActiveRequests,
+				ActiveRequests: int(inst.activeRequests.Load()),
 			}
 			if inst.URL != nil {
 				s.URL = inst.URL.String()
@@ -65,7 +65,7 @@ func (p *Proxy) BackendSnapshot(name string) (BackendSnapshot, bool) {
 	for _, inst := range insts {
 		s := InstanceSnapshot{
 			Healthy:        inst.Healthy,
-			ActiveRequests: inst.ActiveRequests,
+			ActiveRequests: int(inst.activeRequests.Load()),
 		}
 		if inst.URL != nil {
 			s.URL = inst.URL.String()
@@ -80,6 +80,26 @@ func (p *Proxy) BackendSnapshot(name string) (BackendSnapshot, bool) {
 		Strategy:  backend.Strategy,
 		Instances: snaps,
 	}, true
+}
+
+// Readiness reports aggregate backend health for the readiness probe.
+// total is the number of configured backends; healthy is the number of backends
+// that have at least one healthy instance. The gateway is considered ready when
+// it has no backends, or when at least one backend can still serve traffic.
+func (p *Proxy) Readiness() (healthy, total int) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	for name := range p.backends {
+		total++
+		for _, inst := range p.instances[name] {
+			if inst.Healthy {
+				healthy++
+				break
+			}
+		}
+	}
+	return healthy, total
 }
 
 // DrainInstance marks the given instance as unhealthy, removing it from the

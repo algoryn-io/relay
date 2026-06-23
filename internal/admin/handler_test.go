@@ -35,7 +35,7 @@ func buildProxy(t *testing.T, backendURL string) *proxy.Proxy {
 func buildHandler(t *testing.T, px *proxy.Proxy, routes map[string]config.RouteRuntime) *Handler {
 	t.Helper()
 	// Allow all IPs in tests by using "0.0.0.0/0".
-	return New(px, routes, []string{"0.0.0.0/0", "::/0"})
+	return New(px, routes, []string{"0.0.0.0/0", "::/0"}, "", nil)
 }
 
 func getJSON(t *testing.T, h http.Handler, path string) map[string]any {
@@ -236,11 +236,47 @@ func TestResetCircuit(t *testing.T) {
 	}
 }
 
+func TestAdminTokenRequiredWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	h := New(buildProxy(t, "http://127.0.0.1:1"), map[string]config.RouteRuntime{},
+		[]string{"0.0.0.0/0", "::/0"}, "s3cret-token", nil)
+
+	// No token → 401.
+	req := httptest.NewRequest(http.MethodGet, "/_relay/admin/backends", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("no-token status = %d, want 401", rr.Code)
+	}
+
+	// Wrong token → 401.
+	req = httptest.NewRequest(http.MethodGet, "/_relay/admin/backends", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Authorization", "Bearer wrong")
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong-token status = %d, want 401", rr.Code)
+	}
+
+	// Correct token → 200.
+	req = httptest.NewRequest(http.MethodGet, "/_relay/admin/backends", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("Authorization", "Bearer s3cret-token")
+	rr = httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("correct-token status = %d, want 200", rr.Code)
+	}
+}
+
 func TestAdminForbiddenFromUnallowedIP(t *testing.T) {
 	t.Parallel()
 
 	// Build handler with loopback-only allowlist (default).
-	h := New(buildProxy(t, "http://127.0.0.1:1"), nil, nil)
+	h := New(buildProxy(t, "http://127.0.0.1:1"), nil, nil, "", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/_relay/admin/backends", nil)
 	req.RemoteAddr = "10.0.0.5:1234" // not loopback

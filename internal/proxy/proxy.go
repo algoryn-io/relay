@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -22,10 +23,11 @@ import (
 )
 
 type instanceState struct {
-	URL            *url.URL
-	Healthy        bool
-	LastChecked    time.Time
-	ActiveRequests int
+	URL         *url.URL
+	Healthy     bool // guarded by Proxy.mu (written by health loop / drain)
+	LastChecked time.Time
+	// activeRequests is updated lock-free on the hot path (select/release).
+	activeRequests atomic.Int64
 	weight         int             // effective weight >= 1
 	circuit        *CircuitBreaker // nil when circuit breaker is disabled
 }
@@ -35,6 +37,25 @@ type HealthNotifier interface {
 	NotifyBackendHealth(backend, instance string, healthy bool)
 }
 
+// ProxyMetrics receives backend-centric resilience metrics. Implemented by the
+// observability collector and wired via SetMetrics; nil is safe (no-op).
+type ProxyMetrics interface {
+	ObserveUpstreamLatency(backend string, d time.Duration)
+	RecordRetry(backend, reason string)
+	SetCircuitState(backend, instance, state string)
+	SetBulkheadInFlight(backend string, n int)
+	RecordBulkheadRejected(backend string)
+}
+
+// nopMetrics is the default no-op ProxyMetrics so call sites never nil-check.
+type nopMetrics struct{}
+
+func (nopMetrics) ObserveUpstreamLatency(string, time.Duration) {}
+func (nopMetrics) RecordRetry(string, string)                   {}
+func (nopMetrics) SetCircuitState(string, string, string)       {}
+func (nopMetrics) SetBulkheadInFlight(string, int)              {}
+func (nopMetrics) RecordBulkheadRejected(string)                {}
+
 type Proxy struct {
 	cancel            context.CancelFunc
 	ctx               context.Context
@@ -43,15 +64,33 @@ type Proxy struct {
 	healthNotifier    HealthNotifier
 	backends          map[string]config.BackendRuntime
 	instances         map[string][]*instanceState
-	roundRobin        map[string]int
+	roundRobin        map[string]*atomic.Uint64 // per-backend; map is read-only after New
 	backendTransports map[string]http.RoundTripper
+	defaultTransport  http.RoundTripper // tuned fallback; rarely used
 	bulkheads         map[string]*bulkhead
+	wsIdleTimeout     time.Duration // 0 = no WebSocket idle timeout
+	metrics           ProxyMetrics
+	healthWG          sync.WaitGroup // tracks health-check goroutines for clean shutdown
 }
 
 func (p *Proxy) SetHealthNotifier(n HealthNotifier) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.healthNotifier = n
+}
+
+// SetWebSocketIdleTimeout configures the idle timeout applied to proxied
+// WebSocket/upgrade tunnels. Must be called before serving traffic.
+func (p *Proxy) SetWebSocketIdleTimeout(d time.Duration) {
+	p.wsIdleTimeout = d
+}
+
+// SetMetrics wires the resilience metrics sink. Must be called before serving.
+func (p *Proxy) SetMetrics(m ProxyMetrics) {
+	if m == nil {
+		m = nopMetrics{}
+	}
+	p.metrics = m
 }
 
 func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
@@ -67,9 +106,11 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		logger:            logger,
 		backends:          rt.Backends,
 		instances:         make(map[string][]*instanceState, len(rt.Backends)),
-		roundRobin:        make(map[string]int, len(rt.Backends)),
+		roundRobin:        make(map[string]*atomic.Uint64, len(rt.Backends)),
 		backendTransports: make(map[string]http.RoundTripper, len(rt.Backends)),
+		defaultTransport:  newBaseTransport(),
 		bulkheads:         make(map[string]*bulkhead, len(rt.Backends)),
+		metrics:           nopMetrics{},
 	}
 
 	for name, backend := range rt.Backends {
@@ -77,15 +118,14 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 			p.bulkheads[name] = newBulkhead(backend.Bulkhead.MaxConcurrent)
 		}
 
-		btls := backend.TLS
-		if btls.CertFile != "" || btls.KeyFile != "" || btls.CAFile != "" || btls.InsecureSkipVerify {
-			tr, trErr := buildBackendTransport(btls)
-			if trErr != nil {
-				cancel()
-				return nil, fmt.Errorf("backend %q: build transport: %w", name, trErr)
-			}
-			p.backendTransports[name] = tr
+		// Every backend gets its own tuned transport (with TLS applied when
+		// configured) so connection pooling is never left to http.DefaultTransport.
+		tr, trErr := buildBackendTransport(backend.TLS)
+		if trErr != nil {
+			cancel()
+			return nil, fmt.Errorf("backend %q: build transport: %w", name, trErr)
 		}
+		p.backendTransports[name] = tr
 	}
 
 	for name, backend := range rt.Backends {
@@ -127,9 +167,10 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		}
 
 		p.instances[name] = states
-		p.roundRobin[name] = 0
+		p.roundRobin[name] = new(atomic.Uint64)
 
 		if hasHealthCheck {
+			p.healthWG.Add(1)
 			go p.healthLoop(name, backend.HealthCheck)
 		}
 	}
@@ -138,9 +179,15 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 }
 
 func (p *Proxy) Close() {
-	if p != nil && p.cancel != nil {
+	if p == nil {
+		return
+	}
+	if p.cancel != nil {
 		p.cancel()
 	}
+	// Wait for health-check goroutines to observe the cancellation and exit, so
+	// no background checks outlive the proxy after a reload or shutdown.
+	p.healthWG.Wait()
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.RouteRuntime) {
@@ -171,6 +218,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	// Bulkhead: limit concurrent in-flight requests per backend.
 	if bh := p.bulkheads[backendName]; bh != nil {
 		if !bh.Acquire() {
+			p.metrics.RecordBulkheadRejected(backendName)
 			if p.logger != nil {
 				p.logger.Warn("bulkhead full, request rejected",
 					"backend", backendName,
@@ -181,7 +229,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 			httpx.WriteError(w, http.StatusServiceUnavailable, "bulkhead_full")
 			return
 		}
-		defer bh.Release()
+		p.metrics.SetBulkheadInFlight(backendName, bh.InFlight())
+		defer func() {
+			bh.Release()
+			p.metrics.SetBulkheadInFlight(backendName, bh.InFlight())
+		}()
 	}
 
 	// WebSocket (and other protocol upgrades) bypass the retry loop and
@@ -220,10 +272,22 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		maxAttempts = 1
 	}
 
+	// A request is retry-eligible only when more than one attempt is configured,
+	// at least one retry condition is set, and the method is safe (or unsafe
+	// methods are explicitly allowed). When it is not eligible there is no reason
+	// to buffer: the response streams straight to the client. This keeps the hot
+	// path allocation-free and preserves streaming/SSE for the common case.
+	retryEligible := maxAttempts > 1 &&
+		len(retry.On) > 0 &&
+		(retry.AllowUnsafe || isSafeMethod(r.Method))
+	if !retryEligible {
+		maxAttempts = 1
+	}
+
 	// Buffer the request body for retry replay when no size limit was applied
 	// above. A 1 MB cap prevents excessive memory use; bodies larger than that
 	// disable retry (the single attempt still completes normally).
-	if !bodyBuffered && maxAttempts > 1 && r.Body != nil && r.Body != http.NoBody {
+	if !bodyBuffered && retryEligible && r.Body != nil && r.Body != http.NoBody {
 		const maxBodyBuffer = 1 << 20 // 1 MB
 		lr := &io.LimitedReader{R: r.Body, N: int64(maxBodyBuffer) + 1}
 		data, err := io.ReadAll(lr)
@@ -231,6 +295,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		if err != nil || lr.N == 0 {
 			// Body unreadable or too large: disable retry, restore what we read.
 			maxAttempts = 1
+			retryEligible = false
 			if err == nil {
 				r.Body = io.NopCloser(bytes.NewReader(data))
 			}
@@ -278,7 +343,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		target := selected.URL
 		transport := p.transportFor(backendName, selected.circuit)
 
-		buf := newResponseBuffer()
+		// When the request is retry-eligible, capture the response in a bounded
+		// buffer so the status can be inspected before bytes reach the client.
+		// Otherwise stream straight to the real ResponseWriter: no buffering, so
+		// large responses and SSE/streaming work and memory stays flat.
+		var dst http.ResponseWriter = w
+		var buf *responseBuffer
+		if retryEligible {
+			buf = newResponseBuffer(w, maxRetryResponseBuffer)
+			dst = buf
+		}
+		var netErr error
 
 		rp := &httputil.ReverseProxy{
 			Transport: transport,
@@ -313,7 +388,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 				}
 			},
 			ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-				buf.networkErr = err
+				netErr = err
 				if errors.Is(err, context.DeadlineExceeded) {
 					if p.logger != nil {
 						p.logger.Warn("backend timeout",
@@ -338,11 +413,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 			},
 		}
 
-		rp.ServeHTTP(buf, r)
+		attemptStart := time.Now()
+		rp.ServeHTTP(dst, r)
 		p.releaseInstance(backend.Name, selected)
+
+		p.metrics.ObserveUpstreamLatency(backendName, time.Since(attemptStart))
+		if selected.circuit != nil {
+			p.metrics.SetCircuitState(backendName, selected.URL.String(), selected.circuit.State())
+		}
+
+		// Non-retryable request: the response has already streamed to the client.
+		if !retryEligible {
+			return
+		}
+
 		lastBuf = buf
 
-		isNetErr := buf.networkErr != nil
+		// Once the buffer committed (response exceeded the cap and streamed
+		// through), bytes are on the wire and the request can no longer be retried.
+		if buf.committed {
+			return
+		}
+
+		isNetErr := netErr != nil
 		if !shouldRetry(buf.Status(), isNetErr, retry, r.Method) || attempt == maxAttempts-1 {
 			break
 		}
@@ -352,6 +445,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		if isNetErr {
 			reason = "network_error"
 		}
+		p.metrics.RecordRetry(backendName, reason)
 		trace.SpanFromContext(r.Context()).AddEvent("proxy.retry",
 			trace.WithAttributes(
 				attribute.Int("retry.attempt", attempt+1),
@@ -376,7 +470,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		}
 	}
 
-	lastBuf.flushTo(w)
+	if lastBuf != nil {
+		lastBuf.flushTo(w)
+	}
 }
 
 // resolveHeaderTpl resolves a header value template for add_request_headers.
@@ -392,18 +488,13 @@ func resolveHeaderTpl(tpl string, in *http.Request) string {
 	return in.Header.Get(name)
 }
 
-func (p *Proxy) releaseInstance(backendName string, selected *instanceState) {
+func (p *Proxy) releaseInstance(_ string, selected *instanceState) {
 	if selected == nil {
 		return
 	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	for _, state := range p.instances[backendName] {
-		if state == selected && state.ActiveRequests > 0 {
-			state.ActiveRequests--
-			return
-		}
+	// Lock-free: each select does exactly one Add(1) and each release one Add(-1),
+	// so the counter stays balanced. Guard against a stray double-release.
+	if selected.activeRequests.Add(-1) < 0 {
+		selected.activeRequests.Store(0)
 	}
 }

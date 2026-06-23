@@ -40,6 +40,84 @@ func TestBuildTLSConfigManualLoadsKeyPair(t *testing.T) {
 	}
 }
 
+func TestBuildTLSConfigMinVersion13(t *testing.T) {
+	t.Parallel()
+
+	certFile, keyFile := selfSignedCert(t)
+	tlsCfg, _, err := buildTLSConfig(config.TLSConfig{
+		Mode:       "manual",
+		CertFile:   certFile,
+		KeyFile:    keyFile,
+		MinVersion: "1.3",
+	})
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error = %v", err)
+	}
+	if tlsCfg.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("MinVersion = %d, want TLS 1.3", tlsCfg.MinVersion)
+	}
+	if len(tlsCfg.CipherSuites) != 0 {
+		t.Errorf("CipherSuites should be empty for TLS 1.3, got %d", len(tlsCfg.CipherSuites))
+	}
+}
+
+func TestBuildTLSConfigDefaultsToHardened12(t *testing.T) {
+	t.Parallel()
+
+	certFile, keyFile := selfSignedCert(t)
+	tlsCfg, _, err := buildTLSConfig(config.TLSConfig{
+		Mode:     "manual",
+		CertFile: certFile,
+		KeyFile:  keyFile,
+	})
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error = %v", err)
+	}
+	if tlsCfg.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %d, want TLS 1.2", tlsCfg.MinVersion)
+	}
+	if len(tlsCfg.CipherSuites) == 0 {
+		t.Error("expected a hardened cipher list for TLS 1.2")
+	}
+}
+
+func TestBuildTLSConfigInboundMTLS(t *testing.T) {
+	t.Parallel()
+
+	certFile, keyFile := selfSignedCert(t)
+	// Reuse the self-signed cert PEM as the client CA bundle.
+	tlsCfg, _, err := buildTLSConfig(config.TLSConfig{
+		Mode:         "manual",
+		CertFile:     certFile,
+		KeyFile:      keyFile,
+		ClientCAFile: certFile,
+	})
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error = %v", err)
+	}
+	if tlsCfg.ClientCAs == nil {
+		t.Fatal("ClientCAs not set; inbound mTLS pool missing")
+	}
+	if tlsCfg.ClientAuth != tls.RequireAndVerifyClientCert {
+		t.Fatalf("ClientAuth = %d, want RequireAndVerifyClientCert", tlsCfg.ClientAuth)
+	}
+}
+
+func TestBuildTLSConfigInboundMTLSBadCAFile(t *testing.T) {
+	t.Parallel()
+
+	certFile, keyFile := selfSignedCert(t)
+	_, _, err := buildTLSConfig(config.TLSConfig{
+		Mode:         "manual",
+		CertFile:     certFile,
+		KeyFile:      keyFile,
+		ClientCAFile: "/nonexistent/ca.pem",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing client_ca_file, got nil")
+	}
+}
+
 func TestBuildTLSConfigManualMissingFileErrors(t *testing.T) {
 	t.Parallel()
 
