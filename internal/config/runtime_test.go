@@ -27,3 +27,32 @@ func TestBuildRuntime(t *testing.T) {
 		t.Fatalf("runtime middleware = %+v, want jwt-auth", route.Middleware)
 	}
 }
+
+func TestBuildRuntimeNormalizesMatchPredicates(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Routes[0].Match.Hosts = []string{"  API.Example.COM  "}
+	cfg.Routes[0].Match.Headers = map[string]string{"x-canary": "true"}
+	cfg.Routes[0].Match.Query = map[string]string{"version": "2"}
+
+	rt, err := BuildRuntime(cfg)
+	if err != nil {
+		t.Fatalf("BuildRuntime() error = %v", err)
+	}
+
+	route := rt.Routes["orders-route"]
+	if _, ok := route.HostSet["api.example.com"]; !ok {
+		t.Fatalf("host not normalized to lowercase/trimmed: %+v", route.HostSet)
+	}
+	if got := route.HeaderMatch["X-Canary"]; got != "true" {
+		t.Fatalf("header name not canonicalized: %+v", route.HeaderMatch)
+	}
+	if got := route.QueryMatch["version"]; got != "2" {
+		t.Fatalf("query match = %+v", route.QueryMatch)
+	}
+	// host (100) + 1 header + 1 query = 102.
+	if route.Specificity != 102 {
+		t.Fatalf("specificity = %d, want 102", route.Specificity)
+	}
+}

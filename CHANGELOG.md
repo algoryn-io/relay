@@ -6,6 +6,26 @@ All notable changes to Relay are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Host-based routing: `match.hosts` is now enforced (previously parsed but
+  ignored). Routes can share a path across different hosts (virtual hosting).
+- Header- and query-based route matching: `match.headers` and `match.query`
+  require exact values, enabling canary routing and header/query API versioning.
+  When routes share a path, the most specific (host/header/query) wins with
+  fallback to the catch-all.
+- Response cache middleware (`type: cache`): bounded in-memory LRU with per-entry
+  TTL, `Cache-Control`/`Vary` awareness, `X-Cache` and `Age` headers, and
+  pass-through streaming for oversized bodies.
+- OIDC discovery for JWT (`algorithm: rs256`, `oidc_issuer`): resolves `jwks_uri`
+  from the issuer's well-known document and defaults `iss` enforcement to the
+  discovered issuer.
+- OAuth2 token introspection middleware (`type: oauth2`, RFC 7662) for opaque
+  tokens, with HTTP Basic client auth, scope enforcement, positive-result caching
+  bounded by token expiry, and fail-closed behavior on endpoint errors.
+- External authorization middleware (`type: ext_authz`): delegates allow/deny to
+  an external HTTP service (Envoy-style), with `forward_headers`, `copy_headers`,
+  and configurable `fail_open`.
+
 ### Security
 - Inbound mTLS: `listener.https.tls.client_ca_file` + `client_auth` require/verify
   client certificates. Configurable `min_version` (1.2 default / 1.3) and a

@@ -119,7 +119,16 @@ type MatchConfig struct {
 	Path       string   `yaml:"path"`
 	PathPrefix string   `yaml:"path_prefix"`
 	Methods    []string `yaml:"methods"`
-	Hosts      []string `yaml:"hosts"`
+	// Hosts restricts the route to requests whose Host header (port stripped,
+	// case-insensitive) matches one of these values. Empty means any host.
+	Hosts []string `yaml:"hosts"`
+	// Headers requires each listed request header to equal the given value
+	// (case-insensitive header name, case-sensitive value). Empty means no
+	// header constraint. Useful for canary routing and API versioning.
+	Headers map[string]string `yaml:"headers"`
+	// Query requires each listed query parameter to equal the given value.
+	// Empty means no query constraint.
+	Query map[string]string `yaml:"query"`
 }
 
 type BackendConfig struct {
@@ -258,6 +267,29 @@ type MiddlewareSettingsConfig struct {
 	ResolvedKeys string `yaml:"-"` // populated from KeysEnv by ResolveEnv
 	KeysFile     string `yaml:"keys_file"`
 	KeyToHeader  string `yaml:"key_to_header"`
+	// Cache middleware fields
+	TTL             time.Duration `yaml:"ttl"`
+	CacheMethods    []string      `yaml:"methods"`
+	CacheableStatus []int         `yaml:"cacheable_status"`
+	MaxObjectBytes  int64         `yaml:"max_object_bytes"`
+	MaxEntries      int           `yaml:"max_entries"`
+	Vary            []string      `yaml:"vary"`
+	// OIDC discovery for jwt middleware: derive jwks_uri from the issuer's
+	// well-known document instead of configuring jwks_url directly.
+	OIDCIssuer string `yaml:"oidc_issuer"`
+	// OAuth2 token introspection middleware (RFC 7662) fields.
+	IntrospectionURL      string        `yaml:"introspection_url"`
+	ClientID              string        `yaml:"client_id"`
+	ClientSecretEnv       string        `yaml:"client_secret_env"`
+	ResolvedClientSecret  string        `yaml:"-"` // populated from ClientSecretEnv by ResolveEnv
+	RequiredScopes        []string      `yaml:"required_scopes"`
+	IntrospectionCacheTTL time.Duration `yaml:"cache_ttl"`
+	// External authorization middleware (ext_authz) fields.
+	AuthzURL            string        `yaml:"authz_url"`
+	AuthzForwardHeaders []string      `yaml:"forward_headers"`
+	AuthzCopyHeaders    []string      `yaml:"copy_headers"`
+	AuthzTimeout        time.Duration `yaml:"authz_timeout"`
+	FailOpen            bool          `yaml:"fail_open"`
 }
 
 type ObservabilityConfig struct {

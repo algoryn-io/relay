@@ -169,10 +169,12 @@ func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 
 func (c *MatchConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawMatch struct {
-		Path       string   `yaml:"path"`
-		PathPrefix string   `yaml:"path_prefix"`
-		Methods    []string `yaml:"methods"`
-		Hosts      []string `yaml:"hosts"`
+		Path       string            `yaml:"path"`
+		PathPrefix string            `yaml:"path_prefix"`
+		Methods    []string          `yaml:"methods"`
+		Hosts      []string          `yaml:"hosts"`
+		Headers    map[string]string `yaml:"headers"`
+		Query      map[string]string `yaml:"query"`
 	}
 
 	var raw rawMatch
@@ -184,6 +186,8 @@ func (c *MatchConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.PathPrefix = raw.PathPrefix
 	c.Methods = raw.Methods
 	c.Hosts = raw.Hosts
+	c.Headers = raw.Headers
+	c.Query = raw.Query
 
 	return nil
 }

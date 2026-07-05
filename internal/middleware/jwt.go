@@ -54,6 +54,9 @@ type JWTConfig struct {
 	// RS256 with JWKS endpoint
 	JWKSUrl      string
 	JWKSCacheTTL time.Duration
+	// RS256 with OIDC discovery: the issuer's well-known document is fetched to
+	// resolve the JWKS URI. Mutually exclusive with PublicKeyFile and JWKSUrl.
+	OIDCIssuer string
 	// Common
 	Header          string
 	ClaimsToHeaders map[string]string
@@ -84,6 +87,9 @@ func NewJWT(cfg JWTConfig) (Middleware, error) {
 	case "hs256":
 		return newJWTHS256(cfg, claimsToHeaders)
 	case "rs256":
+		if strings.TrimSpace(cfg.OIDCIssuer) != "" {
+			return newJWTOIDC(cfg, claimsToHeaders)
+		}
 		if strings.TrimSpace(cfg.JWKSUrl) != "" {
 			return newJWTJWKS(cfg, claimsToHeaders)
 		}

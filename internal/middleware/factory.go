@@ -20,6 +20,7 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, io.Cl
 			PublicKeyFile:    def.Config.PublicKeyFile,
 			JWKSUrl:          def.Config.JWKSUrl,
 			JWKSCacheTTL:     def.Config.JWKSCacheTTL,
+			OIDCIssuer:       def.Config.OIDCIssuer,
 			Header:           def.Config.Header,
 			ClaimsToHeaders:  def.Config.ClaimsToHeaders,
 			ExpectedIssuer:   def.Config.ExpectedIssuer,
@@ -78,6 +79,40 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, io.Cl
 			KeyQuery:    def.Config.KeyQuery,
 			Keys:        keys,
 			KeyToHeader: def.Config.KeyToHeader,
+		})
+		return mw, nil, err
+	case "cache":
+		mw, closer, err := NewCache(CacheConfig{
+			TTL:             def.Config.TTL,
+			Methods:         def.Config.CacheMethods,
+			CacheableStatus: def.Config.CacheableStatus,
+			MaxObjectBytes:  def.Config.MaxObjectBytes,
+			MaxEntries:      def.Config.MaxEntries,
+			Vary:            def.Config.Vary,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return mw, closer, nil
+	case "oauth2":
+		mw, err := NewIntrospection(IntrospectionConfig{
+			URL:            def.Config.IntrospectionURL,
+			ClientID:       def.Config.ClientID,
+			ClientSecret:   def.Config.ResolvedClientSecret,
+			RequiredScopes: def.Config.RequiredScopes,
+			Header:         def.Config.Header,
+			CacheTTL:       def.Config.IntrospectionCacheTTL,
+			Logger:         logger,
+		})
+		return mw, nil, err
+	case "ext_authz":
+		mw, err := NewExtAuthz(ExtAuthzConfig{
+			URL:            def.Config.AuthzURL,
+			ForwardHeaders: def.Config.AuthzForwardHeaders,
+			CopyHeaders:    def.Config.AuthzCopyHeaders,
+			Timeout:        def.Config.AuthzTimeout,
+			FailOpen:       def.Config.FailOpen,
+			Logger:         logger,
 		})
 		return mw, nil, err
 	default:

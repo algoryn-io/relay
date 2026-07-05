@@ -23,6 +23,9 @@ var (
 		"cors":       {},
 		"header":     {},
 		"api_key":    {},
+		"cache":      {},
+		"oauth2":     {},
+		"ext_authz":  {},
 	}
 )
 
@@ -140,6 +143,21 @@ func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[stri
 				errs.Addf("%s.match.methods[%d]: must not be empty", prefix, j)
 			}
 		}
+		for j, host := range route.Match.Hosts {
+			if strings.TrimSpace(host) == "" {
+				errs.Addf("%s.match.hosts[%d]: must not be empty", prefix, j)
+			}
+		}
+		for name := range route.Match.Headers {
+			if strings.TrimSpace(name) == "" {
+				errs.Addf("%s.match.headers: header name must not be empty", prefix)
+			}
+		}
+		for name := range route.Match.Query {
+			if strings.TrimSpace(name) == "" {
+				errs.Addf("%s.match.query: parameter name must not be empty", prefix)
+			}
+		}
 
 		if route.Timeout < 0 {
 			errs.Addf("%s.timeout: must be >= 0", prefix)
@@ -248,7 +266,7 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 
 		if _, ok := validMiddlewareTypes[middleware.Type]; !ok {
-			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors, header, api_key", prefix)
+			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors, header, api_key, cache, oauth2, ext_authz", prefix)
 		}
 
 		if middleware.Type == "jwt" {
@@ -314,9 +332,72 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		if middleware.Type == "api_key" {
 			validateAPIKeyMiddleware(prefix+".config", middleware.Config, errs)
 		}
+		if middleware.Type == "cache" {
+			validateCacheMiddleware(prefix+".config", middleware.Config, errs)
+		}
+		if middleware.Type == "oauth2" {
+			validateOAuth2Middleware(prefix+".config", middleware.Config, errs)
+		}
+		if middleware.Type == "ext_authz" {
+			validateExtAuthzMiddleware(prefix+".config", middleware.Config, errs)
+		}
 	}
 
 	return seen
+}
+
+func validateCacheMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
+	if cfg.TTL < 0 {
+		errs.Addf("%s.ttl: must be >= 0", prefix)
+	}
+	if cfg.MaxObjectBytes < 0 {
+		errs.Addf("%s.max_object_bytes: must be >= 0", prefix)
+	}
+	if cfg.MaxEntries < 0 {
+		errs.Addf("%s.max_entries: must be >= 0", prefix)
+	}
+	for i, m := range cfg.CacheMethods {
+		if strings.TrimSpace(m) == "" {
+			errs.Addf("%s.methods[%d]: must not be empty", prefix, i)
+		}
+	}
+	for i, code := range cfg.CacheableStatus {
+		if code < 100 || code > 599 {
+			errs.Addf("%s.cacheable_status[%d]: must be a valid HTTP status code", prefix, i)
+		}
+	}
+}
+
+func validateOAuth2Middleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
+	u := strings.TrimSpace(cfg.IntrospectionURL)
+	if u == "" {
+		errs.Addf("%s.introspection_url: required", prefix)
+	} else if parsed, err := url.Parse(u); err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		// The introspection endpoint receives bearer tokens and client
+		// credentials; a plaintext URL would leak them.
+		errs.Addf("%s.introspection_url: must be an https URL", prefix)
+	}
+	if strings.TrimSpace(cfg.ClientID) == "" {
+		errs.Addf("%s.client_id: required", prefix)
+	}
+	if strings.TrimSpace(cfg.ClientSecretEnv) == "" {
+		errs.Addf("%s.client_secret_env: required", prefix)
+	}
+	if cfg.IntrospectionCacheTTL < 0 {
+		errs.Addf("%s.cache_ttl: must be >= 0", prefix)
+	}
+}
+
+func validateExtAuthzMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
+	u := strings.TrimSpace(cfg.AuthzURL)
+	if u == "" {
+		errs.Addf("%s.authz_url: required", prefix)
+	} else if parsed, err := url.Parse(u); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		errs.Addf("%s.authz_url: must be an http or https URL", prefix)
+	}
+	if cfg.AuthzTimeout < 0 {
+		errs.Addf("%s.authz_timeout: must be >= 0", prefix)
+	}
 }
 
 func validateBackendTLS(prefix string, cfg BackendTLSConfig, errs *ValidationErrors) {
@@ -370,12 +451,20 @@ func validateJWTMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *Va
 	case "rs256":
 		hasFile := strings.TrimSpace(cfg.PublicKeyFile) != ""
 		hasJWKS := strings.TrimSpace(cfg.JWKSUrl) != ""
+		hasOIDC := strings.TrimSpace(cfg.OIDCIssuer) != ""
+		sources := 0
+		for _, present := range []bool{hasFile, hasJWKS, hasOIDC} {
+			if present {
+				sources++
+			}
+		}
 		switch {
-		case hasFile && hasJWKS:
-			errs.Addf("%s: public_key_file and jwks_url are mutually exclusive", prefix)
-		case !hasFile && !hasJWKS:
-			errs.Addf("%s: one of public_key_file or jwks_url is required for algorithm rs256", prefix)
-		case hasJWKS && cfg.JWKSCacheTTL < 0:
+		case sources > 1:
+			errs.Addf("%s: public_key_file, jwks_url and oidc_issuer are mutually exclusive", prefix)
+		case sources == 0:
+			errs.Addf("%s: one of public_key_file, jwks_url or oidc_issuer is required for algorithm rs256", prefix)
+		}
+		if (hasJWKS || hasOIDC) && cfg.JWKSCacheTTL < 0 {
 			errs.Addf("%s.jwks_cache_ttl: must be >= 0", prefix)
 		}
 		if hasJWKS {
@@ -383,6 +472,13 @@ func validateJWTMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *Va
 			// plaintext URL is exploitable via MITM key substitution.
 			if u, err := url.Parse(strings.TrimSpace(cfg.JWKSUrl)); err != nil || !strings.EqualFold(u.Scheme, "https") {
 				errs.Addf("%s.jwks_url: must be an https URL", prefix)
+			}
+		}
+		if hasOIDC {
+			// Discovery + JWKS are fetched from the issuer; require https so the
+			// key material cannot be substituted in transit.
+			if u, err := url.Parse(strings.TrimSpace(cfg.OIDCIssuer)); err != nil || !strings.EqualFold(u.Scheme, "https") {
+				errs.Addf("%s.oidc_issuer: must be an https URL", prefix)
 			}
 		}
 	default:
