@@ -151,6 +151,18 @@ metrics:
     interval: 30s
     scrapeTimeout: 10s
     labels: {}
+  prometheusRule:
+    # Ship Relay's alerting rules as a PrometheusRule (requires the Prometheus
+    # Operator). The rule set is deploy/helm/relay/files/prometheus-rules.yaml.
+    enabled: false
+    additionalLabels: {}
+  dashboards:
+    # Ship the Grafana dashboard as a ConfigMap for the Grafana sidecar to import.
+    enabled: false
+    # Label (and value) the Grafana sidecar watches for dashboard auto-discovery.
+    label: grafana_dashboard
+    labelValue: "1"
+    annotations: {}
 
 nodeSelector: {}
 tolerations: []

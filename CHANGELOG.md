@@ -13,6 +13,11 @@ All notable changes to Relay are documented here. The format is based on
   limit did nothing when set in a config file. They are now parsed correctly.
 
 ### Added
+- Observability artifacts: a Grafana dashboard (RED signals plus upstream latency,
+  backend health, retries/retry-budget, circuit-breaker state and bulkhead) and
+  Prometheus alerting rules (error rate, p99 latency, backend health, open
+  circuits, bulkhead rejections, retry-budget exhaustion, target down). The Helm
+  chart can ship both (`metrics.dashboards.enabled`, `metrics.prometheusRule.enabled`).
 - Deployment: an official Helm chart (`deploy/helm/relay`) with Deployment,
   Service, ConfigMap, optional HPA/PodDisruptionBudget/ServiceMonitor, health and
   readiness probes and a hardened (non-root, read-only) pod; Gateway API example

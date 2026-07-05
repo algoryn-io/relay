@@ -1,0 +1,86 @@
+# Prometheus alerting rules for Relay. Load this from your prometheus.yml via
+# `rule_files:` for a plain (non-Operator) Prometheus. If you run the Prometheus
+# Operator, enable the equivalent PrometheusRule via the Helm chart instead
+# (metrics.prometheusRule.enabled=true).
+groups:
+  - name: relay.rules
+    rules:
+      - alert: RelayHighErrorRate
+        expr: |
+          sum(rate(relay_requests_total{status_code=~"5.."}[5m]))
+            / clamp_min(sum(rate(relay_requests_total[5m])), 1) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay 5xx error rate is high"
+          description: "More than 5% of requests are returning 5xx over the last 5m."
+
+      - alert: RelayHighErrorRateCritical
+        expr: |
+          sum(rate(relay_requests_total{status_code=~"5.."}[5m]))
+            / clamp_min(sum(rate(relay_requests_total[5m])), 1) > 0.20
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Relay 5xx error rate is critical"
+          description: "More than 20% of requests are returning 5xx over the last 5m."
+
+      - alert: RelayHighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(relay_request_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay p99 request latency is high"
+          description: "p99 request latency has exceeded 1s for 10m."
+
+      - alert: RelayBackendNoHealthyInstances
+        expr: sum by (backend) (relay_backend_healthy) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Relay backend {{ $labels.backend }} has no healthy instances"
+          description: "All instances of backend {{ $labels.backend }} have been unhealthy for 5m."
+
+      - alert: RelayCircuitBreakerOpen
+        expr: max by (backend) (relay_circuit_breaker_state) == 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay circuit breaker open for {{ $labels.backend }}"
+          description: "A circuit breaker for backend {{ $labels.backend }} has been open for 5m."
+
+      - alert: RelayBulkheadRejecting
+        expr: sum by (backend) (rate(relay_bulkhead_rejected_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay bulkhead rejecting requests for {{ $labels.backend }}"
+          description: "Backend {{ $labels.backend }} is shedding requests via its bulkhead (overloaded) for 10m."
+
+      - alert: RelayRetryBudgetExhausted
+        expr: sum by (backend) (rate(relay_retry_budget_exhausted_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay retry budget exhausted for {{ $labels.backend }}"
+          description: "Retries to backend {{ $labels.backend }} are being suppressed by the retry budget (sustained failures) for 10m."
+
+      # Requires the `up` series from your scrape config. Adjust the job matcher to
+      # match how you scrape Relay.
+      - alert: RelayTargetDown
+        expr: up{job=~".*relay.*"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Relay target down"
+          description: "A Relay scrape target has been unreachable for 5m."
