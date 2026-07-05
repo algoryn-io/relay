@@ -147,6 +147,102 @@ func TestValidateBodyLimitValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateOAuth2RequiresHTTPSAndClient(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "introspect",
+			Type: "oauth2",
+			Config: MiddlewareSettingsConfig{
+				IntrospectionURL: "http://idp.example.com/introspect", // plaintext
+				ClientID:         "relay",
+				ClientSecretEnv:  "SECRET",
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"introspect"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "introspection_url: must be an https URL")
+}
+
+func TestValidateOAuth2ValidConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "introspect",
+			Type: "oauth2",
+			Config: MiddlewareSettingsConfig{
+				IntrospectionURL: "https://idp.example.com/introspect",
+				ClientID:         "relay",
+				ClientSecretEnv:  "SECRET",
+				RequiredScopes:   []string{"read"},
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"introspect"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateExtAuthzRequiresURL(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name:   "authz",
+			Type:   "ext_authz",
+			Config: MiddlewareSettingsConfig{},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"authz"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "authz_url: required")
+}
+
+func TestValidateCacheInvalidStatus(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "page-cache",
+			Type: "cache",
+			Config: MiddlewareSettingsConfig{
+				CacheableStatus: []int{99},
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"page-cache"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "cacheable_status[0]: must be a valid HTTP status code")
+}
+
+func TestValidateJWTOIDCRequiresHTTPS(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "jwt-oidc",
+			Type: "jwt",
+			Config: MiddlewareSettingsConfig{
+				Algorithm:  "rs256",
+				OIDCIssuer: "http://issuer.example.com", // plaintext
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"jwt-oidc"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "oidc_issuer: must be an https URL")
+}
+
 func TestValidateCORSMiddleware(t *testing.T) {
 	t.Parallel()
 

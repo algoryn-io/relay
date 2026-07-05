@@ -85,10 +85,33 @@ Or set `RELAY_CONFIG` to that path manually. The helper script lives at [`script
 
 ---
 
-## Path matching
+## Route matching
 
 - `match.path`: **exact** path (e.g. `/health`).
 - `match.path_prefix`: **prefix** match: the request path must equal the prefix or continue with `/` (e.g. `/v1` matches `/v1` and `/v1/students`, not `/v10`). If several prefixes match, the **longest** wins. `path` and `path_prefix` are mutually exclusive.
+- `match.hosts`: restrict a route to one or more `Host` values (port-stripped, case-insensitive). Empty means any host. Two routes can share the same path with different hosts (virtual hosting / multi-tenant).
+- `match.headers`: map of request header → exact value. The route only matches when every listed header equals the given value (useful for canary routing and header-based API versioning).
+- `match.query`: map of query parameter → exact value. Same semantics as `headers`.
+
+When several routes share a path, the **most specific** wins: a route constrained by host/header/query is preferred over a catch-all, and the router falls back to the catch-all when the specific route's predicates do not match.
+
+```yaml
+routes:
+  - name: canary
+    match:
+      path_prefix: /api
+      methods: [GET, POST]
+      hosts: [api.example.com]
+      headers:
+        X-Canary: "true"
+    backend: api-canary
+  - name: stable
+    match:
+      path_prefix: /api
+      methods: [GET, POST]
+      hosts: [api.example.com]
+    backend: api-stable
+```
 
 ## Configuration Overview
 
@@ -219,6 +242,71 @@ observability:
 
 - Handles `OPTIONS` preflight
 - Validates configured origins, methods, and headers
+
+### JWT via OIDC discovery (`type: jwt`, `algorithm: rs256`)
+
+- Set `oidc_issuer: https://issuer.example.com` instead of `jwks_url`
+- Relay fetches `<issuer>/.well-known/openid-configuration` and derives the
+  `jwks_uri` automatically (keys are cached like the direct JWKS path)
+- `iss` is enforced against the discovered issuer by default
+
+### OAuth2 token introspection (`type: oauth2`)
+
+- Verifies **opaque** access tokens against an RFC 7662 introspection endpoint
+- HTTP Basic client auth (`client_id` + `client_secret_env`), `https` required
+- Optional `required_scopes`; positive results cached up to `cache_ttl` (bounded
+  by the token's own expiry). Fails closed if the endpoint is unreachable
+- Injects `X-Authenticated-Sub` and `X-Token-Scope` for the backend
+
+```yaml
+- name: introspect
+  type: oauth2
+  config:
+    introspection_url: https://idp.example.com/oauth2/introspect
+    client_id: relay
+    client_secret_env: INTROSPECTION_SECRET
+    required_scopes: [read]
+    cache_ttl: 60s
+```
+
+### External authorization (`type: ext_authz`)
+
+- Delegates the allow/deny decision to an external HTTP service (Envoy
+  `ext_authz` style). The probe forwards method, URI, host, client IP and any
+  `forward_headers`
+- `2xx` allows (optionally grafting `copy_headers` from the response onto the
+  upstream request); `401`/`403` deny; other/errors follow `fail_open`
+
+```yaml
+- name: opa
+  type: ext_authz
+  config:
+    authz_url: http://opa:8181/v1/data/http/authz
+    forward_headers: [Authorization]
+    copy_headers: [X-User-Id]
+    fail_open: false
+```
+
+### Response cache (`type: cache`)
+
+- Caches idempotent responses (`GET`/`HEAD` by default) in a bounded in-memory
+  LRU with per-entry TTL
+- Honors request/response `Cache-Control` (`no-store`, `no-cache`, `private`,
+  `max-age`/`s-maxage`), skips `Set-Cookie` responses, and streams (uncached)
+  bodies larger than `max_object_bytes`
+- Adds `X-Cache: HIT|MISS|BYPASS` and an `Age` header; `vary` folds request
+  headers into the cache key
+
+```yaml
+- name: page-cache
+  type: cache
+  config:
+    ttl: 30s
+    methods: [GET, HEAD]
+    max_object_bytes: 1048576
+    max_entries: 5000
+    vary: [Accept-Encoding]
+```
 
 ---
 

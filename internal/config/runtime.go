@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/textproto"
 	"regexp"
 	"strings"
 	"time"
@@ -46,10 +47,23 @@ type RouteRuntime struct {
 	AddRequestHeaders map[string]string // nil when not configured
 	Methods           []string
 	MethodSet         map[string]struct{}
-	Backend           BackendRuntime
-	BackendName       string
-	Middleware        []MiddlewareRuntime
-	MiddlewareRefs    []string
+	// HostSet holds the normalized (lowercased) hosts this route is bound to.
+	// Empty/nil means the route matches any host.
+	HostSet map[string]struct{}
+	// HeaderMatch requires each request header (canonicalized name) to equal the
+	// given value. Empty/nil means no header constraint.
+	HeaderMatch map[string]string
+	// QueryMatch requires each query parameter to equal the given value.
+	// Empty/nil means no query constraint.
+	QueryMatch map[string]string
+	// Specificity ranks how constrained the route is (host + header + query
+	// predicates). The router prefers higher-specificity routes so a narrow
+	// host/header override wins over a catch-all sharing the same path.
+	Specificity    int
+	Backend        BackendRuntime
+	BackendName    string
+	Middleware     []MiddlewareRuntime
+	MiddlewareRefs []string
 }
 
 type BackendRuntime struct {
@@ -135,6 +149,26 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 		path := strings.TrimSpace(route.Match.Path)
 		pathPrefix := strings.TrimSpace(route.Match.PathPrefix)
 
+		var hostSet map[string]struct{}
+		if len(route.Match.Hosts) > 0 {
+			hostSet = make(map[string]struct{}, len(route.Match.Hosts))
+			for _, h := range route.Match.Hosts {
+				h = strings.ToLower(strings.TrimSpace(h))
+				if h != "" {
+					hostSet[h] = struct{}{}
+				}
+			}
+		}
+
+		headerMatch := normalizeHeaderMatch(route.Match.Headers)
+		queryMatch := normalizeStringMap(route.Match.Query)
+
+		specificity := 0
+		if len(hostSet) > 0 {
+			specificity += 100
+		}
+		specificity += len(headerMatch) + len(queryMatch)
+
 		var compiled *CompiledRewrite
 		if strings.TrimSpace(route.Rewrite.Pattern) != "" {
 			re, err := regexp.Compile(route.Rewrite.Pattern)
@@ -156,6 +190,10 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			AddRequestHeaders: route.AddRequestHeaders,
 			Methods:           methods,
 			MethodSet:         methodSet,
+			HostSet:           hostSet,
+			HeaderMatch:       headerMatch,
+			QueryMatch:        queryMatch,
+			Specificity:       specificity,
 			Backend:           rt.Backends[route.Backend],
 			BackendName:       route.Backend,
 			Middleware:        middleware,
@@ -164,4 +202,43 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 	}
 
 	return rt, nil
+}
+
+// normalizeHeaderMatch canonicalizes header names (so lookups match
+// http.Header.Get) and drops blank keys. Returns nil when nothing remains.
+func normalizeHeaderMatch(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		out[textproto.CanonicalMIMEHeaderKey(k)] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizeStringMap trims keys and drops blank ones. Returns nil when empty.
+func normalizeStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
