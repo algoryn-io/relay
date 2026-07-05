@@ -199,6 +199,9 @@ func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 		HealthCheck    HealthCheckConfig    `yaml:"health_check"`
 		Healthcheck    HealthCheckConfig    `yaml:"healthcheck"`
 		CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+		Retry          RetryConfig          `yaml:"retry"`
+		TLS            BackendTLSConfig     `yaml:"tls"`
+		Bulkhead       BulkheadConfig       `yaml:"bulkhead"`
 		Instances      []InstanceConfig     `yaml:"instances"`
 	}
 
@@ -214,6 +217,9 @@ func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 		c.HealthCheck = raw.Healthcheck
 	}
 	c.CircuitBreaker = raw.CircuitBreaker
+	c.Retry = raw.Retry
+	c.TLS = raw.TLS
+	c.Bulkhead = raw.Bulkhead
 	c.Instances = raw.Instances
 
 	return nil
