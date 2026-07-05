@@ -6,7 +6,24 @@ All notable changes to Relay are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Backend `retry`, `tls` and `bulkhead` blocks were silently dropped when a
+  backend was configured via YAML (they were missing from the decoder's internal
+  struct), so per-backend retries, outbound mTLS and the bulkhead concurrency
+  limit did nothing when set in a config file. They are now parsed correctly.
+
 ### Added
+- gRPC / HTTP-2: the plaintext listener accepts cleartext HTTP/2 (h2c) alongside
+  HTTP/1.1, and backends accept `protocol: h2c` to forward to cleartext HTTP/2
+  upstreams with end-to-end streaming (no retry buffering).
+- Retry budget: per-backend `retry.budget_ratio` / `retry.budget_tokens` cap
+  retries as a fraction of traffic (token bucket) to prevent retry storms;
+  suppressed retries increment `relay_retry_budget_exhausted_total`.
+- File-based secrets: `secret_file`, `client_secret_file`, `redis_url_file` and
+  `listener.admin.token_file` read secrets from mounted files (k8s Secret
+  volumes) as an alternative to the `*_env` sources.
+- Config composition: top-level `include` merges routes/backends/middleware from
+  additional files (load-once semantics; cycle- and diamond-safe).
 - Host-based routing: `match.hosts` is now enforced (previously parsed but
   ignored). Routes can share a path across different hosts (virtual hosting).
 - Header- and query-based route matching: `match.headers` and `match.query`

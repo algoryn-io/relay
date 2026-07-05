@@ -147,6 +147,36 @@ func TestValidateBodyLimitValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateBackendProtocolInvalid(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Backends[0].Protocol = "http3"
+
+	assertValidationErrorContains(t, cfg.Validate(), "protocol: must be one of http1, h2c")
+}
+
+func TestValidateBackendH2CWithTLSConflict(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Backends[0].Protocol = "h2c"
+	cfg.Backends[0].TLS = BackendTLSConfig{CAFile: "/etc/relay/ca.pem"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "h2c (cleartext) cannot be combined with tls")
+}
+
+func TestValidateBackendH2CValid(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Backends[0].Protocol = "h2c"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestValidateOAuth2RequiresHTTPSAndClient(t *testing.T) {
 	t.Parallel()
 

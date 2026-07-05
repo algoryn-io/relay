@@ -207,6 +207,16 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 			errs.Addf("%s.strategy: must be one of round_robin, least_connections", prefix)
 		}
 
+		switch strings.ToLower(strings.TrimSpace(backend.Protocol)) {
+		case "", "http1", "h2c":
+		default:
+			errs.Addf("%s.protocol: must be one of http1, h2c", prefix)
+		}
+		// h2c is cleartext HTTP/2; outbound TLS to the backend is contradictory.
+		if strings.EqualFold(strings.TrimSpace(backend.Protocol), "h2c") && hasBackendTLS(backend.TLS) {
+			errs.Addf("%s.protocol: h2c (cleartext) cannot be combined with tls", prefix)
+		}
+
 		if len(backend.Instances) == 0 {
 			errs.Addf("%s.instances: must contain at least one instance", prefix)
 		}
@@ -296,8 +306,9 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 			if store == "redis" {
 				hasURL := strings.TrimSpace(middleware.Config.RedisURL) != ""
 				hasURLEnv := strings.TrimSpace(middleware.Config.RedisURLEnv) != ""
-				if !hasURL && !hasURLEnv {
-					errs.Addf("%s.config: redis_url or redis_url_env is required when store is redis", prefix)
+				hasURLFile := strings.TrimSpace(middleware.Config.RedisURLFile) != ""
+				if !hasURL && !hasURLEnv && !hasURLFile {
+					errs.Addf("%s.config: redis_url, redis_url_env or redis_url_file is required when store is redis", prefix)
 				}
 			}
 		}
@@ -380,8 +391,8 @@ func validateOAuth2Middleware(prefix string, cfg MiddlewareSettingsConfig, errs 
 	if strings.TrimSpace(cfg.ClientID) == "" {
 		errs.Addf("%s.client_id: required", prefix)
 	}
-	if strings.TrimSpace(cfg.ClientSecretEnv) == "" {
-		errs.Addf("%s.client_secret_env: required", prefix)
+	if strings.TrimSpace(cfg.ClientSecretEnv) == "" && strings.TrimSpace(cfg.ClientSecretFile) == "" {
+		errs.Addf("%s: client_secret_env or client_secret_file is required", prefix)
 	}
 	if cfg.IntrospectionCacheTTL < 0 {
 		errs.Addf("%s.cache_ttl: must be >= 0", prefix)
@@ -398,6 +409,14 @@ func validateExtAuthzMiddleware(prefix string, cfg MiddlewareSettingsConfig, err
 	if cfg.AuthzTimeout < 0 {
 		errs.Addf("%s.authz_timeout: must be >= 0", prefix)
 	}
+}
+
+// hasBackendTLS reports whether any outbound backend TLS field is set.
+func hasBackendTLS(cfg BackendTLSConfig) bool {
+	return strings.TrimSpace(cfg.CertFile) != "" ||
+		strings.TrimSpace(cfg.KeyFile) != "" ||
+		strings.TrimSpace(cfg.CAFile) != "" ||
+		cfg.InsecureSkipVerify
 }
 
 func validateBackendTLS(prefix string, cfg BackendTLSConfig, errs *ValidationErrors) {
@@ -445,8 +464,8 @@ func validateJWTMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *Va
 
 	switch alg {
 	case "hs256":
-		if strings.TrimSpace(cfg.SecretEnv) == "" {
-			errs.Addf("%s.secret_env: required for algorithm hs256", prefix)
+		if strings.TrimSpace(cfg.SecretEnv) == "" && strings.TrimSpace(cfg.SecretFile) == "" {
+			errs.Addf("%s: secret_env or secret_file is required for algorithm hs256", prefix)
 		}
 	case "rs256":
 		hasFile := strings.TrimSpace(cfg.PublicKeyFile) != ""
@@ -563,6 +582,12 @@ func validateRetry(prefix string, r RetryConfig, errs *ValidationErrors) {
 		if _, ok := validRetryConditions[strings.ToLower(cond)]; !ok {
 			errs.Addf("%s.on[%d]: must be one of 5xx, network_error", prefix, i)
 		}
+	}
+	if r.BudgetRatio < 0 {
+		errs.Addf("%s.budget_ratio: must be >= 0", prefix)
+	}
+	if r.BudgetTokens < 0 {
+		errs.Addf("%s.budget_tokens: must be >= 0", prefix)
 	}
 }
 

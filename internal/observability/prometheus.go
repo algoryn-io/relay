@@ -18,11 +18,12 @@ type PrometheusCollector struct {
 	activeRequests   *prometheus.GaugeVec
 	backendHealthy   *prometheus.GaugeVec
 	upstreamDuration *prometheus.HistogramVec
-	retryTotal       *prometheus.CounterVec
-	circuitState     *prometheus.GaugeVec
-	bulkheadInFlight *prometheus.GaugeVec
-	bulkheadRejected *prometheus.CounterVec
-	registry         *prometheus.Registry
+	retryTotal          *prometheus.CounterVec
+	retryBudgetExceeded *prometheus.CounterVec
+	circuitState        *prometheus.GaugeVec
+	bulkheadInFlight    *prometheus.GaugeVec
+	bulkheadRejected    *prometheus.CounterVec
+	registry            *prometheus.Registry
 }
 
 func NewPrometheusCollector() *PrometheusCollector {
@@ -60,6 +61,11 @@ func NewPrometheusCollector() *PrometheusCollector {
 		Help: "Total request retries, partitioned by backend and reason.",
 	}, []string{"backend", "reason"})
 
+	retryBudgetExceeded := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "relay_retry_budget_exhausted_total",
+		Help: "Total retries suppressed because the backend retry budget was exhausted.",
+	}, []string{"backend"})
+
 	circuitState := prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "relay_circuit_breaker_state",
 		Help: "Circuit breaker state per instance: 0 = closed, 1 = half_open, 2 = open.",
@@ -77,20 +83,21 @@ func NewPrometheusCollector() *PrometheusCollector {
 
 	reg.MustRegister(
 		requestsTotal, requestDuration, activeRequests, backendHealthy,
-		upstreamDuration, retryTotal, circuitState, bulkheadInFlight, bulkheadRejected,
+		upstreamDuration, retryTotal, retryBudgetExceeded, circuitState, bulkheadInFlight, bulkheadRejected,
 	)
 
 	return &PrometheusCollector{
-		requestsTotal:    requestsTotal,
-		requestDuration:  requestDuration,
-		activeRequests:   activeRequests,
-		backendHealthy:   backendHealthy,
-		upstreamDuration: upstreamDuration,
-		retryTotal:       retryTotal,
-		circuitState:     circuitState,
-		bulkheadInFlight: bulkheadInFlight,
-		bulkheadRejected: bulkheadRejected,
-		registry:         reg,
+		requestsTotal:       requestsTotal,
+		requestDuration:     requestDuration,
+		activeRequests:      activeRequests,
+		backendHealthy:      backendHealthy,
+		upstreamDuration:    upstreamDuration,
+		retryTotal:          retryTotal,
+		retryBudgetExceeded: retryBudgetExceeded,
+		circuitState:        circuitState,
+		bulkheadInFlight:    bulkheadInFlight,
+		bulkheadRejected:    bulkheadRejected,
+		registry:            reg,
 	}
 }
 
@@ -110,6 +117,15 @@ func (c *PrometheusCollector) RecordRetry(backend, reason string) {
 		return
 	}
 	c.retryTotal.WithLabelValues(backend, reason).Inc()
+}
+
+// RecordRetryBudgetExhausted counts a retry that was suppressed because the
+// backend's retry budget was exhausted.
+func (c *PrometheusCollector) RecordRetryBudgetExhausted(backend string) {
+	if c == nil {
+		return
+	}
+	c.retryBudgetExceeded.WithLabelValues(backend).Inc()
 }
 
 // SetCircuitState reflects an instance's circuit breaker state as a gauge.

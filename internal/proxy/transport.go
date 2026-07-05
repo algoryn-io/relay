@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"algoryn.io/relay/internal/config"
@@ -34,10 +35,28 @@ func newBaseTransport() *http.Transport {
 	}
 }
 
-// buildBackendTransport constructs a tuned *http.Transport for the given backend.
-// A custom TLS config is applied only when one of the TLS fields is set; otherwise
-// the transport uses system roots (for https backends) and plain HTTP as usual.
-func buildBackendTransport(cfg config.BackendTLSConfig) (*http.Transport, error) {
+// newH2CTransport returns a transport that speaks cleartext HTTP/2 (h2c) to the
+// backend using prior knowledge. It relies on the stdlib net/http support for
+// unencrypted HTTP/2 (Go 1.24+): enabling only UnencryptedHTTP2 makes http://
+// requests use h2c, which is what lets Relay proxy gRPC and other HTTP/2 traffic
+// to non-TLS upstreams.
+func newH2CTransport() *http.Transport {
+	tr := newBaseTransport()
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	tr.Protocols = protocols
+	return tr
+}
+
+// buildBackendTransport constructs the RoundTripper for the given backend. For
+// h2c backends it returns a cleartext HTTP/2 transport. Otherwise it returns a
+// tuned *http.Transport; a custom TLS config is applied only when one of the TLS
+// fields is set (system roots are used for https backends by default).
+func buildBackendTransport(protocol string, cfg config.BackendTLSConfig) (http.RoundTripper, error) {
+	if isH2C(protocol) {
+		return newH2CTransport(), nil
+	}
+
 	tr := newBaseTransport()
 
 	if !hasTLSConfig(cfg) {
@@ -75,6 +94,11 @@ func buildBackendTransport(cfg config.BackendTLSConfig) (*http.Transport, error)
 // hasTLSConfig reports whether any backend TLS field is set.
 func hasTLSConfig(cfg config.BackendTLSConfig) bool {
 	return cfg.CertFile != "" || cfg.KeyFile != "" || cfg.CAFile != "" || cfg.InsecureSkipVerify
+}
+
+// isH2C reports whether the protocol string selects cleartext HTTP/2.
+func isH2C(protocol string) bool {
+	return strings.EqualFold(strings.TrimSpace(protocol), "h2c")
 }
 
 // transportFor returns the RoundTripper that should be used for a request to

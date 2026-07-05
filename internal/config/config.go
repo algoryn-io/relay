@@ -3,6 +3,12 @@ package config
 import "time"
 
 type Config struct {
+	// Include lists additional config files (relative to this file's directory,
+	// or absolute) whose routes, backends and middleware are merged into this
+	// config. Includes are loaded once (idempotent), so shared bases and cycles
+	// are handled safely. Other sections (listener, observability, ...) come from
+	// the top-level file.
+	Include       []string            `yaml:"include"`
 	Listener      ListenerConfig      `yaml:"listener"`
 	Routes        []RouteConfig       `yaml:"routes"`
 	Backends      []BackendConfig     `yaml:"backends"`
@@ -38,7 +44,10 @@ type AdminConfig struct {
 	// TokenEnv names an environment variable holding a bearer token. When set,
 	// admin requests must present "Authorization: Bearer <token>" in addition to
 	// passing the IP allowlist. Leave empty for IP-only access.
-	TokenEnv      string `yaml:"token_env"`
+	TokenEnv string `yaml:"token_env"`
+	// TokenFile reads the admin bearer token from a mounted file. Alternative to
+	// token_env; token_env wins if both are set.
+	TokenFile     string `yaml:"token_file"`
 	ResolvedToken string `yaml:"-"`
 }
 
@@ -132,7 +141,12 @@ type MatchConfig struct {
 }
 
 type BackendConfig struct {
-	Name           string               `yaml:"name"`
+	Name string `yaml:"name"`
+	// Protocol selects the wire protocol used to reach this backend:
+	//   "http1" (default) — HTTP/1.1, with HTTP/2 negotiated via ALPN for https.
+	//   "h2c"             — HTTP/2 over cleartext (prior knowledge), for gRPC and
+	//                       streaming backends that do not terminate TLS.
+	Protocol       string               `yaml:"protocol"`
 	Strategy       string               `yaml:"strategy"`
 	HealthCheck    HealthCheckConfig    `yaml:"health_check"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
@@ -182,6 +196,15 @@ type RetryConfig struct {
 	// AllowUnsafe, when true, permits retrying non-safe HTTP methods
 	// (POST, PUT, PATCH, DELETE). Use only when the upstream is idempotent.
 	AllowUnsafe bool `yaml:"allow_unsafe"`
+	// BudgetRatio caps retries as a fraction of request volume to prevent retry
+	// storms during an outage. Each completed request replenishes this many
+	// tokens; each retry costs one. 0 (default) disables the budget (retries are
+	// governed only by Attempts). Example: 0.2 caps sustained retries at ~20% of
+	// traffic.
+	BudgetRatio float64 `yaml:"budget_ratio"`
+	// BudgetTokens is the token bucket capacity (initial burst allowance) when
+	// BudgetRatio > 0. Defaults to 100 when zero.
+	BudgetTokens int `yaml:"budget_tokens"`
 }
 
 // CircuitBreakerConfig enables a per-instance circuit breaker for a backend.
@@ -216,7 +239,11 @@ type MiddlewareConfig struct {
 }
 
 type MiddlewareSettingsConfig struct {
-	SecretEnv       string            `yaml:"secret_env"`
+	SecretEnv string `yaml:"secret_env"`
+	// SecretFile reads the JWT HS256 secret from a mounted file (e.g. a Kubernetes
+	// Secret volume). Trimmed of trailing whitespace. Alternative to secret_env;
+	// secret_env wins if both are set.
+	SecretFile      string            `yaml:"secret_file"`
 	ResolvedSecret  string            `yaml:"-"`
 	Header          string            `yaml:"header"`
 	ClaimsToHeaders map[string]string `yaml:"claims_to_headers"`
@@ -247,7 +274,10 @@ type MiddlewareSettingsConfig struct {
 	RedisURL string `yaml:"redis_url"`
 	// RedisURLEnv is the name of an environment variable containing the
 	// Redis URL; overrides redis_url when set.
-	RedisURLEnv      string   `yaml:"redis_url_env"`
+	RedisURLEnv string `yaml:"redis_url_env"`
+	// RedisURLFile reads the Redis URL from a mounted file. Alternative to
+	// redis_url/redis_url_env.
+	RedisURLFile     string   `yaml:"redis_url_file"`
 	AllowedOrigins   []string `yaml:"allowed_origins"`
 	AllowedMethods   []string `yaml:"allowed_methods"`
 	AllowedHeaders   []string `yaml:"allowed_headers"`
@@ -280,8 +310,11 @@ type MiddlewareSettingsConfig struct {
 	// OAuth2 token introspection middleware (RFC 7662) fields.
 	IntrospectionURL      string        `yaml:"introspection_url"`
 	ClientID              string        `yaml:"client_id"`
-	ClientSecretEnv       string        `yaml:"client_secret_env"`
-	ResolvedClientSecret  string        `yaml:"-"` // populated from ClientSecretEnv by ResolveEnv
+	ClientSecretEnv string `yaml:"client_secret_env"`
+	// ClientSecretFile reads the introspection client secret from a mounted file.
+	// Alternative to client_secret_env.
+	ClientSecretFile      string        `yaml:"client_secret_file"`
+	ResolvedClientSecret  string        `yaml:"-"` // populated from ClientSecretEnv/ClientSecretFile
 	RequiredScopes        []string      `yaml:"required_scopes"`
 	IntrospectionCacheTTL time.Duration `yaml:"cache_ttl"`
 	// External authorization middleware (ext_authz) fields.
