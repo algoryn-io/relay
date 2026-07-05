@@ -42,6 +42,7 @@ type HealthNotifier interface {
 type ProxyMetrics interface {
 	ObserveUpstreamLatency(backend string, d time.Duration)
 	RecordRetry(backend, reason string)
+	RecordRetryBudgetExhausted(backend string)
 	SetCircuitState(backend, instance, state string)
 	SetBulkheadInFlight(backend string, n int)
 	RecordBulkheadRejected(backend string)
@@ -52,6 +53,7 @@ type nopMetrics struct{}
 
 func (nopMetrics) ObserveUpstreamLatency(string, time.Duration) {}
 func (nopMetrics) RecordRetry(string, string)                   {}
+func (nopMetrics) RecordRetryBudgetExhausted(string)            {}
 func (nopMetrics) SetCircuitState(string, string, string)       {}
 func (nopMetrics) SetBulkheadInFlight(string, int)              {}
 func (nopMetrics) RecordBulkheadRejected(string)                {}
@@ -68,7 +70,8 @@ type Proxy struct {
 	backendTransports map[string]http.RoundTripper
 	defaultTransport  http.RoundTripper // tuned fallback; rarely used
 	bulkheads         map[string]*bulkhead
-	wsIdleTimeout     time.Duration // 0 = no WebSocket idle timeout
+	retryBudgets      map[string]*retryBudget // per-backend; nil entry = unlimited
+	wsIdleTimeout     time.Duration           // 0 = no WebSocket idle timeout
 	metrics           ProxyMetrics
 	healthWG          sync.WaitGroup // tracks health-check goroutines for clean shutdown
 }
@@ -110,6 +113,7 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		backendTransports: make(map[string]http.RoundTripper, len(rt.Backends)),
 		defaultTransport:  newBaseTransport(),
 		bulkheads:         make(map[string]*bulkhead, len(rt.Backends)),
+		retryBudgets:      make(map[string]*retryBudget, len(rt.Backends)),
 		metrics:           nopMetrics{},
 	}
 
@@ -117,10 +121,14 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		if backend.Bulkhead.MaxConcurrent > 0 {
 			p.bulkheads[name] = newBulkhead(backend.Bulkhead.MaxConcurrent)
 		}
+		if backend.Retry.BudgetRatio > 0 {
+			p.retryBudgets[name] = newRetryBudget(backend.Retry.BudgetTokens, backend.Retry.BudgetRatio)
+		}
 
 		// Every backend gets its own tuned transport (with TLS applied when
-		// configured) so connection pooling is never left to http.DefaultTransport.
-		tr, trErr := buildBackendTransport(backend.TLS)
+		// configured, or a cleartext HTTP/2 transport for h2c) so connection
+		// pooling is never left to http.DefaultTransport.
+		tr, trErr := buildBackendTransport(backend.Protocol, backend.TLS)
 		if trErr != nil {
 			cancel()
 			return nil, fmt.Errorf("backend %q: build transport: %w", name, trErr)
@@ -272,16 +280,31 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		maxAttempts = 1
 	}
 
+	// h2c backends carry gRPC and other HTTP/2 streams: responses use trailers and
+	// are frequently long-lived/bidirectional, which the retry response buffer
+	// cannot capture. Stream straight through and let the gRPC client handle
+	// retries. FlushInterval -1 flushes each write immediately for streaming.
+	h2c := backend.IsH2C()
+
 	// A request is retry-eligible only when more than one attempt is configured,
 	// at least one retry condition is set, and the method is safe (or unsafe
 	// methods are explicitly allowed). When it is not eligible there is no reason
 	// to buffer: the response streams straight to the client. This keeps the hot
 	// path allocation-free and preserves streaming/SSE for the common case.
-	retryEligible := maxAttempts > 1 &&
+	retryEligible := !h2c &&
+		maxAttempts > 1 &&
 		len(retry.On) > 0 &&
 		(retry.AllowUnsafe || isSafeMethod(r.Method))
 	if !retryEligible {
 		maxAttempts = 1
+	}
+
+	// Retry budget: every retry-eligible request funds the token bucket; each
+	// retry withdraws a token below. This caps retries at a fraction of traffic
+	// so a failing backend cannot amplify its own load.
+	budget := p.retryBudgets[backendName]
+	if retryEligible && budget != nil {
+		budget.deposit()
 	}
 
 	// Buffer the request body for retry replay when no size limit was applied
@@ -357,6 +380,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 
 		rp := &httputil.ReverseProxy{
 			Transport: transport,
+			// Immediate flushing keeps gRPC/HTTP-2 streams (and SSE) responsive
+			// instead of waiting for the copy buffer to fill.
+			FlushInterval: flushIntervalFor(h2c),
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
 
@@ -440,6 +466,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 			break
 		}
 
+		// Retry budget gate: suppress the retry when the bucket is empty so a
+		// failing backend cannot be flooded with retries during an outage.
+		if budget != nil && !budget.withdraw() {
+			p.metrics.RecordRetryBudgetExhausted(backendName)
+			if p.logger != nil {
+				p.logger.Warn("retry suppressed: budget exhausted", "backend", backendName)
+			}
+			break
+		}
+
 		// Record the retry on the active OTel span so it appears in traces.
 		reason := "5xx"
 		if isNetErr {
@@ -473,6 +509,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	if lastBuf != nil {
 		lastBuf.flushTo(w)
 	}
+}
+
+// flushIntervalFor returns the ReverseProxy flush interval. h2c (gRPC/streaming)
+// backends flush every write immediately (-1); others use the default (0), which
+// lets Go pick an efficient buffered cadence.
+func flushIntervalFor(h2c bool) time.Duration {
+	if h2c {
+		return -1
+	}
+	return 0
 }
 
 // resolveHeaderTpl resolves a header value template for add_request_headers.

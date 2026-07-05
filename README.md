@@ -154,10 +154,16 @@ routes:
 backends:
   - name: test-backend
     strategy: round_robin
+    protocol: http1        # or "h2c" for cleartext HTTP/2 (gRPC) backends
     health_check:
       interval: 10s
       timeout: 2s
       path: /health
+    retry:
+      attempts: 3
+      on: [5xx, network_error]
+      budget_ratio: 0.2    # cap retries at ~20% of traffic (anti retry-storm)
+      budget_tokens: 100   # burst allowance
     instances:
       - url: http://localhost:9001
       - url: http://localhost:9002
@@ -306,6 +312,64 @@ observability:
     max_object_bytes: 1048576
     max_entries: 5000
     vary: [Accept-Encoding]
+```
+
+---
+
+## gRPC / HTTP-2 (h2c)
+
+- The plaintext listener accepts **cleartext HTTP/2 (h2c)** alongside HTTP/1.1, so
+  gRPC (and other HTTP/2) clients can connect without TLS. HTTPS listeners already
+  negotiate HTTP/2 via ALPN.
+- Set `protocol: h2c` on a backend to forward to a **cleartext HTTP/2 upstream**
+  (typical for gRPC services behind a mesh). Responses stream end-to-end
+  (immediate flush, no retry buffering) so bidirectional streaming works.
+- `protocol: http1` (default) keeps HTTP/1.1 with HTTP/2 via ALPN for `https`
+  backends. `h2c` cannot be combined with backend `tls` (it is cleartext).
+
+## Retry budget
+
+Retries are capped as a fraction of request volume so a failing backend cannot
+amplify its own load (a "retry storm"). It is a token bucket: each completed
+request replenishes `budget_ratio` tokens (up to `budget_tokens`), and each retry
+spends one. When empty, retries are suppressed and
+`relay_retry_budget_exhausted_total` increments.
+
+```yaml
+backends:
+  - name: api
+    retry:
+      attempts: 3
+      on: [5xx, network_error]
+      budget_ratio: 0.2    # sustained retries ≤ ~20% of traffic (0 = unlimited)
+      budget_tokens: 100   # initial burst allowance
+```
+
+## Secrets from files
+
+Every secret that accepts a `*_env` source also accepts a `*_file` source that
+reads the value from a mounted file (the Kubernetes Secret-volume pattern),
+trimmed of surrounding whitespace. `*_env` wins when both are set.
+
+- `middleware.config.secret_file` (JWT HS256), `client_secret_file` (oauth2),
+  `redis_url_file` (rate limit)
+- `listener.admin.token_file` (admin bearer token)
+
+## Config composition (`include`)
+
+Split a large config across files. `include` merges the `routes`, `backends` and
+`middleware` from each listed file (relative to the including file, or absolute)
+into the top level. Includes are loaded **once** — shared bases and cycles are
+handled safely — and duplicate names across files are caught by validation.
+
+```yaml
+# relay.yaml
+include:
+  - backends/payments.yaml
+  - routes/public.yaml
+listener:
+  http:
+    port: 8088
 ```
 
 ---

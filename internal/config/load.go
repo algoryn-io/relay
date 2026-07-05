@@ -4,12 +4,32 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 func Load(path string) (*Config, error) {
+	return loadWithIncludes(path, make(map[string]struct{}))
+}
+
+// loadWithIncludes loads a single config file and recursively merges any files
+// it lists under `include`. The loaded set records absolute paths already merged
+// so a file is included at most once — this makes includes idempotent and safe
+// against cycles (a file that transitively includes itself) and diamonds (two
+// files including a common base).
+func loadWithIncludes(path string, loaded map[string]struct{}) (*Config, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve config path %q: %w", path, err)
+	}
+	if _, seen := loaded[abs]; seen {
+		// Already merged via another include; contribute nothing further.
+		return &Config{}, nil
+	}
+	loaded[abs] = struct{}{}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %q: %w", path, err)
@@ -24,7 +44,33 @@ func Load(path string) (*Config, error) {
 
 	cfg.normalizeAliases()
 
+	includes := cfg.Include
+	cfg.Include = nil
+	baseDir := filepath.Dir(path)
+	for _, inc := range includes {
+		incPath := inc
+		if !filepath.IsAbs(incPath) {
+			incPath = filepath.Join(baseDir, incPath)
+		}
+		sub, err := loadWithIncludes(incPath, loaded)
+		if err != nil {
+			return nil, fmt.Errorf("include %q: %w", inc, err)
+		}
+		cfg.mergeIncluded(sub)
+	}
+
 	return &cfg, nil
+}
+
+// mergeIncluded appends the routes, backends and middleware contributed by an
+// included config. Duplicate names across files are caught by validation.
+func (c *Config) mergeIncluded(other *Config) {
+	if other == nil {
+		return
+	}
+	c.Routes = append(c.Routes, other.Routes...)
+	c.Backends = append(c.Backends, other.Backends...)
+	c.Middleware = append(c.Middleware, other.Middleware...)
 }
 
 func (c *Config) normalizeAliases() {
@@ -195,6 +241,7 @@ func (c *MatchConfig) UnmarshalYAML(node *yaml.Node) error {
 func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawBackend struct {
 		Name           string               `yaml:"name"`
+		Protocol       string               `yaml:"protocol"`
 		Strategy       string               `yaml:"strategy"`
 		HealthCheck    HealthCheckConfig    `yaml:"health_check"`
 		Healthcheck    HealthCheckConfig    `yaml:"healthcheck"`
@@ -211,6 +258,7 @@ func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 	}
 
 	c.Name = raw.Name
+	c.Protocol = raw.Protocol
 	c.Strategy = raw.Strategy
 	c.HealthCheck = raw.HealthCheck
 	if c.HealthCheck == (HealthCheckConfig{}) {

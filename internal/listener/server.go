@@ -132,6 +132,10 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 			WriteTimeout:      timeouts.Write,
 			IdleTimeout:       timeouts.Idle,
 			MaxHeaderBytes:    defaultMaxHeaderBytes,
+			// Accept cleartext HTTP/2 (h2c) alongside HTTP/1.1 so gRPC and other
+			// HTTP/2 clients can connect without TLS. Uses stdlib support for
+			// unencrypted HTTP/2 (Go 1.24+); transparent to HTTP/1.1 clients.
+			Protocols: h2cServerProtocols(),
 		}
 	}
 
@@ -590,6 +594,15 @@ func stripUntrustedHeaders(r *http.Request, trustedNets []*net.IPNet, extra []st
 			r.Header.Del(h)
 		}
 	}
+}
+
+// h2cServerProtocols enables HTTP/1.1 plus cleartext HTTP/2 (h2c) on the
+// plaintext listener so gRPC and other HTTP/2 clients can connect without TLS.
+func h2cServerProtocols() *http.Protocols {
+	p := new(http.Protocols)
+	p.SetHTTP1(true)
+	p.SetUnencryptedHTTP2(true)
+	return p
 }
 
 // isLoopbackPeer reports whether the immediate TCP peer is a loopback address.

@@ -96,7 +96,7 @@ func writeTempFile(t *testing.T, data []byte) string {
 func TestBuildBackendTransportEmpty(t *testing.T) {
 	t.Parallel()
 
-	tr, err := buildBackendTransport(config.BackendTLSConfig{})
+	tr, err := buildBackendTransport("", config.BackendTLSConfig{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBuildBackendTransportInsecureSkipVerify(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tr, err := buildBackendTransport(config.BackendTLSConfig{InsecureSkipVerify: true})
+	tr, err := buildBackendTransport("", config.BackendTLSConfig{InsecureSkipVerify: true})
 	if err != nil {
 		t.Fatalf("build transport: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestBuildBackendTransportCustomCA(t *testing.T) {
 
 	caFile := writeTempFile(t, caPEM)
 
-	tr, err := buildBackendTransport(config.BackendTLSConfig{CAFile: caFile})
+	tr, err := buildBackendTransport("", config.BackendTLSConfig{CAFile: caFile})
 	if err != nil {
 		t.Fatalf("build transport: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestBuildBackendTransportMTLS(t *testing.T) {
 	keyFile := writeTempFile(t, clientKeyPEM)
 	caFile := writeTempFile(t, caPEM)
 
-	tr, err := buildBackendTransport(config.BackendTLSConfig{
+	tr, err := buildBackendTransport("", config.BackendTLSConfig{
 		CertFile: certFile,
 		KeyFile:  keyFile,
 		CAFile:   caFile,
@@ -252,7 +252,7 @@ func TestBuildBackendTransportMTLSRejectedWithoutCert(t *testing.T) {
 	caFile := writeTempFile(t, caPEM)
 
 	// No cert_file / key_file — request must be rejected by the server.
-	tr, err := buildBackendTransport(config.BackendTLSConfig{CAFile: caFile})
+	tr, err := buildBackendTransport("", config.BackendTLSConfig{CAFile: caFile})
 	if err != nil {
 		t.Fatalf("build transport: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestBuildBackendTransportMTLSRejectedWithoutCert(t *testing.T) {
 func TestBuildBackendTransportMissingCAFile(t *testing.T) {
 	t.Parallel()
 
-	_, err := buildBackendTransport(config.BackendTLSConfig{
+	_, err := buildBackendTransport("", config.BackendTLSConfig{
 		CAFile: filepath.Join(t.TempDir(), "nonexistent-ca.pem"),
 	})
 	if err == nil {
@@ -284,7 +284,7 @@ func TestBuildBackendTransportEmptyCAFile(t *testing.T) {
 	t.Parallel()
 
 	caFile := writeTempFile(t, []byte("not a cert\n"))
-	_, err := buildBackendTransport(config.BackendTLSConfig{CAFile: caFile})
+	_, err := buildBackendTransport("", config.BackendTLSConfig{CAFile: caFile})
 	if err == nil {
 		t.Error("expected error for empty CA file, got nil")
 	}
@@ -303,7 +303,7 @@ func TestBuildBackendTransportInvalidKeyPair(t *testing.T) {
 	certFile := writeTempFile(t, certPEM)
 	keyFile := writeTempFile(t, keyPEM)
 
-	_, err := buildBackendTransport(config.BackendTLSConfig{
+	_, err := buildBackendTransport("", config.BackendTLSConfig{
 		CertFile: certFile,
 		KeyFile:  keyFile,
 	})
@@ -357,7 +357,7 @@ func TestTransportForCircuitBreaker(t *testing.T) {
 func TestTransportForCustomBase(t *testing.T) {
 	t.Parallel()
 
-	customBase, err := buildBackendTransport(config.BackendTLSConfig{InsecureSkipVerify: true})
+	customBase, err := buildBackendTransport("", config.BackendTLSConfig{InsecureSkipVerify: true})
 	if err != nil {
 		t.Fatal(err)
 	}

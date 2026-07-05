@@ -61,6 +61,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := cfg.ResolveSecretFiles(nil); err != nil {
+		bootstrapLogger.Error("failed to resolve secret files", "error", err)
+		os.Exit(1)
+	}
+
 	if err := cfg.Validate(); err != nil {
 		bootstrapLogger.Error("invalid config", "error", err)
 		os.Exit(1)
@@ -122,6 +127,10 @@ func main() {
 		}
 		if loadErr = newCfg.ResolveEnv(os.Getenv); loadErr != nil {
 			logger.Error("reload failed: resolve env", "error", loadErr)
+			return
+		}
+		if loadErr = newCfg.ResolveSecretFiles(nil); loadErr != nil {
+			logger.Error("reload failed: resolve secret files", "error", loadErr)
 			return
 		}
 		if loadErr = newCfg.Validate(); loadErr != nil {

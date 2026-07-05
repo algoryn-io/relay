@@ -68,6 +68,7 @@ type RouteRuntime struct {
 
 type BackendRuntime struct {
 	Name           string
+	Protocol       string
 	Strategy       string
 	HealthCheck    HealthCheckConfig
 	CircuitBreaker CircuitBreakerConfig
@@ -75,6 +76,11 @@ type BackendRuntime struct {
 	TLS            BackendTLSConfig
 	Bulkhead       BulkheadConfig
 	Instances      []InstanceRuntime
+}
+
+// IsH2C reports whether the backend is reached over cleartext HTTP/2.
+func (b BackendRuntime) IsH2C() bool {
+	return strings.EqualFold(strings.TrimSpace(b.Protocol), "h2c")
 }
 
 type InstanceRuntime struct {
@@ -114,6 +120,7 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 
 		rt.Backends[backend.Name] = BackendRuntime{
 			Name:           backend.Name,
+			Protocol:       backend.Protocol,
 			Strategy:       backend.Strategy,
 			HealthCheck:    backend.HealthCheck,
 			CircuitBreaker: backend.CircuitBreaker,
