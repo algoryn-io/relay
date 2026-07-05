@@ -105,6 +105,14 @@ Then enable the ServiceMonitor:
 helm upgrade relay ./deploy/helm/relay --set metrics.serviceMonitor.enabled=true
 ```
 
+### Dashboards & alerts
+
+Relay ships a Grafana dashboard (RED signals + resilience metrics) and a set of
+Prometheus alerting rules:
+
+- **Dashboard**: [`deploy/helm/relay/dashboards/relay-dashboard.json`](../deploy/helm/relay/dashboards/relay-dashboard.json) — import into Grafana, or ship via the chart with `--set metrics.dashboards.enabled=true` (Grafana sidecar).
+- **Alerts**: [`deploy/helm/relay/files/prometheus-rules.yaml`](../deploy/helm/relay/files/prometheus-rules.yaml) — load into a plain Prometheus (`rule_files`), or ship a `PrometheusRule` with `--set metrics.prometheusRule.enabled=true`. Covers error rate, p99 latency, backend health, open circuit breakers, bulkhead rejections, retry-budget exhaustion, and target down. See [`deploy/prometheus/README.md`](../deploy/prometheus/README.md).
+
 ---
 
 ## Gateway API integration

@@ -1,0 +1,16 @@
+{{- if .Values.metrics.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "relay.fullname" . }}-dashboard
+  labels:
+    {{- include "relay.labels" . | nindent 4 }}
+    {{ .Values.metrics.dashboards.label }}: {{ .Values.metrics.dashboards.labelValue | quote }}
+  {{- with .Values.metrics.dashboards.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  relay-dashboard.json: |
+    {{- .Files.Get "dashboards/relay-dashboard.json" | nindent 4 }}
+{{- end }}
