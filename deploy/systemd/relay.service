@@ -1,0 +1,57 @@
+# systemd unit for running Relay as a hardened service on a VPS or bare host.
+#
+# Install:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin relay
+#   sudo install -m 0755 bin/relay /usr/local/bin/relay
+#   sudo install -d -o relay -g relay /etc/relay
+#   sudo install -m 0640 -o relay -g relay my-config.yaml /etc/relay/relay.yaml
+#   sudo install -m 0600 -o relay -g relay relay.env /etc/relay/relay.env   # secrets (optional)
+#   sudo cp deploy/systemd/relay.service /etc/systemd/system/relay.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now relay
+#
+# Logs: journalctl -u relay -f
+
+[Unit]
+Description=Relay API Gateway
+Documentation=https://github.com/algoryn-io/relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+# Secrets as environment variables (e.g. JWT_SECRET=...). Optional; omit if you
+# use file-based secrets (secret_file) instead.
+EnvironmentFile=-/etc/relay/relay.env
+Environment=RELAY_CONFIG=/etc/relay/relay.yaml
+ExecStart=/usr/local/bin/relay
+# Reload config without downtime (Relay also hot-reloads on file change when
+# reload.watch is enabled).
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+
+# Allow binding to :80/:443 without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Grant write access only to paths Relay needs (log files, autocert cache, etc.).
+# Adjust to match your config; remove if Relay only logs to stdout/journald.
+ReadWritePaths=/var/log/relay /var/lib/relay
+
+[Install]
+WantedBy=multi-user.target

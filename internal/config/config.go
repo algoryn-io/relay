@@ -353,6 +353,11 @@ type TracingConfig struct {
 type PrometheusConfig struct {
 	// Path is the scrape endpoint. Defaults to /_relay/metrics/prometheus when empty.
 	Path string `yaml:"path"`
+	// AllowedCIDRs lists IP ranges (in addition to loopback) allowed to reach the
+	// metrics and Prometheus endpoints, matched against the real TCP peer. Empty
+	// (default) keeps the endpoints loopback-only. Set the pod/cluster CIDR to let
+	// a Prometheus scraper (e.g. a ServiceMonitor) reach them.
+	AllowedCIDRs []string `yaml:"allowed_cidrs"`
 }
 
 // FabricConfig controls Algoryn Fabric protobuf telemetry (MetricSnapshot + Event) toward Beacon and peers.

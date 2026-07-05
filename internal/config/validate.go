@@ -541,6 +541,7 @@ func validateObservability(observability ObservabilityConfig, errs *ValidationEr
 		errs.Addf("observability.logs.max_size_mb: must be >= 0")
 	}
 	validatePositiveDuration("observability.metrics.flush_interval", observability.Metrics.FlushInterval, errs, false)
+	validateIPFilterEntries("observability.prometheus.allowed_cidrs", observability.Prometheus.AllowedCIDRs, errs)
 	validateFabric(observability.Fabric, errs)
 	validateTracing(observability.Tracing, errs)
 }

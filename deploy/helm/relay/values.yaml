@@ -1,0 +1,159 @@
+# Default values for the Relay chart.
+# This is a YAML-formatted file. Override with --set or a custom values file.
+
+# Number of Relay replicas. Relay is stateless, so it scales horizontally; put
+# multiple replicas behind the Service and (for shared rate limiting) point the
+# rate_limit middleware at a shared Redis.
+replicaCount: 1
+
+image:
+  repository: algoryn/relay
+  # Overrides the image tag. Defaults to the chart appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# The Relay configuration. Rendered into a ConfigMap and mounted at
+# /etc/relay/relay.yaml (RELAY_CONFIG). Set existingConfigMap to use your own
+# ConfigMap instead (it must contain a relay.yaml key).
+existingConfigMap: ""
+config: |
+  listener:
+    http:
+      port: 8088
+    timeouts:
+      read: 30s
+      write: 30s
+      idle: 60s
+      read_header: 10s
+    # Global overload backpressure (0 = unlimited).
+    max_concurrent_requests: 0
+
+  observability:
+    logs:
+      level: info
+      format: json
+    metrics:
+      flush_interval: 30s
+    prometheus:
+      # Required for a ServiceMonitor / in-cluster Prometheus to scrape metrics:
+      # the endpoints are loopback-only unless a scrape CIDR is allowed here.
+      # Set this to your cluster's pod CIDR (or the Prometheus pod's CIDR).
+      allowed_cidrs: []
+
+  routes:
+    - name: example
+      match:
+        path_prefix: /
+        methods: [GET, POST]
+      backend: example-backend
+
+  backends:
+    - name: example-backend
+      strategy: round_robin
+      instances:
+        - url: http://example-upstream:8080
+
+# Secrets injected as environment variables (e.g. JWT_SECRET referenced by a
+# middleware's secret_env). Rendered into a Secret and exposed via envFrom.
+# Prefer file-based secrets (extraVolumes + *_file config) for stronger isolation.
+secrets: {}
+# secrets:
+#   JWT_SECRET: "change-me"
+
+# Reference an existing Secret via envFrom instead of (or in addition to) secrets.
+existingSecret: ""
+
+# Extra environment variables and sources.
+extraEnv: []
+extraEnvFrom: []
+
+# Extra volumes / mounts — useful for mounting a Kubernetes Secret as files and
+# pointing Relay at them with the *_file config options (secret_file, etc.).
+extraVolumes: []
+extraVolumeMounts: []
+
+service:
+  type: ClusterIP
+  httpPort: 8088
+  httpsPort: 8443
+  # Expose the HTTPS port on the Service (only when TLS is configured in config).
+  httpsEnabled: false
+  annotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Pod-level security context. Relay's image runs as uid 10001 (non-root).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context. The image config lives in /etc/relay and the
+# binary writes nothing to the root filesystem, so it can run read-only.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 10001
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+
+# Liveness and readiness probes hit Relay's built-in endpoints.
+livenessProbe:
+  httpGet:
+    path: /_relay/health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /_relay/ready
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: null
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+metrics:
+  serviceMonitor:
+    # Requires the Prometheus Operator CRDs. The metrics endpoints are loopback-
+    # only by default: set observability.prometheus.allowed_cidrs in `config` to
+    # your pod CIDR so the scraper is permitted.
+    enabled: false
+    path: /_relay/metrics/prometheus
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}

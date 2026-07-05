@@ -1,0 +1,23 @@
+# Routes a hostname through the Gateway to the Relay Service. Relay then applies
+# its own routing, auth, rate limiting and policy before proxying to backends.
+#
+# The backendRef name/port must match the Relay Service created by the Helm chart
+# (default: the Helm release name, port 8088).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: relay-route
+  namespace: default
+spec:
+  parentRefs:
+    - name: relay-gateway
+  hostnames:
+    - "api.example.com"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: relay
+          port: 8088

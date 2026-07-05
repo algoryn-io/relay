@@ -1,0 +1,28 @@
+# A Gateway API Gateway with an HTTP listener. The gatewayClassName must match a
+# GatewayClass provided by the Gateway API implementation installed in your
+# cluster (e.g. "envoy-gateway", "istio", "nginx", "cilium").
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: relay-gateway
+  namespace: default
+spec:
+  gatewayClassName: REPLACE_WITH_YOUR_GATEWAYCLASS
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+    # For TLS termination at the Gateway, add an HTTPS listener with a
+    # certificateRef instead of (or in addition to) the HTTP listener:
+    #
+    # - name: https
+    #   protocol: HTTPS
+    #   port: 443
+    #   tls:
+    #     mode: Terminate
+    #     certificateRefs:
+    #       - kind: Secret
+    #         name: relay-tls

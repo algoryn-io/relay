@@ -1,0 +1,32 @@
+Relay has been deployed.
+
+Release:   {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Replicas:  {{ if .Values.autoscaling.enabled }}{{ .Values.autoscaling.minReplicas }}-{{ .Values.autoscaling.maxReplicas }} (HPA){{ else }}{{ .Values.replicaCount }}{{ end }}
+
+1. Check the rollout:
+
+   kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "relay.fullname" . }}
+
+2. Reach the gateway from inside the cluster:
+
+   {{ include "relay.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.httpPort }}
+
+   Port-forward to test locally:
+
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "relay.fullname" . }} {{ .Values.service.httpPort }}:{{ .Values.service.httpPort }}
+   curl -i http://localhost:{{ .Values.service.httpPort }}/_relay/health
+
+3. Configuration is served from {{ if .Values.existingConfigMap }}the existing ConfigMap "{{ .Values.existingConfigMap }}"{{ else }}ConfigMap "{{ include "relay.fullname" . }}" (edit `config` in values and upgrade to change it){{ end }}.
+
+{{- if .Values.metrics.serviceMonitor.enabled }}
+
+4. A ServiceMonitor is enabled. NOTE: Relay's metrics endpoints are loopback-only
+   by default. For the scrape to succeed, set:
+
+     observability:
+       prometheus:
+         allowed_cidrs: ["<your-pod-CIDR>"]
+
+   in the `config` value, otherwise the scraper will receive 403.
+{{- end }}
