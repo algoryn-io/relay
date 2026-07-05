@@ -85,6 +85,32 @@ Or set `RELAY_CONFIG` to that path manually. The helper script lives at [`script
 
 ---
 
+## Deployment
+
+Relay is one stateless binary driven by one config file — the same build runs a
+single-instance gateway on a VPS or a scaled fleet in Kubernetes. See the full
+[deployment guide](docs/deployment.md). In short:
+
+- **VPS / bare host** — a hardened [`systemd` unit](deploy/systemd/relay.service)
+  or a production [`docker-compose`](deploy/docker-compose.prod.yaml); TLS via
+  ACME/Let's Encrypt (`tls.mode: auto`).
+- **Kubernetes** — the [Helm chart](deploy/helm/relay) (Deployment, Service,
+  ConfigMap, optional HPA/PDB/ServiceMonitor, probes, non-root read-only pod):
+
+  ```bash
+  helm install relay ./deploy/helm/relay --set replicaCount=2
+  ```
+
+- **Gateway API** — put Relay behind a cluster `Gateway`/`HTTPRoute`; examples in
+  [`deploy/gateway-api`](deploy/gateway-api).
+
+Scale horizontally by running multiple replicas behind the Service; point the
+`rate_limit` middleware at Redis (`store: redis`) for a shared limit. Metrics are
+loopback-only unless you allow a scrape range via
+`observability.prometheus.allowed_cidrs`.
+
+---
+
 ## Route matching
 
 - `match.path`: **exact** path (e.g. `/health`).

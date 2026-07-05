@@ -38,19 +38,20 @@ const (
 // serverState holds all hot-reloadable request-handling state.
 // It is swapped atomically on reload; the previous state is closed after the swap.
 type serverState struct {
-	proxy            *proxy.Proxy
-	router           *router.Router
-	metrics          *observability.Metrics
-	metricsH         http.Handler
-	prometheusH      http.Handler
-	prometheusPath   string
-	routes           map[string]*compiledRoute
-	trustedNets      []*net.IPNet
-	fabricDispatch   *observability.EventDispatcher
-	relayServiceName string
-	adminH           http.Handler
-	stripHeaders     []string    // extra inbound headers to remove at the edge
-	mwClosers        []io.Closer // middleware resources (redis pools, prune loops)
+	proxy              *proxy.Proxy
+	router             *router.Router
+	metrics            *observability.Metrics
+	metricsH           http.Handler
+	prometheusH        http.Handler
+	prometheusPath     string
+	metricsAllowedNets []*net.IPNet // extra peers (beyond loopback) allowed to scrape metrics
+	routes             map[string]*compiledRoute
+	trustedNets        []*net.IPNet
+	fabricDispatch     *observability.EventDispatcher
+	relayServiceName   string
+	adminH             http.Handler
+	stripHeaders       []string    // extra inbound headers to remove at the edge
+	mwClosers          []io.Closer // middleware resources (redis pools, prune loops)
 }
 
 func (st *serverState) close() {
@@ -278,7 +279,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	switch {
 	case req.URL.Path == "/_relay/metrics":
 		// Gate on the real TCP peer, not the (spoofable) forwarded client IP.
-		if !isLoopbackPeer(req) {
+		if !metricsPeerAllowed(req, st.metricsAllowedNets) {
 			httpx.WriteError(w, http.StatusForbidden, "forbidden")
 			return
 		}
@@ -294,8 +295,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		writeReadiness(w, st.proxy)
 		return
 	case req.URL.Path == st.prometheusPath:
-		// Same exposure as the JSON metrics endpoint: restrict to the local peer.
-		if !isLoopbackPeer(req) {
+		// Same exposure as the JSON metrics endpoint: loopback plus any configured
+		// scrape CIDRs, checked against the real TCP peer.
+		if !metricsPeerAllowed(req, st.metricsAllowedNets) {
 			httpx.WriteError(w, http.StatusForbidden, "forbidden")
 			return
 		}
@@ -432,19 +434,20 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 	adminH := admin.New(rtProxy, rt.Routes, cfg.Listener.Admin.AllowedCIDRs, cfg.Listener.Admin.ResolvedToken, logger)
 
 	st := &serverState{
-		proxy:            rtProxy,
-		router:           rtRouter,
-		metrics:          metrics,
-		metricsH:         observability.MetricsHandler(metrics),
-		prometheusH:      promCollector.Handler(),
-		prometheusPath:   promPath,
-		routes:           compiledRoutes,
-		trustedNets:      trustedNets,
-		fabricDispatch:   fabricDispatch,
-		relayServiceName: relaySvc,
-		adminH:           adminH,
-		stripHeaders:     cfg.Listener.StripRequestHeaders,
-		mwClosers:        mwClosers,
+		proxy:              rtProxy,
+		router:             rtRouter,
+		metrics:            metrics,
+		metricsH:           observability.MetricsHandler(metrics),
+		prometheusH:        promCollector.Handler(),
+		prometheusPath:     promPath,
+		metricsAllowedNets: httpx.ParseTrustedNets(cfg.Observability.Prometheus.AllowedCIDRs),
+		routes:             compiledRoutes,
+		trustedNets:        trustedNets,
+		fabricDispatch:     fabricDispatch,
+		relayServiceName:   relaySvc,
+		adminH:             adminH,
+		stripHeaders:       cfg.Listener.StripRequestHeaders,
+		mwClosers:          mwClosers,
 	}
 
 	if fabricDispatch != nil {
@@ -611,6 +614,14 @@ func h2cServerProtocols() *http.Protocols {
 func isLoopbackPeer(r *http.Request) bool {
 	ip := net.ParseIP(httpx.PeerIP(r))
 	return ip != nil && ip.IsLoopback()
+}
+
+// metricsPeerAllowed reports whether the request may reach the metrics/Prometheus
+// endpoints: always for a loopback peer, and for any peer within the configured
+// scrape CIDRs. The check uses the real TCP peer, so it cannot be spoofed via
+// forwarding headers.
+func metricsPeerAllowed(r *http.Request, allowedNets []*net.IPNet) bool {
+	return isLoopbackPeer(r) || httpx.PeerTrusted(r, allowedNets)
 }
 
 // writeReadiness reports whether the gateway can serve traffic: ready (200) when

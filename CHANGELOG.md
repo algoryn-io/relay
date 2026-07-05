@@ -13,6 +13,14 @@ All notable changes to Relay are documented here. The format is based on
   limit did nothing when set in a config file. They are now parsed correctly.
 
 ### Added
+- Deployment: an official Helm chart (`deploy/helm/relay`) with Deployment,
+  Service, ConfigMap, optional HPA/PodDisruptionBudget/ServiceMonitor, health and
+  readiness probes and a hardened (non-root, read-only) pod; Gateway API example
+  manifests (`deploy/gateway-api`); a hardened systemd unit and a production
+  docker-compose (`deploy/`); and a deployment guide (`docs/deployment.md`).
+- `observability.prometheus.allowed_cidrs` allows scraping the metrics/Prometheus
+  endpoints from configured source ranges (checked against the real TCP peer),
+  keeping them loopback-only by default. Required for an in-cluster ServiceMonitor.
 - gRPC / HTTP-2: the plaintext listener accepts cleartext HTTP/2 (h2c) alongside
   HTTP/1.1, and backends accept `protocol: h2c` to forward to cleartext HTTP/2
   upstreams with end-to-end streaming (no retry buffering).
