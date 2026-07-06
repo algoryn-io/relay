@@ -6,6 +6,16 @@ All notable changes to Relay are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added (supply chain & quality)
+- Release pipeline in CI (`.github/workflows/release.yml`) running GoReleaser on
+  `v*` tags, plus **SLSA build provenance** attestations for the release binaries
+  and checksums (verifiable with `gh attestation verify`), on top of the existing
+  SBOM and cosign signatures.
+- Fuzz tests for the config parser (`FuzzLoad`) and the route matcher
+  (`FuzzMatch`), and a CI `fuzz` job that runs each target for 60s.
+- Benchmarks for the routing hot path and the config validate/build path, plus a
+  CI `bench` job that runs them.
+
 ### Fixed
 - Backend `retry`, `tls` and `bulkhead` blocks were silently dropped when a
   backend was configured via YAML (they were missing from the decoder's internal
