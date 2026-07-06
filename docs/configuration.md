@@ -109,7 +109,7 @@ query-constrained) wins, with fallback to a catch-all.
 | `timeout` | duration | Per-route upstream timeout. |
 | `max_body_bytes` | int | Reject request bodies larger than this with `413`. `0` = no limit. |
 | `rewrite.pattern` / `rewrite.replacement` | string | RE2 regex path rewrite (`$1`, `${name}` capture refs), applied after `strip_prefix`. |
-| `add_request_headers` | map | Inject headers into the outbound request. Value `${req.Header-Name}` copies an inbound header. |
+| `add_request_headers` | map | Inject headers into the outbound request. Value `${req.Header-Name}` copies an inbound header. **Note:** `${req.*}` values are untrusted client input — do not use them to set headers a backend trusts for authorization. |
 
 ---
 
@@ -239,7 +239,16 @@ At least one of the four is required.
 | `vary` | `[]` | Request headers folded into the cache key. |
 
 Honors request/response `Cache-Control` (`no-store`, `no-cache`, `private`,
-`max-age`/`s-maxage`), skips `Set-Cookie` responses, and adds `X-Cache` / `Age`.
+`max-age`/`s-maxage`), skips `Set-Cookie` responses, honors the origin's `Vary`,
+and adds `X-Cache` / `Age`.
+
+**Authenticated requests are safe by default.** A request carrying `Authorization`
+or `Cookie` is only cached when the origin explicitly marks the response shareable
+(`Cache-Control: public` or `s-maxage`); otherwise it is never stored, and a
+non-`public` cached entry is never served to an authenticated request. This
+prevents one user's response from being returned to another (RFC 7234 §3.2). To
+cache per-user responses intentionally, fold the identity into the key with
+`vary: [Authorization]`.
 
 ### `oauth2` (RFC 7662 token introspection)
 

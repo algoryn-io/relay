@@ -241,6 +241,110 @@ func TestCacheLRUEviction(t *testing.T) {
 	}
 }
 
+func TestCacheDoesNotServeAuthenticatedResponseToAnotherUser(t *testing.T) {
+	t.Parallel()
+
+	// Backend returns per-user data with no explicit Cache-Control (very common).
+	var calls atomic.Int64
+	backend := countingBackend(&calls, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("data-for-" + r.Header.Get("Authorization")))
+	})
+	mw := newTestCache(t, CacheConfig{TTL: time.Minute})
+	h := mw(backend)
+
+	// User A (authenticated) populates the path.
+	reqA := httptest.NewRequest(http.MethodGet, "/me", nil)
+	reqA.Header.Set("Authorization", "Bearer token-A")
+	recA := httptest.NewRecorder()
+	h.ServeHTTP(recA, reqA)
+	if recA.Header().Get("X-Cache") != "MISS" {
+		t.Fatalf("A X-Cache = %q, want MISS", recA.Header().Get("X-Cache"))
+	}
+
+	// User B (different token) must NOT receive A's response from cache.
+	reqB := httptest.NewRequest(http.MethodGet, "/me", nil)
+	reqB.Header.Set("Authorization", "Bearer token-B")
+	recB := httptest.NewRecorder()
+	h.ServeHTTP(recB, reqB)
+
+	if recB.Header().Get("X-Cache") == "HIT" {
+		t.Fatal("authenticated response was served from cache to a different user")
+	}
+	if recB.Body.String() != "data-for-Bearer token-B" {
+		t.Fatalf("B body = %q, want their own data", recB.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("backend calls = %d, want 2 (no cross-user cache reuse)", calls.Load())
+	}
+}
+
+func TestCacheStoresAuthenticatedResponseWhenPublic(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	backend := countingBackend(&calls, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=60")
+		_, _ = w.Write([]byte("shared"))
+	})
+	mw := newTestCache(t, CacheConfig{TTL: time.Minute})
+	h := mw(backend)
+
+	// Authenticated request; response is explicitly public → cacheable and
+	// servable to anyone.
+	reqA := httptest.NewRequest(http.MethodGet, "/pub", nil)
+	reqA.Header.Set("Authorization", "Bearer A")
+	h.ServeHTTP(httptest.NewRecorder(), reqA)
+
+	// A different (even anonymous) caller gets the cached public response.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/pub", nil))
+	if rec.Header().Get("X-Cache") != "HIT" {
+		t.Fatalf("X-Cache = %q, want HIT (public response is shareable)", rec.Header().Get("X-Cache"))
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("backend calls = %d, want 1", calls.Load())
+	}
+}
+
+func TestCacheDoesNotCacheCookieRequests(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	backend := countingBackend(&calls, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("session-data"))
+	})
+	mw := newTestCache(t, CacheConfig{TTL: time.Minute})
+	h := mw(backend)
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/dash", nil)
+		req.Header.Set("Cookie", "session=abc")
+		h.ServeHTTP(httptest.NewRecorder(), req)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("backend calls = %d, want 2 (cookie requests must not be shared-cached)", calls.Load())
+	}
+}
+
+func TestCacheHonorsResponseVary(t *testing.T) {
+	t.Parallel()
+
+	// Response varies on a header not folded into the cache key → uncacheable.
+	var calls atomic.Int64
+	backend := countingBackend(&calls, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Vary", "X-Locale")
+		_, _ = w.Write([]byte("v"))
+	})
+	mw := newTestCache(t, CacheConfig{TTL: time.Minute}) // no vary configured
+	h := mw(backend)
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
+	if calls.Load() != 2 {
+		t.Fatalf("backend calls = %d, want 2 (uncovered Vary must not be cached)", calls.Load())
+	}
+}
+
 func TestCacheAgeHeader(t *testing.T) {
 	t.Parallel()
 

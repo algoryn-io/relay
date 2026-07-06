@@ -14,6 +14,11 @@ type cachedResponse struct {
 	body      []byte
 	storedAt  time.Time
 	expiresAt time.Time
+	// public is true when the origin explicitly marked the response shareable
+	// (Cache-Control public or s-maxage). Only public entries may be served to an
+	// authenticated request; non-public entries are reused for anonymous requests
+	// only, so one user's response is never returned to another.
+	public bool
 }
 
 // cacheStore stores and retrieves cached responses by key. Implementations must

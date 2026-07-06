@@ -106,9 +106,12 @@ func (m *extAuthzMiddleware) handler(next http.Handler) http.Handler {
 
 		switch {
 		case resp.StatusCode >= 200 && resp.StatusCode < 300:
-			// Allowed: optionally graft headers the authorizer resolved onto the
-			// upstream request (e.g. a verified identity).
+			// Allowed: graft headers the authorizer resolved onto the upstream
+			// request (e.g. a verified identity). Strip any client-supplied value
+			// first so a caller cannot spoof one of these headers when the
+			// authorizer allows the request but does not set it.
 			for _, h := range m.copyHeaders {
+				r.Header.Del(h)
 				if v := resp.Header.Get(h); v != "" {
 					r.Header.Set(h, v)
 				}
