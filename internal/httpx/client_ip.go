@@ -84,11 +84,24 @@ func resolveClientIP(r *http.Request, trustedNets []*net.IPNet) string {
 	if xff == "" {
 		return remoteIP
 	}
-	// Take the leftmost (original client) IP from the chain.
-	parts := strings.SplitN(xff, ",", 2)
-	if ip := net.ParseIP(strings.TrimSpace(parts[0])); ip != nil {
-		return ip.String()
+	// The immediate peer is a trusted proxy. Proxies APPEND to X-Forwarded-For,
+	// so the real client is the right-most entry that is not itself a trusted
+	// proxy. Walking right-to-left and skipping trusted addresses is the only
+	// spoof-resistant choice: the left-most entry is fully attacker-controlled
+	// (a client can pre-seed X-Forwarded-For), so it must never be trusted.
+	parts := strings.Split(xff, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		ip := net.ParseIP(strings.TrimSpace(parts[i]))
+		if ip == nil {
+			continue
+		}
+		if isTrustedNet(ip, trustedNets) {
+			continue // another trusted hop; keep walking left
+		}
+		return ip.String() // first untrusted address = the real client
 	}
+	// Every forwarded entry is a trusted proxy (or unparseable): fall back to the
+	// real TCP peer rather than trusting any client-supplied value.
 	return remoteIP
 }
 

@@ -21,12 +21,22 @@ Relay is pre-1.0; security fixes are applied to `main` and the latest release.
   balancer. Auto/ACME mode (`mode: auto`) is single-node — for multiple replicas
   use `mode: manual` with externally-managed certificates.
 - **Trusted proxies**: set `listener.trusted_proxies` to the addresses of the
-  proxies in front of Relay. Client IP is taken from `X-Forwarded-For` only when
-  the immediate peer is trusted. Admin and metrics endpoints are always gated on
-  the real TCP peer.
-- **Identity headers**: Relay strips its managed identity headers and the
-  `X-Forwarded-*` family from inbound requests. Add any app-specific identity
-  headers your backends trust to `listener.strip_request_headers`.
+  proxies in front of Relay. The client IP is resolved from `X-Forwarded-For` only
+  when the immediate peer is trusted, walking the chain right-to-left and skipping
+  trusted hops (a client cannot spoof its IP by pre-seeding the header). Leave it
+  empty when Relay is directly internet-facing so `X-Forwarded-For` is ignored.
+  IP-based controls (`ip_filter`, `by: ip` rate limiting) depend on this being set
+  correctly. Admin and metrics endpoints are always gated on the real TCP peer.
+- **Identity headers**: Relay strips its managed identity headers
+  (`X-Authenticated-Sub`, `X-Token-Scope`, ...) and the `X-Forwarded-*` family from
+  inbound requests. Add any app-specific identity headers your backends trust to
+  `listener.strip_request_headers`. When using `ext_authz` `copy_headers`, those
+  are stripped from the inbound request before the authorizer's values are applied.
+- **Response cache**: the `cache` middleware never stores or serves a response to
+  an authenticated request (`Authorization`/`Cookie`) unless the origin marks it
+  `public`/`s-maxage`, so one user's data is never returned to another. Still,
+  place `cache` after auth middleware in a route's pipeline and prefer explicit
+  `Cache-Control` on cacheable endpoints.
 - **JWT**: prefer RS256 with a JWKS endpoint over `https`, and set `issuer` /
   `audience`. Keep HS256 secrets >= 32 bytes and supply them via env vars.
 - **Admin/metrics**: keep them on the loopback/allowlist or a separate internal

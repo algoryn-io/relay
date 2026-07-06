@@ -61,6 +61,34 @@ func TestExtAuthzAllowsOn2xx(t *testing.T) {
 	}
 }
 
+// A client must not be able to spoof a copy_header: when the authorizer allows
+// the request but does not set the header, the inbound (client) value must be
+// stripped, not forwarded to the backend.
+func TestExtAuthzStripsSpoofedCopyHeader(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // allow, but do NOT set X-User-Id
+	}))
+	t.Cleanup(server.Close)
+
+	mw := newExtAuthz(t, server, []string{"X-User-Id"}, false)
+
+	var forwarded string
+	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded = r.Header.Get("X-User-Id")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-User-Id", "admin") // attacker-supplied
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if forwarded != "" {
+		t.Fatalf("backend received spoofed X-User-Id = %q, want empty (stripped)", forwarded)
+	}
+}
+
 func TestExtAuthzDeniesOn403(t *testing.T) {
 	t.Parallel()
 

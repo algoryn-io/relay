@@ -565,6 +565,7 @@ func applyTLSHardening(tlsCfg *tls.Config, cfg config.TLSConfig) error {
 // so a client can never spoof an authenticated identity to a backend.
 var relayManagedHeaders = []string{
 	"X-Authenticated-Sub",
+	"X-Token-Scope",
 	"X-Internal-Auth",
 	"X-Admin",
 	"X-Real-IP",

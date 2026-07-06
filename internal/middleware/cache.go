@@ -146,13 +146,20 @@ func (m *cacheMiddleware) handler(next http.Handler) http.Handler {
 		}
 
 		key := m.cacheKey(r)
+		authed := requestIsAuthenticated(r)
 
 		// A request "no-cache" forces revalidation: skip the read but still allow
 		// the fresh response to be stored.
 		if _, noCache := reqCC["no-cache"]; !noCache {
 			if entry, ok := m.store.Get(key); ok {
-				m.serve(w, r, entry)
-				return
+				// A shared cache must not reuse a stored response for an
+				// authenticated request unless the origin marked it shareable
+				// (public/s-maxage). This prevents returning one user's response to
+				// another (RFC 7234 §3.2).
+				if entry.public || !authed {
+					m.serve(w, r, entry)
+					return
+				}
 			}
 		}
 
@@ -163,10 +170,17 @@ func (m *cacheMiddleware) handler(next http.Handler) http.Handler {
 		cw.Header().Set("X-Cache", "MISS")
 		next.ServeHTTP(cw, r)
 
-		if resp := m.buildEntry(cw); resp != nil {
+		if resp := m.buildEntry(cw, authed); resp != nil {
 			m.store.Set(key, resp)
 		}
 	})
+}
+
+// requestIsAuthenticated reports whether a request carries a credential that can
+// make the response user-specific. Cookie is treated like Authorization (a
+// session credential) so session-scoped responses are never shared.
+func requestIsAuthenticated(r *http.Request) bool {
+	return r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != ""
 }
 
 func (m *cacheMiddleware) cacheKey(r *http.Request) string {
@@ -188,8 +202,9 @@ func (m *cacheMiddleware) cacheKey(r *http.Request) string {
 }
 
 // buildEntry decides whether the captured response is cacheable and, if so,
-// returns the entry to store. Returns nil when the response must not be cached.
-func (m *cacheMiddleware) buildEntry(cw *cacheCaptureWriter) *cachedResponse {
+// returns the entry to store. authed reports whether the originating request
+// carried a credential. Returns nil when the response must not be cached.
+func (m *cacheMiddleware) buildEntry(cw *cacheCaptureWriter, authed bool) *cachedResponse {
 	if cw.overflow {
 		return nil
 	}
@@ -205,7 +220,9 @@ func (m *cacheMiddleware) buildEntry(cw *cacheCaptureWriter) *cachedResponse {
 	if header.Get("Set-Cookie") != "" {
 		return nil
 	}
-	if strings.Contains(strings.ToLower(header.Get("Vary")), "*") {
+	// Honor the origin's Vary: "*" is uncacheable, and we can only cache a varied
+	// response if every listed request header is folded into our cache key.
+	if !m.varyCovered(header.Get("Vary")) {
 		return nil
 	}
 	respCC := parseCacheControl(header.Get("Cache-Control"))
@@ -216,6 +233,18 @@ func (m *cacheMiddleware) buildEntry(cw *cacheCaptureWriter) *cachedResponse {
 		return nil
 	}
 	if _, ok := respCC["private"]; ok {
+		return nil
+	}
+
+	// A response is shareable across users only when the origin says so.
+	_, hasPublic := respCC["public"]
+	_, hasSMaxAge := respCC["s-maxage"]
+	public := hasPublic || hasSMaxAge
+
+	// RFC 7234 §3.2: a shared cache must not store a response to an authenticated
+	// request unless it is explicitly shareable. This is the core guard against
+	// caching (and later serving) one user's private response.
+	if authed && !public {
 		return nil
 	}
 
@@ -240,7 +269,33 @@ func (m *cacheMiddleware) buildEntry(cw *cacheCaptureWriter) *cachedResponse {
 		body:      append([]byte(nil), cw.buf.Bytes()...),
 		storedAt:  now,
 		expiresAt: now.Add(ttl),
+		public:    public,
 	}
+}
+
+// varyCovered reports whether a response Vary header can be represented by this
+// cache's key. An empty Vary is always fine; "*" and any header not folded into
+// the configured cache key (m.vary) make the response impossible to key
+// correctly, so it must not be cached.
+func (m *cacheMiddleware) varyCovered(respVary string) bool {
+	respVary = strings.TrimSpace(respVary)
+	if respVary == "" {
+		return true
+	}
+	configured := make(map[string]struct{}, len(m.vary))
+	for _, h := range m.vary {
+		configured[h] = struct{}{}
+	}
+	for _, h := range strings.Split(respVary, ",") {
+		h = http.CanonicalHeaderKey(strings.TrimSpace(h))
+		if h == "" {
+			continue
+		}
+		if _, ok := configured[h]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *cacheMiddleware) serve(w http.ResponseWriter, r *http.Request, entry *cachedResponse) {

@@ -6,6 +6,19 @@ All notable changes to Relay are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+- Response cache no longer stores or serves a response to an authenticated request
+  (`Authorization`/`Cookie`) unless the origin marks it `public`/`s-maxage`, and it
+  now honors the origin's `Vary` header — preventing one user's response from being
+  cached and returned to another (RFC 7234 §3.2).
+- Client-IP resolution walks `X-Forwarded-For` right-to-left, skipping trusted
+  proxy hops, instead of trusting the (client-controlled) left-most entry. This
+  closes IP spoofing that could bypass `ip_filter` and `by: ip` rate limiting.
+- `ext_authz` strips `copy_headers` from the inbound request before applying the
+  authorizer's values, so a client cannot spoof an authorizer-resolved identity
+  header when the authorizer allows the request without setting it.
+- `X-Token-Scope` is added to the always-stripped edge identity headers.
+
 ### Added (supply chain & quality)
 - Release pipeline in CI (`.github/workflows/release.yml`) running GoReleaser on
   `v*` tags, plus **SLSA build provenance** attestations for the release binaries

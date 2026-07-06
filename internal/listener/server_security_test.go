@@ -59,9 +59,10 @@ func TestServerPrometheusRequiresLoopback(t *testing.T) {
 func TestServerStripsSpoofedIdentityHeaders(t *testing.T) {
 	t.Parallel()
 
-	var gotSub, gotXFF string
+	var gotSub, gotScope, gotXFF string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotSub = r.Header.Get("X-Authenticated-Sub")
+		gotScope = r.Header.Get("X-Token-Scope")
 		gotXFF = r.Header.Get("X-Forwarded-For")
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -86,11 +87,15 @@ func TestServerStripsSpoofedIdentityHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/pub", nil)
 	req.RemoteAddr = "203.0.113.7:9999" // untrusted peer
 	req.Header.Set("X-Authenticated-Sub", "admin")
+	req.Header.Set("X-Token-Scope", "admin:all")
 	req.Header.Set("X-Forwarded-For", "10.9.9.9")
 	server.ServeHTTP(httptest.NewRecorder(), req)
 
 	if gotSub != "" {
 		t.Errorf("backend received spoofed X-Authenticated-Sub = %q, want empty", gotSub)
+	}
+	if gotScope != "" {
+		t.Errorf("backend received spoofed X-Token-Scope = %q, want empty", gotScope)
 	}
 	// The proxy sets its own X-Forwarded-For (the real peer), never the spoofed one.
 	if gotXFF == "10.9.9.9" {
