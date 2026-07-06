@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # create the GitHub release
+  id-token: write # OIDC for cosign keyless signing and build provenance
+  attestations: write # store SLSA build provenance attestations
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history for the changelog
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+
+      # Tooling GoReleaser invokes: syft for SBOMs, cosign for keyless signing.
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Required to push the container image to Docker Hub. Configure the
+      # DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repository secrets before tagging.
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # SLSA build provenance for the release binaries and checksums, verifiable
+      # with `gh attestation verify <file> --repo <owner>/relay`. This complements
+      # the SBOM (what is inside) and the cosign signature (who signed) with a
+      # signed record of how and where the artifacts were built.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt

@@ -52,3 +52,36 @@ jobs:
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
       - name: Run golangci-lint
         run: $(go env GOPATH)/bin/golangci-lint run --timeout=5m
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+      # Short fuzzing pass per target to catch panics/crashers on the parser and
+      # the route matcher. The seed corpus also runs in the `test` job.
+      - name: Fuzz config parser
+        run: go test ./internal/config -run '^$' -fuzz='^FuzzLoad$' -fuzztime=60s
+      - name: Fuzz route matcher
+        run: go test ./internal/router -run '^$' -fuzz='^FuzzMatch$' -fuzztime=60s
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: internal/**/testdata/fuzz/**
+          if-no-files-found: ignore
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+      # Guard: benchmarks must compile and run. Not a strict perf gate (CI runners
+      # are noisy); use `benchstat` locally to compare against main.
+      - name: Run benchmarks
+        run: go test -run '^$' -bench '^Benchmark' -benchmem ./internal/router/... ./internal/config/...

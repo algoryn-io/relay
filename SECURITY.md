@@ -30,9 +30,11 @@ Relay is pre-1.0; security fixes are applied to `main` and the latest release.
 - **JWT**: prefer RS256 with a JWKS endpoint over `https`, and set `issuer` /
   `audience`. Keep HS256 secrets >= 32 bytes and supply them via env vars.
 - **Admin/metrics**: keep them on the loopback/allowlist or a separate internal
-  network. The Prometheus endpoint is loopback-gated by default.
-- **Secrets**: provide secrets via environment variables (`*_env` fields), never
-  in plaintext config.
+  network. The metrics/Prometheus endpoints are loopback-gated by default; allow a
+  scraper explicitly with `observability.prometheus.allowed_cidrs`.
+- **Secrets**: provide secrets via environment variables (`*_env` fields) or
+  mounted files (`*_file` fields, e.g. Kubernetes Secret volumes), never in
+  plaintext config.
 - **Inbound mTLS / TLS version**: set `listener.https.tls.min_version: "1.3"` for
   the strongest default, or rely on the hardened TLS 1.2 cipher list. For
   zero-trust, set `client_ca_file` (and optionally `client_auth`) to require
@@ -40,15 +42,29 @@ Relay is pre-1.0; security fixes are applied to `main` and the latest release.
 
 ## Release artifact verification
 
-Releases ship a CycloneDX SBOM per archive and a cosign (keyless) signature of
-the checksums file and the Docker image(s). Verify before deploying:
+Releases are built and signed in CI (`.github/workflows/release.yml`) and ship
+three layers of supply-chain metadata:
+
+- **SBOM** (CycloneDX, per archive) — *what is inside* each artifact.
+- **cosign keyless signature** of the checksums file and the Docker image(s) —
+  *who signed* them (Sigstore/Fulcio/Rekor, OIDC identity).
+- **SLSA build provenance** attestations for the release binaries and checksums —
+  *how and where* they were built.
+
+Verify before deploying:
 
 ```sh
+# Signature of the checksums file.
 cosign verify-blob --certificate checksums.txt.pem \
   --signature checksums.txt.sig checksums.txt
+
+# Container image signature.
 cosign verify algoryn/relay:<version> \
   --certificate-identity-regexp '.*' --certificate-oidc-issuer-regexp '.*'
+
+# SLSA build provenance (GitHub attestations).
+gh attestation verify relay_<version>_linux_amd64.tar.gz --repo algoryn-io/relay
 ```
 
-Signing runs in CI and requires the `cosign`/`syft` binaries and OIDC token
-permission (`id-token: write` in GitHub Actions).
+Signing and attestation run in CI and require the `cosign`/`syft` binaries and
+OIDC token permission (`id-token: write` / `attestations: write`).
