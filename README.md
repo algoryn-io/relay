@@ -1,4 +1,4 @@
-![Build Status](https://img.shields.io/badge/build-pending-lightgrey)
+[![CI](https://github.com/algoryn-io/relay/actions/workflows/ci.yml/badge.svg)](https://github.com/algoryn-io/relay/actions/workflows/ci.yml)
 ![Go Version](https://img.shields.io/badge/go-1.25-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Algoryn Fabric](https://img.shields.io/badge/algoryn-fabric-purple)
@@ -10,31 +10,37 @@
 cp config/example.yaml my-config.yaml
 RELAY_CONFIG=./my-config.yaml go run ./cmd/relay
 ```
-Relay is a lightweight, self-hosted API Gateway written in Go, designed for small teams that need straightforward HTTP traffic control without extra infrastructure.
+Relay is a lightweight, self-hosted API Gateway written in Go: a single stateless
+binary driven by one config file, stdlib-first with minimal dependencies. It runs
+the same way on a small VPS or as a scaled fleet in Kubernetes — no control plane,
+no extra infrastructure.
 
-## Current Features
+## Features
 
-Relay currently includes:
+- **Routing** — match by `path` / `path_prefix`, `method`, `hosts`, `headers`, and
+  `query`; most-specific-wins with catch-all fallback (virtual hosting, canary,
+  API versioning).
+- **Load balancing & upstreams** — `round_robin`, `least_connections`,
+  `weighted_random`; active health checks; HTTP/1.1, TLS (h2 via ALPN) and
+  cleartext HTTP/2 (`h2c`) backends for gRPC.
+- **Resilience** — retries with backoff and a retry **budget**, circuit breaker,
+  per-backend **bulkhead**, global concurrency cap, per-route timeouts.
+- **Auth & security** — JWT (HS256/RS256/JWKS/**OIDC discovery**), API keys,
+  **OAuth2 introspection** (RFC 7662), **external authorization** (`ext_authz`),
+  IP filter, CORS, body limit, inbound/outbound **mTLS**, TLS hardening, edge
+  header stripping.
+- **Rate limiting & caching** — sliding-window rate limiting (in-memory or shared
+  via **Redis**); response **cache** with `Cache-Control`/`Vary` awareness.
+- **Observability** — structured `slog` logs, **Prometheus** metrics, **OpenTelemetry**
+  tracing, `/_relay/health` + `/_relay/ready`, shipped Grafana dashboard and alert
+  rules.
+- **Operations** — hot config reload, config `include` composition, cert rotation
+  without restart, admin REST API, secrets from env or files, graceful shutdown.
+- **Packaging** — single binary, hardened container, Helm chart, systemd unit,
+  signed releases (SBOM + cosign + SLSA provenance).
 
-- Route matching by `path` + `method`
-- Reverse proxy with `net/http/httputil`
-- Load balancing:
-  - `round_robin`
-  - `least_connections`
-- Active backend health checks
-- Precomputed per-route middleware pipeline:
-  - JWT auth
-  - Rate limit (sliding window)
-  - Body limit (`max_bytes`)
-  - IP filter (`allow`/`deny`, exact IP and CIDR)
-  - CORS
-- Basic observability:
-  - Structured logging with `slog`
-  - Access logs to file with size-based rotation
-  - In-memory metrics
-  - `GET /_relay/metrics`
-- Single binary deployment
-- Stdlib-first design with minimal dependencies
+See the full [configuration reference](docs/configuration.md) and the
+[deployment guide](docs/deployment.md).
 
 ---
 
@@ -474,12 +480,20 @@ Request flow:
 
 ---
 
-## Short Roadmap
+## Versioning & stability
 
-- More end-to-end integration tests for combined middleware scenarios
-- Stronger hot-reload behavior for runtime config
-- Operational health endpoint (`/_relay/health`)
-- Better config validation DX (clearer defaults and messages)
+Relay follows [Semantic Versioning](https://semver.org/). Starting with `v1.0.0`:
+
+- The **YAML configuration schema** and the **HTTP surface** (`/_relay/*`
+  endpoints, error-response shape) are the public contract. Breaking changes to
+  either happen only in a major release.
+- New fields and middleware types are additive (minor releases); fixes are patch
+  releases. Deprecations are documented in [`CHANGELOG.md`](CHANGELOG.md) before
+  removal.
+- Internal Go packages (`internal/...`) are not a public API.
+
+Releases are built in CI and ship a checksummed SBOM, cosign signatures, and SLSA
+build provenance — see [`SECURITY.md`](SECURITY.md) for verification.
 
 ---
 
