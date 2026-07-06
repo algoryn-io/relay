@@ -281,6 +281,35 @@ observability:
 - Handles `OPTIONS` preflight
 - Validates configured origins, methods, and headers
 
+### API key (`type: api_key`)
+
+- Reads the key from a header (`key_header`) or query parameter (`key_query`)
+- Valid keys come from an env var (`keys_env`) or a file (`keys_file`); comparison
+  is constant-time
+- Optionally maps the matched key to an outbound header (`key_to_header`)
+
+```yaml
+- name: api-keys
+  type: api_key
+  config:
+    key_header: X-API-Key
+    keys_env: RELAY_API_KEYS      # comma/space/newline-separated
+    key_to_header: X-Client-Id
+```
+
+### Header (`type: header`)
+
+- Sets or deletes request headers before proxying (`request_set` / `request_del`)
+  and response headers (`response_set` / `response_del`)
+
+```yaml
+- name: inject-headers
+  type: header
+  config:
+    request_set: { X-Env: prod }
+    response_del: [Server]
+```
+
 ### JWT via OIDC discovery (`type: jwt`, `algorithm: rs256`)
 
 - Set `oidc_issuer: https://issuer.example.com` instead of `jwks_url`
@@ -330,8 +359,11 @@ observability:
 - Caches idempotent responses (`GET`/`HEAD` by default) in a bounded in-memory
   LRU with per-entry TTL
 - Honors request/response `Cache-Control` (`no-store`, `no-cache`, `private`,
-  `max-age`/`s-maxage`), skips `Set-Cookie` responses, and streams (uncached)
-  bodies larger than `max_object_bytes`
+  `max-age`/`s-maxage`), skips `Set-Cookie` responses, honors the origin's `Vary`,
+  and streams (uncached) bodies larger than `max_object_bytes`
+- **Safe for authenticated routes:** a request with `Authorization`/`Cookie` is
+  only cached/served when the response is explicitly `public`/`s-maxage`, so one
+  user's response is never returned to another (RFC 7234)
 - Adds `X-Cache: HIT|MISS|BYPASS` and an `Age` header; `vary` folds request
   headers into the cache key
 
