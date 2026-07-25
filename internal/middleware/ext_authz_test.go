@@ -23,6 +23,20 @@ func newExtAuthz(t *testing.T, server *httptest.Server, copyHeaders []string, fa
 	return mw
 }
 
+func TestExtAuthzRequiresHTTPSByDefault(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewExtAuthz(ExtAuthzConfig{URL: "http://authz.internal/check"}); err == nil {
+		t.Fatal("NewExtAuthz() error = nil, want HTTP endpoint rejection")
+	}
+	if _, err := NewExtAuthz(ExtAuthzConfig{
+		URL:               "http://authz.internal/check",
+		AllowInsecureHTTP: true,
+	}); err != nil {
+		t.Fatalf("NewExtAuthz() explicit HTTP opt-in error = %v", err)
+	}
+}
+
 func TestExtAuthzAllowsOn2xx(t *testing.T) {
 	t.Parallel()
 

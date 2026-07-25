@@ -327,7 +327,11 @@ type MiddlewareSettingsConfig struct {
 	AuthzForwardHeaders []string      `yaml:"forward_headers"`
 	AuthzCopyHeaders    []string      `yaml:"copy_headers"`
 	AuthzTimeout        time.Duration `yaml:"authz_timeout"`
-	FailOpen            bool          `yaml:"fail_open"`
+	// AuthzAllowInsecureHTTP explicitly permits an HTTP ext_authz endpoint.
+	// Keep false in production because forwarded credentials otherwise travel
+	// without transport encryption.
+	AuthzAllowInsecureHTTP bool `yaml:"allow_insecure_http"`
+	FailOpen               bool `yaml:"fail_open"`
 }
 
 type ObservabilityConfig struct {

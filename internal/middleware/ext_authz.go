@@ -31,6 +31,8 @@ type ExtAuthzConfig struct {
 	// FailOpen controls behavior when the authorizer is unreachable or errors:
 	// true allows the request through, false (default) denies with 503.
 	FailOpen bool
+	// AllowInsecureHTTP explicitly permits an HTTP authorization endpoint.
+	AllowInsecureHTTP bool
 	// Client overrides the HTTP client (tests).
 	Client *http.Client
 	Logger *slog.Logger
@@ -50,8 +52,8 @@ func NewExtAuthz(cfg ExtAuthzConfig) (Middleware, error) {
 	if strings.TrimSpace(cfg.URL) == "" {
 		return nil, fmt.Errorf("ext_authz: url is required")
 	}
-	if u, err := url.Parse(strings.TrimSpace(cfg.URL)); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return nil, fmt.Errorf("ext_authz: url must be http or https")
+	if u, err := url.Parse(strings.TrimSpace(cfg.URL)); err != nil || u.Scheme != "https" && !(u.Scheme == "http" && cfg.AllowInsecureHTTP) {
+		return nil, fmt.Errorf("ext_authz: url must be https unless allow_insecure_http is set")
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
