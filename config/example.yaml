@@ -26,23 +26,12 @@ backends:
 middleware: []
 
 observability:
-  dashboard:
-    enabled: false
-    port: 9090
   logs:
     level: info
-  metrics:
-    flush_interval: 30s
   fabric:
     enabled: false
     service_name: relay-edge
     queue_size: 2048
-
-storage:
-  path: ./data
-  retention:
-    metrics_days: 90
-    logs_days: 30
 
 reload:
   watch: false

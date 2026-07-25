@@ -8,7 +8,9 @@
 
 services:
   relay:
-    image: algoryn/relay:${RELAY_VERSION:-latest}
+    # Require an explicit, reviewed release. Do not silently deploy a mutable
+    # `latest` tag in production.
+    image: algoryn/relay:${RELAY_VERSION:?set RELAY_VERSION to a release tag}
     restart: unless-stopped
     ports:
       - "80:8088"

@@ -41,6 +41,7 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, io.Cl
 			Header:   def.Config.Header,
 			Store:    def.Config.RateLimitStore,
 			RedisURL: redisURL,
+			FailOpen: def.Config.FailOpen,
 		})
 	case "body_limit":
 		mw, err := NewBodyLimit(BodyLimitConfig{

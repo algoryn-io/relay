@@ -39,7 +39,6 @@ func validateConfig(c *Config) error {
 	validateRoutes(c.Routes, backendNames, middlewareNames, &errs)
 
 	validateObservability(c.Observability, &errs)
-	validateStorage(c.Storage, &errs)
 	validateReload(c.Reload, &errs)
 
 	return errs.Err()
@@ -88,6 +87,9 @@ func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {
 	case "auto":
 		if len(tls.Domains) == 0 {
 			errs.Addf("%s.domains: at least one domain is required for mode auto", prefix)
+		}
+		if strings.TrimSpace(tls.ACMECacheDir) == "" {
+			errs.Addf("%s.acme_cache_dir: required for mode auto", prefix)
 		}
 		for i, d := range tls.Domains {
 			if strings.TrimSpace(d) == "" {
@@ -531,16 +533,12 @@ func validateJWTClaimsToHeaders(field string, m map[string]string, errs *Validat
 }
 
 func validateObservability(observability ObservabilityConfig, errs *ValidationErrors) {
-	if observability.Dashboard.Enabled && observability.Dashboard.Port <= 0 {
-		errs.Addf("observability.dashboard.port: must be greater than 0")
-	}
 	if observability.Logs.File != "" && strings.TrimSpace(observability.Logs.File) == "" {
 		errs.Addf("observability.logs.file: must not be blank")
 	}
 	if observability.Logs.MaxSizeMB < 0 {
 		errs.Addf("observability.logs.max_size_mb: must be >= 0")
 	}
-	validatePositiveDuration("observability.metrics.flush_interval", observability.Metrics.FlushInterval, errs, false)
 	validateIPFilterEntries("observability.prometheus.allowed_cidrs", observability.Prometheus.AllowedCIDRs, errs)
 	validateFabric(observability.Fabric, errs)
 	validateTracing(observability.Tracing, errs)
@@ -602,10 +600,6 @@ func validateFabric(f FabricConfig, errs *ValidationErrors) {
 	if f.QueueSize < 0 {
 		errs.Addf("observability.fabric.queue_size: must be >= 0")
 	}
-}
-
-func validateStorage(_ StorageConfig, _ *ValidationErrors) {
-	// storage is optional; leave path empty to disable
 }
 
 func validateReload(reload ReloadConfig, errs *ValidationErrors) {

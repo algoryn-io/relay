@@ -184,8 +184,8 @@ func TestRedisRateLimitAPIKeyHashIsConsistent(t *testing.T) {
 	}
 }
 
-// TestRedisRateLimitFailOpen verifies that when Redis is unavailable, requests
-// are allowed (fail-open behavior).
+// TestRedisRateLimitFailOpen verifies that an operator can explicitly choose
+// availability over enforcement when Redis is unavailable.
 func TestRedisRateLimitFailOpen(t *testing.T) {
 	t.Parallel()
 
@@ -201,9 +201,10 @@ func TestRedisRateLimitFailOpen(t *testing.T) {
 	store := newRedisStoreFromClient(client)
 
 	mw, err := newRateLimitWithStore(RateLimitConfig{
-		Limit:  1,
-		Window: time.Minute,
-		By:     "ip",
+		Limit:    1,
+		Window:   time.Minute,
+		By:       "ip",
+		FailOpen: true,
 	}, store)
 	if err != nil {
 		t.Fatal(err)

@@ -16,17 +16,16 @@ import (
 )
 
 // redisCheckTimeout bounds a single Redis rate-limit call. If Redis is slow or
-// unreachable (e.g. a black-holed network), the call fails fast and the limiter
-// fails open instead of stalling the request for the full dial timeout.
+// unreachable (e.g. a black-holed network), the call fails fast instead of
+// stalling the request for the full dial timeout.
 const redisCheckTimeout = 100 * time.Millisecond
 
 // rateLimitStore is the pluggable backend for the sliding-window rate limiter.
 // Implementations must be safe for concurrent use.
 type rateLimitStore interface {
 	// Check records the current request and reports whether it is allowed.
-	// Returns (allowed, remaining, reset, error). On store error the
-	// implementation should fail open (allowed=true) so a Redis outage does
-	// not take down the gateway.
+	// Returns (allowed, remaining, reset, error). The middleware chooses whether
+	// an error fails closed (default) or fails open (explicit configuration).
 	Check(ctx context.Context, key string, limit int, window time.Duration, now time.Time) (bool, int, time.Time, error)
 	// HashKey returns a deterministic, non-reversible representation of an
 	// API key for use as a bucket identifier. Memory and Redis implementations
