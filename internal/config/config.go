@@ -184,6 +184,9 @@ type BackendTLSConfig struct {
 	// InsecureSkipVerify disables server certificate verification.
 	// For development and testing only — never use in production.
 	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
+	// AcknowledgeInsecureSkipVerify must be set alongside insecure_skip_verify
+	// to make the production-risking choice explicit in configuration review.
+	AcknowledgeInsecureSkipVerify bool `yaml:"acknowledge_insecure_skip_verify"`
 }
 
 // RetryConfig enables request retries with exponential backoff for a backend.

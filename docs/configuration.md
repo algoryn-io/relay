@@ -130,7 +130,8 @@ query-constrained) wins, with fallback to a catch-all.
 | `bulkhead.max_concurrent` | int | `0` (off) | Max simultaneous in-flight requests to this backend; excess gets a fast `503`. |
 | `tls.ca_file` | path | — | CA bundle to verify the backend cert (system roots when empty). |
 | `tls.cert_file`, `tls.key_file` | path | — | Client cert/key for outbound mTLS. |
-| `tls.insecure_skip_verify` | bool | `false` | Disable backend cert verification (dev only). |
+| `tls.insecure_skip_verify` | bool | `false` | Disable backend cert verification (dev only). Requires explicit acknowledgement. |
+| `tls.acknowledge_insecure_skip_verify` | bool | `false` | Must be `true` when certificate verification is disabled. |
 
 ### `backends[].retry`
 
