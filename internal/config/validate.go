@@ -69,6 +69,40 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 	}
 	validateIPFilterEntries("listener.trusted_proxies", listener.TrustedProxies, errs)
 	validateIPFilterEntries("listener.admin.allowed_cidrs", listener.Admin.AllowedCIDRs, errs)
+	validateAdminAccess(listener.Admin, errs)
+}
+
+func validateAdminAccess(admin AdminConfig, errs *ValidationErrors) {
+	if strings.TrimSpace(admin.TokenEnv) != "" || strings.TrimSpace(admin.TokenFile) != "" {
+		return
+	}
+	for _, entry := range admin.AllowedCIDRs {
+		if !isLoopbackOnlyCIDR(entry) {
+			errs.Addf("listener.admin: token_env or token_file is required when allowed_cidrs extends beyond loopback")
+			return
+		}
+	}
+}
+
+func isLoopbackOnlyCIDR(entry string) bool {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return true
+	}
+	if ip := net.ParseIP(entry); ip != nil {
+		return ip.IsLoopback()
+	}
+	ip, network, err := net.ParseCIDR(entry)
+	if err != nil || !ip.IsLoopback() {
+		return false
+	}
+	ones, bits := network.Mask.Size()
+	if bits == 32 {
+		// 127.0.0.0/8 is the widest IPv4 loopback range.
+		return ip.To4() != nil && ip.To4()[0] == 127 && ones >= 8
+	}
+	// ::1 is the only IPv6 loopback address.
+	return ones == 128
 }
 
 func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {

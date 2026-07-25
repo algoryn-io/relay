@@ -15,6 +15,26 @@ func TestValidateValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateAdminOutsideLoopbackRequiresToken(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Listener.Admin.AllowedCIDRs = []string{"10.0.0.0/8"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "listener.admin: token_env or token_file is required")
+}
+
+func TestValidateAdminLoopbackCanUseIPOnlyAccess(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Listener.Admin.AllowedCIDRs = []string{"127.0.0.0/8", "::1/128"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestValidateFabricEnabledRequiresServiceName(t *testing.T) {
 	t.Parallel()
 
