@@ -26,6 +26,8 @@ type PrometheusCollector struct {
 	listenerConnections prometheus.Gauge
 	listenerPeerIPs     prometheus.Gauge
 	listenerRejected    prometheus.Counter
+	rateLimitBuckets    prometheus.Gauge
+	rateLimitEvictions  prometheus.Counter
 	registry            *prometheus.Registry
 }
 
@@ -99,10 +101,20 @@ func NewPrometheusCollector() *PrometheusCollector {
 		Help: "Total TCP connections rejected because the real peer IP reached its configured limit.",
 	})
 
+	rateLimitBuckets := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "relay_rate_limit_memory_buckets",
+		Help: "Current in-process rate limit buckets across all memory stores.",
+	})
+
+	rateLimitEvictions := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "relay_rate_limit_memory_evictions_total",
+		Help: "Total in-process rate limit buckets evicted to enforce configured capacity.",
+	})
+
 	reg.MustRegister(
 		requestsTotal, requestDuration, activeRequests, backendHealthy,
 		upstreamDuration, retryTotal, retryBudgetExceeded, circuitState, bulkheadInFlight, bulkheadRejected,
-		listenerConnections, listenerPeerIPs, listenerRejected,
+		listenerConnections, listenerPeerIPs, listenerRejected, rateLimitBuckets, rateLimitEvictions,
 	)
 
 	return &PrometheusCollector{
@@ -119,6 +131,8 @@ func NewPrometheusCollector() *PrometheusCollector {
 		listenerConnections: listenerConnections,
 		listenerPeerIPs:     listenerPeerIPs,
 		listenerRejected:    listenerRejected,
+		rateLimitBuckets:    rateLimitBuckets,
+		rateLimitEvictions:  rateLimitEvictions,
 		registry:            reg,
 	}
 }
@@ -198,6 +212,22 @@ func (c *PrometheusCollector) RecordListenerConnectionRejected() {
 		return
 	}
 	c.listenerRejected.Inc()
+}
+
+// AddRateLimitMemoryBuckets updates aggregate occupancy without exposing bucket
+// keys or middleware names as labels.
+func (c *PrometheusCollector) AddRateLimitMemoryBuckets(delta int) {
+	if c == nil {
+		return
+	}
+	c.rateLimitBuckets.Add(float64(delta))
+}
+
+func (c *PrometheusCollector) RecordRateLimitMemoryEviction() {
+	if c == nil {
+		return
+	}
+	c.rateLimitEvictions.Inc()
 }
 
 func (c *PrometheusCollector) RequestStarted(route string) {

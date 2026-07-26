@@ -39,44 +39,121 @@ type rateLimitStore interface {
 // ──────────────────────────────────────────────────────────────────────────────
 
 const (
-	// memoryStoreShards splits the bucket map into independently-locked shards so
-	// requests for different keys don't serialize on one global mutex.
-	memoryStoreShards = 256
-	// memoryPruneInterval is how often the background sweeper removes stale
-	// buckets, keeping pruning off the request hot path.
-	memoryPruneInterval = time.Minute
+	memoryStoreShards            = 256
+	defaultMemoryMaxBuckets      = 100_000
+	defaultMemoryBucketTTL       = time.Minute
+	defaultMemoryCleanupInterval = time.Minute
 )
 
+type memoryBucket struct {
+	key      string
+	events   []time.Time
+	lastSeen time.Time
+	prev     *memoryBucket
+	next     *memoryBucket
+}
+
 type memoryShard struct {
-	mu      sync.Mutex
-	buckets map[string][]time.Time
+	mu       sync.Mutex
+	buckets  map[string]*memoryBucket
+	head     *memoryBucket
+	tail     *memoryBucket
+	capacity int
+}
+
+type memoryTicker interface {
+	Chan() <-chan time.Time
+	Stop()
+}
+
+type memoryClock interface {
+	Now() time.Time
+	NewTicker(time.Duration) memoryTicker
+}
+
+type realMemoryClock struct{}
+
+func (realMemoryClock) Now() time.Time { return time.Now() }
+
+func (realMemoryClock) NewTicker(d time.Duration) memoryTicker {
+	return realMemoryTicker{Ticker: time.NewTicker(d)}
+}
+
+type realMemoryTicker struct{ *time.Ticker }
+
+func (t realMemoryTicker) Chan() <-chan time.Time { return t.C }
+
+type memoryStoreOptions struct {
+	maxBuckets      int
+	bucketTTL       time.Duration
+	cleanupInterval time.Duration
+	clock           memoryClock
+	metrics         RateLimitMetrics
 }
 
 type memoryStore struct {
-	salt      []byte
-	shards    []*memoryShard
-	maxWindow atomic.Int64 // largest window (ns) seen; drives the pruner cutoff
+	salt        []byte
+	shards      []*memoryShard
+	bucketTTL   time.Duration
+	clock       memoryClock
+	metrics     RateLimitMetrics
+	bucketCount atomic.Int64
 
 	stop     chan struct{}
 	stopOnce sync.Once
 	wg       sync.WaitGroup
+	closed   atomic.Bool
 }
 
 func newMemoryStore() (*memoryStore, error) {
+	return newMemoryStoreWithOptions(memoryStoreOptions{
+		maxBuckets:      defaultMemoryMaxBuckets,
+		bucketTTL:       defaultMemoryBucketTTL,
+		cleanupInterval: defaultMemoryCleanupInterval,
+	})
+}
+
+func newMemoryStoreWithOptions(opts memoryStoreOptions) (*memoryStore, error) {
+	if opts.maxBuckets <= 0 {
+		return nil, fmt.Errorf("memory rate limit max buckets must be greater than 0")
+	}
+	if opts.bucketTTL <= 0 {
+		return nil, fmt.Errorf("memory rate limit bucket TTL must be greater than 0")
+	}
+	if opts.cleanupInterval <= 0 {
+		return nil, fmt.Errorf("memory rate limit cleanup interval must be greater than 0")
+	}
+	if opts.clock == nil {
+		opts.clock = realMemoryClock{}
+	}
 	salt := make([]byte, 32)
 	if _, err := rand.Read(salt); err != nil {
 		return nil, fmt.Errorf("generate rate limit salt: %w", err)
 	}
+	shardCount := memoryStoreShards
+	if opts.maxBuckets < shardCount {
+		shardCount = opts.maxBuckets
+	}
 	s := &memoryStore{
-		salt:   salt,
-		shards: make([]*memoryShard, memoryStoreShards),
-		stop:   make(chan struct{}),
+		salt:      salt,
+		shards:    make([]*memoryShard, shardCount),
+		bucketTTL: opts.bucketTTL,
+		clock:     opts.clock,
+		metrics:   opts.metrics,
+		stop:      make(chan struct{}),
 	}
 	for i := range s.shards {
-		s.shards[i] = &memoryShard{buckets: make(map[string][]time.Time)}
+		capacity := opts.maxBuckets / shardCount
+		if i < opts.maxBuckets%shardCount {
+			capacity++
+		}
+		s.shards[i] = &memoryShard{
+			buckets:  make(map[string]*memoryBucket, capacity),
+			capacity: capacity,
+		}
 	}
 	s.wg.Add(1)
-	go s.pruneLoop()
+	go s.pruneLoop(opts.cleanupInterval)
 	return s, nil
 }
 
@@ -97,16 +174,33 @@ func (s *memoryStore) shardFor(key string) *memoryShard {
 }
 
 func (s *memoryStore) Check(_ context.Context, key string, limit int, window time.Duration, now time.Time) (bool, int, time.Time, error) {
-	if w := int64(window); w > s.maxWindow.Load() {
-		s.maxWindow.Store(w) // best-effort; only used to size the prune cutoff
+	if s.closed.Load() {
+		return false, 0, now.Add(window), fmt.Errorf("memory rate limit store is closed")
 	}
 	cutoff := now.Add(-window)
 
 	sh := s.shardFor(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
+	if s.closed.Load() {
+		return false, 0, now.Add(window), fmt.Errorf("memory rate limit store is closed")
+	}
 
-	events := sh.buckets[key]
+	bucket := sh.buckets[key]
+	if bucket == nil {
+		if len(sh.buckets) >= sh.capacity {
+			s.removeBucketLocked(sh, sh.tail, true)
+		}
+		bucket = &memoryBucket{key: key}
+		sh.buckets[key] = bucket
+		sh.pushFront(bucket)
+		s.addBuckets(1)
+	} else {
+		sh.moveToFront(bucket)
+	}
+	bucket.lastSeen = now
+
+	events := bucket.events
 	keep := events[:0]
 	for _, ts := range events {
 		if ts.After(cutoff) {
@@ -118,7 +212,7 @@ func (s *memoryStore) Check(_ context.Context, key string, limit int, window tim
 	}
 
 	if len(keep) >= limit {
-		sh.buckets[key] = keep
+		bucket.events = keep
 		var reset time.Time
 		if len(keep) > 0 {
 			reset = keep[0].Add(window)
@@ -129,7 +223,7 @@ func (s *memoryStore) Check(_ context.Context, key string, limit int, window tim
 	}
 
 	keep = append(keep, now)
-	sh.buckets[key] = keep
+	bucket.events = keep
 
 	remaining := limit - len(keep)
 	var reset time.Time
@@ -141,45 +235,109 @@ func (s *memoryStore) Check(_ context.Context, key string, limit int, window tim
 	return true, remaining, reset, nil
 }
 
-// pruneLoop periodically removes buckets whose newest event is older than the
-// largest window seen, bounding memory for high-cardinality keyspaces (e.g.
-// per-IP) without touching the request path.
-func (s *memoryStore) pruneLoop() {
+func (s *memoryStore) pruneLoop(interval time.Duration) {
 	defer s.wg.Done()
-	ticker := time.NewTicker(memoryPruneInterval)
+	ticker := s.clock.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-s.stop:
 			return
-		case <-ticker.C:
-			s.pruneOnce(time.Now())
+		case now := <-ticker.Chan():
+			s.pruneOnce(now)
 		}
 	}
 }
 
 func (s *memoryStore) pruneOnce(now time.Time) {
-	w := time.Duration(s.maxWindow.Load())
-	if w <= 0 {
-		return
-	}
-	cutoff := now.Add(-w)
+	cutoff := now.Add(-s.bucketTTL)
 	for _, sh := range s.shards {
 		sh.mu.Lock()
-		for k, ts := range sh.buckets {
-			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
-				delete(sh.buckets, k)
+		for bucket := sh.tail; bucket != nil && !bucket.lastSeen.After(cutoff); {
+			prev := bucket.prev
+			s.removeBucketLocked(sh, bucket, false)
+			bucket = prev
+		}
+		// A fake or non-monotonic clock can break LRU time ordering. Scan the
+		// remainder as a correctness fallback; normal operation stops above.
+		for _, bucket := range sh.buckets {
+			if !bucket.lastSeen.After(cutoff) {
+				s.removeBucketLocked(sh, bucket, false)
 			}
 		}
 		sh.mu.Unlock()
 	}
 }
 
-// Close stops the background pruner. Safe to call multiple times.
 func (s *memoryStore) Close() error {
-	s.stopOnce.Do(func() { close(s.stop) })
+	s.stopOnce.Do(func() {
+		s.closed.Store(true)
+		close(s.stop)
+		for _, sh := range s.shards {
+			sh.mu.Lock()
+			n := len(sh.buckets)
+			sh.buckets = make(map[string]*memoryBucket)
+			sh.head = nil
+			sh.tail = nil
+			sh.mu.Unlock()
+			s.addBuckets(-n)
+		}
+	})
 	s.wg.Wait()
 	return nil
+}
+
+func (s *memoryStore) removeBucketLocked(sh *memoryShard, bucket *memoryBucket, evicted bool) {
+	if bucket == nil {
+		return
+	}
+	delete(sh.buckets, bucket.key)
+	sh.remove(bucket)
+	s.addBuckets(-1)
+	if evicted && s.metrics != nil {
+		s.metrics.RecordRateLimitMemoryEviction()
+	}
+}
+
+func (s *memoryStore) addBuckets(delta int) {
+	s.bucketCount.Add(int64(delta))
+	if s.metrics != nil {
+		s.metrics.AddRateLimitMemoryBuckets(delta)
+	}
+}
+
+func (sh *memoryShard) pushFront(bucket *memoryBucket) {
+	bucket.prev = nil
+	bucket.next = sh.head
+	if sh.head != nil {
+		sh.head.prev = bucket
+	} else {
+		sh.tail = bucket
+	}
+	sh.head = bucket
+}
+
+func (sh *memoryShard) moveToFront(bucket *memoryBucket) {
+	if bucket == sh.head {
+		return
+	}
+	sh.remove(bucket)
+	sh.pushFront(bucket)
+}
+
+func (sh *memoryShard) remove(bucket *memoryBucket) {
+	if bucket.prev != nil {
+		bucket.prev.next = bucket.next
+	} else {
+		sh.head = bucket.next
+	}
+	if bucket.next != nil {
+		bucket.next.prev = bucket.prev
+	} else {
+		sh.tail = bucket.prev
+	}
+	bucket.prev = nil
+	bucket.next = nil
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

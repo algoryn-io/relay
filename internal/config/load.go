@@ -10,7 +10,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultMaxRequestBodyBytes int64 = 10 << 20
+const (
+	defaultMaxRequestBodyBytes            int64 = 10 << 20
+	defaultRateLimitMemoryMaxBuckets            = 100_000
+	defaultRateLimitMemoryCleanupInterval       = time.Minute
+)
 
 func Load(path string) (*Config, error) {
 	return loadWithIncludes(path, make(map[string]struct{}))
@@ -138,6 +142,17 @@ func (c *MiddlewareConfig) normalizeAliases() {
 	switch c.Type {
 	case "ratelimit":
 		c.Type = "rate_limit"
+	}
+	if c.Type == "rate_limit" {
+		if c.Config.MemoryMaxBuckets == 0 {
+			c.Config.MemoryMaxBuckets = defaultRateLimitMemoryMaxBuckets
+		}
+		if c.Config.MemoryBucketTTL == 0 {
+			c.Config.MemoryBucketTTL = c.Config.Window
+		}
+		if c.Config.MemoryCleanupInterval == 0 {
+			c.Config.MemoryCleanupInterval = defaultRateLimitMemoryCleanupInterval
+		}
 	}
 }
 
