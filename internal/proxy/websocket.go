@@ -37,6 +37,7 @@ func isWebSocketUpgrade(r *http.Request) bool {
 func (p *Proxy) serveWebSocket(
 	w http.ResponseWriter,
 	r *http.Request,
+	route *config.RouteRuntime,
 	backend config.BackendRuntime,
 	clientIP, proto, originalHost string,
 ) {
@@ -75,15 +76,7 @@ func (p *Proxy) serveWebSocket(
 		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			pr.Out.Header.Del("X-Internal-Auth")
-			pr.Out.Header.Del("X-Real-IP")
-			pr.Out.Header.Del("X-Admin")
-			pr.Out.Header.Set("X-Forwarded-Host", originalHost)
-			pr.Out.Header.Set("X-Forwarded-Proto", proto)
-			if clientIP != "" {
-				pr.Out.Header.Set("X-Forwarded-For", clientIP)
-				pr.Out.Header.Set("X-Real-IP", clientIP)
-			}
+			applyRelayOwnedHeaders(pr.Out.Header, pr.In, route, backend, target, clientIP, proto, originalHost)
 		},
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 			if errors.Is(err, context.DeadlineExceeded) {

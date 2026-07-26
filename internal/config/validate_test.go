@@ -208,6 +208,43 @@ func TestValidateInsecureBackendTLSRequiresAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestValidateClientIdentityPropagationTrustBoundary(t *testing.T) {
+	t.Parallel()
+
+	policy := ClientIdentityPropagationConfig{
+		Enabled: true, Fields: []string{"subject", "san_dns", "fingerprint_sha256"},
+	}
+
+	cfg := validConfig()
+	cfg.Backends[0].PropagateClientIdentity = policy
+	assertValidationErrorContains(t, cfg.Validate(), "must use https")
+
+	cfg = validConfig()
+	cfg.Backends[0].Instances[0].URL = "https://backend.example"
+	cfg.Backends[0].PropagateClientIdentity = policy
+	assertValidationErrorContains(t, cfg.Validate(), "acknowledge_verified_https")
+
+	cfg.Backends[0].PropagateClientIdentity.AcknowledgeVerifiedHTTPS = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() verified HTTPS acknowledgement error = %v", err)
+	}
+
+	cfg.Backends[0].TLS.InsecureSkipVerify = true
+	cfg.Backends[0].TLS.AcknowledgeInsecureSkipVerify = true
+	assertValidationErrorContains(t, cfg.Validate(), "requires upstream certificate verification")
+}
+
+func TestValidateRouteClientIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Backends[0].Instances[0].URL = "https://backend.example"
+	cfg.Routes[0].PropagateClientIdentity = &ClientIdentityPropagationConfig{
+		Enabled: true, Fields: []string{"pem"}, AcknowledgeVerifiedHTTPS: true,
+	}
+	assertValidationErrorContains(t, cfg.Validate(), `unsupported field "pem"`)
+}
+
 func TestValidateFabricEnabledRequiresServiceName(t *testing.T) {
 	t.Parallel()
 

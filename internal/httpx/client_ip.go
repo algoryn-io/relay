@@ -4,17 +4,45 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
 type clientIPKey struct{}
+type forwardingKey struct{}
 
-// WithResolvedClientIP resolves the real client IP once and stores it in the request context.
-// When trustedNets is non-empty and the direct peer (RemoteAddr) is in the trusted list,
-// the leftmost IP from X-Forwarded-For is used instead of RemoteAddr.
+type forwardingInfo struct {
+	chain         []string
+	emitForwarded bool
+}
+
+// WithResolvedClientIP resolves the real client IP once and stores it in the
+// request context. For a trusted peer, it walks X-Forwarded-For right-to-left
+// and skips trusted hops; an untrusted peer's chain is ignored.
 func WithResolvedClientIP(r *http.Request, trustedNets []*net.IPNet) *http.Request {
-	ip := resolveClientIP(r, trustedNets)
-	return r.WithContext(context.WithValue(r.Context(), clientIPKey{}, ip))
+	return WithForwarding(r, trustedNets, false)
+}
+
+// WithForwarding resolves the anti-spoofed client IP and records the normalized
+// X-Forwarded-For chain that Relay may send upstream. An untrusted peer's
+// inbound chain is discarded in full.
+func WithForwarding(r *http.Request, trustedNets []*net.IPNet, emitForwarded bool) *http.Request {
+	peer := normalizeIP(remoteAddrIP(r))
+	trusted := PeerTrusted(r, trustedNets)
+	chain := make([]string, 0, 4)
+	if trusted {
+		chain = parseForwardedFor(r.Header.Values("X-Forwarded-For"))
+	}
+	if peer != "" && (len(chain) == 0 || chain[len(chain)-1] != peer) {
+		chain = append(chain, peer)
+	}
+	ip := resolveClientIPFromChain(peer, chain, trusted, trustedNets)
+	ctx := context.WithValue(r.Context(), clientIPKey{}, ip)
+	ctx = context.WithValue(ctx, forwardingKey{}, forwardingInfo{
+		chain:         append([]string(nil), chain...),
+		emitForwarded: emitForwarded,
+	})
+	return r.WithContext(ctx)
 }
 
 // ClientIP returns the resolved client IP. If WithResolvedClientIP was called upstream,
@@ -44,6 +72,36 @@ func PeerTrusted(r *http.Request, trustedNets []*net.IPNet) bool {
 	return ip != nil && isTrustedNet(ip, trustedNets)
 }
 
+// ForwardedFor returns Relay's normalized outbound X-Forwarded-For value.
+func ForwardedFor(r *http.Request) string {
+	if info, ok := r.Context().Value(forwardingKey{}).(forwardingInfo); ok {
+		return strings.Join(info.chain, ", ")
+	}
+	if peer := normalizeIP(remoteAddrIP(r)); peer != "" {
+		return peer
+	}
+	return ""
+}
+
+// EmitForwarded reports whether Relay should generate the RFC 7239 Forwarded
+// header. Inbound Forwarded values are never reused.
+func EmitForwarded(r *http.Request) bool {
+	info, _ := r.Context().Value(forwardingKey{}).(forwardingInfo)
+	return info.emitForwarded
+}
+
+// FormatForwardedFor formats a normalized IP as an RFC 7239 for= parameter.
+func FormatForwardedFor(raw string) string {
+	ip := net.ParseIP(raw)
+	if ip == nil {
+		return ""
+	}
+	if ip.To4() != nil {
+		return "for=" + ip.String()
+	}
+	return "for=" + strconv.Quote("["+ip.String()+"]")
+}
+
 // ParseTrustedNets parses IP or CIDR strings into networks.
 // Invalid entries are silently skipped; they should have been caught by config validation.
 func ParseTrustedNets(entries []string) []*net.IPNet {
@@ -71,17 +129,8 @@ func ParseTrustedNets(entries []string) []*net.IPNet {
 	return nets
 }
 
-func resolveClientIP(r *http.Request, trustedNets []*net.IPNet) string {
-	remoteIP := remoteAddrIP(r)
-	if len(trustedNets) == 0 {
-		return remoteIP
-	}
-	remote := net.ParseIP(remoteIP)
-	if remote == nil || !isTrustedNet(remote, trustedNets) {
-		return remoteIP
-	}
-	xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
-	if xff == "" {
+func resolveClientIPFromChain(remoteIP string, chain []string, peerTrusted bool, trustedNets []*net.IPNet) string {
+	if !peerTrusted {
 		return remoteIP
 	}
 	// The immediate peer is a trusted proxy. Proxies APPEND to X-Forwarded-For,
@@ -89,12 +138,8 @@ func resolveClientIP(r *http.Request, trustedNets []*net.IPNet) string {
 	// proxy. Walking right-to-left and skipping trusted addresses is the only
 	// spoof-resistant choice: the left-most entry is fully attacker-controlled
 	// (a client can pre-seed X-Forwarded-For), so it must never be trusted.
-	parts := strings.Split(xff, ",")
-	for i := len(parts) - 1; i >= 0; i-- {
-		ip := net.ParseIP(strings.TrimSpace(parts[i]))
-		if ip == nil {
-			continue
-		}
+	for i := len(chain) - 1; i >= 0; i-- {
+		ip := net.ParseIP(chain[i])
 		if isTrustedNet(ip, trustedNets) {
 			continue // another trusted hop; keep walking left
 		}
@@ -103,6 +148,35 @@ func resolveClientIP(r *http.Request, trustedNets []*net.IPNet) string {
 	// Every forwarded entry is a trusted proxy (or unparseable): fall back to the
 	// real TCP peer rather than trusting any client-supplied value.
 	return remoteIP
+}
+
+func parseForwardedFor(values []string) []string {
+	var out []string
+	seenAdjacent := ""
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			ip := normalizeIP(strings.TrimSpace(part))
+			if ip == "" {
+				continue
+			}
+			// Duplicate adjacent hops are a common result of proxies appending
+			// an address already present at the end of the chain.
+			if ip == seenAdjacent {
+				continue
+			}
+			out = append(out, ip)
+			seenAdjacent = ip
+		}
+	}
+	return out
+}
+
+func normalizeIP(raw string) string {
+	ip := net.ParseIP(strings.TrimSpace(raw))
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 func isTrustedNet(ip net.IP, nets []*net.IPNet) bool {

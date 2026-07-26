@@ -81,7 +81,8 @@ When both are set for the same secret, the `*_env` source wins.
 | `timeouts.idle` | duration | — | Keep-alive idle timeout. |
 | `timeouts.read_header` | duration | `10s` | Header-read timeout (Slowloris mitigation). |
 | `timeouts.websocket_idle` | duration | `0` (off) | Idle timeout for proxied WebSocket/upgrade tunnels. |
-| `trusted_proxies` | []cidr/ip | `[]` | Peers allowed to set `X-Forwarded-For`. Client IP is taken from `X-Forwarded-For` only when the immediate peer is trusted. Public CIDRs are rejected. |
+| `trusted_proxies` | []cidr/ip | `[]` | Peers allowed to extend `X-Forwarded-For`. Relay normalizes valid IP hops and appends the immediate peer; an untrusted peer's entire inbound chain is discarded. Client IP is resolved right-to-left across trusted hops. Public CIDRs are rejected. |
+| `emit_forwarded_header` | bool | `false` | Generate RFC 7239 `Forwarded` from Relay-owned, sanitized values. Inbound `Forwarded` is always discarded. |
 | `strip_request_headers` | []string | `[]` | Extra inbound headers to drop at the edge (on top of Relay-managed identity + `X-Forwarded-*`). |
 | `max_concurrent_requests` | int | `0` (unlimited) | Global in-flight cap; excess requests get a fast `503`. Internal endpoints are exempt. |
 | `max_connections_per_ip` | int | `0` (disabled) | Simultaneous TCP connection cap per real peer IP. Excess connections are closed before HTTP parsing. |
@@ -266,6 +267,7 @@ query-constrained) wins, with fallback to a catch-all.
 | `max_body_bytes` | int | Reject request bodies larger than this with `413`. `0` = no limit. |
 | `rewrite.pattern` / `rewrite.replacement` | string | RE2 regex path rewrite (`$1`, `${name}` capture refs), applied after `strip_prefix`. |
 | `add_request_headers` | map | Inject headers into the outbound request. Value `${req.Header-Name}` copies an inbound header. **Note:** `${req.*}` values are untrusted client input — do not use them to set headers a backend trusts for authorization. |
+| `propagate_client_identity` | object | Optional route override for the backend mTLS client-identity propagation policy below. |
 
 ---
 
@@ -301,6 +303,26 @@ query-constrained) wins, with fallback to a catch-all.
 | `tls.cert_file`, `tls.key_file` | path | — | Client cert/key for outbound mTLS. |
 | `tls.insecure_skip_verify` | bool | `false` | Disable backend cert verification (dev only). Requires explicit acknowledgement. |
 | `tls.acknowledge_insecure_skip_verify` | bool | `false` | Must be `true` when certificate verification is disabled. |
+| `propagate_client_identity.enabled` | bool | `false` | Propagate selected attributes of a verified inbound mTLS client certificate through Relay-owned headers. |
+| `propagate_client_identity.fields` | []string | `[]` | Explicit allowlist: `subject`, `san_dns`, `san_email`, `san_ip`, `san_uri`, `fingerprint_sha256`. Raw/PEM certificates are never forwarded. |
+| `propagate_client_identity.acknowledge_verified_https` | bool | `false` | Required acknowledgement when the upstream uses verified HTTPS without outbound mTLS. |
+
+Identity propagation fails validation unless every backend instance uses HTTPS
+with certificate verification enabled. Outbound mTLS satisfies the stronger
+trust-boundary requirement; otherwise
+`acknowledge_verified_https: true` is mandatory. A route may replace its
+backend's policy with its own `propagate_client_identity` object. Relay always
+strips the reserved `X-Relay-Client-Cert-*` headers before setting allowlisted
+values from `TLS.VerifiedChains`; an absent or unverified client certificate
+produces no identity headers. Subject/SAN values containing controls or exceeding
+the bounded header value size are omitted.
+
+```yaml
+propagate_client_identity:
+  enabled: true
+  fields: [san_uri, fingerprint_sha256]
+  acknowledge_verified_https: true
+```
 
 ### `backends[].retry`
 

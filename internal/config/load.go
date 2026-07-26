@@ -271,17 +271,18 @@ func (c *TracingConfig) UnmarshalYAML(node *yaml.Node) error {
 
 func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawRoute struct {
-		Name              string            `yaml:"name"`
-		ID                string            `yaml:"id"`
-		Match             MatchConfig       `yaml:"match"`
-		Middleware        []string          `yaml:"middleware"`
-		Middlewares       []string          `yaml:"middlewares"`
-		Backend           string            `yaml:"backend"`
-		StripPrefix       string            `yaml:"strip_prefix"`
-		Timeout           timeDuration      `yaml:"timeout"`
-		MaxBodyBytes      int64             `yaml:"max_body_bytes"`
-		Rewrite           RewriteRule       `yaml:"rewrite"`
-		AddRequestHeaders map[string]string `yaml:"add_request_headers"`
+		Name                    string                           `yaml:"name"`
+		ID                      string                           `yaml:"id"`
+		Match                   MatchConfig                      `yaml:"match"`
+		Middleware              []string                         `yaml:"middleware"`
+		Middlewares             []string                         `yaml:"middlewares"`
+		Backend                 string                           `yaml:"backend"`
+		StripPrefix             string                           `yaml:"strip_prefix"`
+		Timeout                 timeDuration                     `yaml:"timeout"`
+		MaxBodyBytes            int64                            `yaml:"max_body_bytes"`
+		Rewrite                 RewriteRule                      `yaml:"rewrite"`
+		AddRequestHeaders       map[string]string                `yaml:"add_request_headers"`
+		PropagateClientIdentity *ClientIdentityPropagationConfig `yaml:"propagate_client_identity"`
 	}
 
 	var raw rawRoute
@@ -300,6 +301,7 @@ func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.MaxBodyBytes = raw.MaxBodyBytes
 	c.Rewrite = raw.Rewrite
 	c.AddRequestHeaders = raw.AddRequestHeaders
+	c.PropagateClientIdentity = raw.PropagateClientIdentity
 
 	return nil
 }
@@ -331,17 +333,18 @@ func (c *MatchConfig) UnmarshalYAML(node *yaml.Node) error {
 
 func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawBackend struct {
-		Name             string                 `yaml:"name"`
-		Protocol         string                 `yaml:"protocol"`
-		Strategy         string                 `yaml:"strategy"`
-		HealthCheck      *HealthCheckConfig     `yaml:"health_check"`
-		Healthcheck      *HealthCheckConfig     `yaml:"healthcheck"`
-		OutlierDetection OutlierDetectionConfig `yaml:"outlier_detection"`
-		CircuitBreaker   CircuitBreakerConfig   `yaml:"circuit_breaker"`
-		Retry            RetryConfig            `yaml:"retry"`
-		TLS              BackendTLSConfig       `yaml:"tls"`
-		Bulkhead         BulkheadConfig         `yaml:"bulkhead"`
-		Instances        []InstanceConfig       `yaml:"instances"`
+		Name                    string                          `yaml:"name"`
+		Protocol                string                          `yaml:"protocol"`
+		Strategy                string                          `yaml:"strategy"`
+		HealthCheck             *HealthCheckConfig              `yaml:"health_check"`
+		Healthcheck             *HealthCheckConfig              `yaml:"healthcheck"`
+		OutlierDetection        OutlierDetectionConfig          `yaml:"outlier_detection"`
+		CircuitBreaker          CircuitBreakerConfig            `yaml:"circuit_breaker"`
+		Retry                   RetryConfig                     `yaml:"retry"`
+		TLS                     BackendTLSConfig                `yaml:"tls"`
+		PropagateClientIdentity ClientIdentityPropagationConfig `yaml:"propagate_client_identity"`
+		Bulkhead                BulkheadConfig                  `yaml:"bulkhead"`
+		Instances               []InstanceConfig                `yaml:"instances"`
 	}
 
 	var raw rawBackend
@@ -361,6 +364,7 @@ func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.CircuitBreaker = raw.CircuitBreaker
 	c.Retry = raw.Retry
 	c.TLS = raw.TLS
+	c.PropagateClientIdentity = raw.PropagateClientIdentity
 	c.Bulkhead = raw.Bulkhead
 	c.Instances = raw.Instances
 
