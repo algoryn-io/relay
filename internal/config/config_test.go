@@ -155,6 +155,10 @@ middleware:
   - name: external-authz
     type: ext_authz
     config:
+      authz_method: POST
+      authz_body: metadata
+      authz_max_body_bytes: 4096
+      authz_content_type: application/vnd.relay.authz+json
       fail_open: true
       acknowledge_ext_authz_fail_open: true
 `)
@@ -168,6 +172,11 @@ middleware:
 	}
 	if !cfg.Middleware[1].Config.AcknowledgeExtAuthzFailOpen {
 		t.Fatal("acknowledge_ext_authz_fail_open was not decoded")
+	}
+	authz := cfg.Middleware[1].Config
+	if authz.AuthzMethod != "POST" || authz.AuthzBody != "metadata" ||
+		authz.AuthzMaxBodyBytes != 4096 || authz.AuthzContentType != "application/vnd.relay.authz+json" {
+		t.Fatalf("authz request contract was not decoded: %+v", authz)
 	}
 }
 

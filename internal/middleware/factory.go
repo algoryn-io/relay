@@ -154,6 +154,10 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 		client, closer := newOwnedHTTPClient(timeout)
 		mw, err := NewExtAuthz(ExtAuthzConfig{
 			URL:               def.Config.AuthzURL,
+			Method:            def.Config.AuthzMethod,
+			Body:              ExtAuthzBodyMode(def.Config.AuthzBody),
+			MaxBodyBytes:      def.Config.AuthzMaxBodyBytes,
+			ContentType:       def.Config.AuthzContentType,
 			ForwardHeaders:    def.Config.AuthzForwardHeaders,
 			CopyHeaders:       def.Config.AuthzCopyHeaders,
 			Timeout:           def.Config.AuthzTimeout,

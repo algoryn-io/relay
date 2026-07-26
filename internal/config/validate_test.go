@@ -462,6 +462,50 @@ func TestValidateExtAuthzFailOpenRequiresSeparateAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestValidateExtAuthzRequestContract(t *testing.T) {
+	t.Parallel()
+
+	valid := validConfig()
+	valid.Middleware = []MiddlewareConfig{{
+		Name: "authz",
+		Type: "ext_authz",
+		Config: MiddlewareSettingsConfig{
+			AuthzURL:          "https://authz.example.com/check",
+			AuthzMethod:       "POST",
+			AuthzBody:         "metadata",
+			AuthzMaxBodyBytes: 4096,
+			AuthzContentType:  "application/vnd.relay.authz+json",
+		},
+	}}
+	valid.Routes[0].Middleware = []string{"authz"}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate() valid request contract error = %v", err)
+	}
+
+	tests := []struct {
+		name string
+		edit func(*MiddlewareSettingsConfig)
+		want string
+	}{
+		{name: "method", edit: func(c *MiddlewareSettingsConfig) { c.AuthzMethod = "DELETE" }, want: "authz_method: must be GET, POST, or HEAD"},
+		{name: "body", edit: func(c *MiddlewareSettingsConfig) { c.AuthzBody = "raw" }, want: "authz_body: must be none, original, or metadata"},
+		{name: "body method", edit: func(c *MiddlewareSettingsConfig) { c.AuthzMethod = "HEAD" }, want: "requires authz_method POST"},
+		{name: "limit", edit: func(c *MiddlewareSettingsConfig) { c.AuthzMaxBodyBytes = -1 }, want: "authz_max_body_bytes: must be between"},
+		{name: "content type", edit: func(c *MiddlewareSettingsConfig) { c.AuthzContentType = "text/plain" }, want: "metadata requires application/json or +json"},
+		{name: "header", edit: func(c *MiddlewareSettingsConfig) { c.AuthzForwardHeaders = []string{"bad\nname"} }, want: "forward_headers: invalid header name"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			cfgValue := *valid
+			cfg := &cfgValue
+			cfg.Middleware = append([]MiddlewareConfig(nil), valid.Middleware...)
+			tt.edit(&cfg.Middleware[0].Config)
+			assertValidationErrorContains(t, cfg.Validate(), tt.want)
+		})
+	}
+}
+
 func TestValidateAPIKeyQueryRequiresSeparateAcknowledgement(t *testing.T) {
 	t.Parallel()
 

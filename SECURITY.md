@@ -44,6 +44,11 @@ This decision can be revisited if a concrete, non-overlapping ruleset is needed.
   inbound requests. Add any app-specific identity headers your backends trust to
   `listener.strip_request_headers`. When using `ext_authz` `copy_headers`, those
   are stripped from the inbound request before the authorizer's values are applied.
+- **External authorization data**: `ext_authz` sends inbound headers only through
+  the explicit `forward_headers` allowlist, including in metadata mode. Avoid
+  allowlisting `Authorization`, cookies, or API-key headers unless required.
+  Original-body mode buffers only the configured maximum, never reads streaming
+  or upgrade/WebSocket bodies, and replays accepted bodies unchanged upstream.
 - **Response cache**: the `cache` middleware never stores or serves a response to
   an authenticated request (`Authorization`/`Cookie`) unless the origin marks it
   `public`/`s-maxage`, so one user's data is never returned to another. Still,

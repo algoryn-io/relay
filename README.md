@@ -365,6 +365,14 @@ configuration; it does not change runtime lookup behavior.
 - Delegates the allow/deny decision to an external HTTP service (Envoy
   `ext_authz` style). The probe forwards method, URI, host, client IP and any
   `forward_headers`
+- Uses `GET` with no body by default; `authz_method` accepts `GET`, `POST`, or
+  `HEAD`, while `authz_body: original|metadata` requires `POST`
+- `original` buffers at most `authz_max_body_bytes` (1 MiB by default) and
+  safely replays the body upstream. Streaming and WebSocket bodies are never
+  read. `metadata` sends structured request, selected-header, request-ID, and
+  verified mTLS identity data
+- Only headers explicitly listed in `forward_headers` are sent; do not allowlist
+  credentials unless the authorizer requires them
 - `2xx` allows (optionally grafting `copy_headers` from the response onto the
   upstream request); `401`/`403` deny; other/errors follow `fail_open`
 - `fail_open: true` requires
@@ -376,6 +384,9 @@ configuration; it does not change runtime lookup behavior.
   type: ext_authz
   config:
     authz_url: http://opa:8181/v1/data/http/authz
+    allow_insecure_http: true # trusted internal network only; prefer HTTPS
+    authz_method: POST
+    authz_body: metadata
     forward_headers: [Authorization]
     copy_headers: [X-User-Id]
     fail_open: false
