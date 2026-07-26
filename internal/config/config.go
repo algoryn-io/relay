@@ -75,10 +75,13 @@ type HTTPSConfig struct {
 }
 
 type TLSConfig struct {
-	Mode     string   `yaml:"mode"`
-	Domains  []string `yaml:"domains"`
-	CertFile string   `yaml:"cert_file"`
-	KeyFile  string   `yaml:"key_file"`
+	Mode    string   `yaml:"mode"`
+	Domains []string `yaml:"domains"`
+	// ACMEEmail identifies the ACME account and is also part of the cache
+	// namespace, preventing unrelated accounts from sharing credentials.
+	ACMEEmail string `yaml:"acme_email"`
+	CertFile  string `yaml:"cert_file"`
+	KeyFile   string `yaml:"key_file"`
 	// Certificates adds SNI-specific certificate/key pairs in manual mode.
 	// Hosts may be exact DNS names or a single left-most wildcard
 	// (for example, "*.example.com"). CertFile/KeyFile remain the default pair.
@@ -86,6 +89,15 @@ type TLSConfig struct {
 	// ACMECacheDir is the writable, persistent cache directory used by TLS
 	// mode "auto". It must be mounted in container deployments.
 	ACMECacheDir string `yaml:"acme_cache_dir"`
+	// ACMECache configures either a local filesystem cache or a shared Redis
+	// cache with distributed issuance leases.
+	ACMECache ACMECacheConfig `yaml:"acme_cache"`
+	// Replicas declares how many Relay instances share this TLS configuration.
+	// Values greater than one require a distributed Redis ACME cache.
+	Replicas int `yaml:"replicas"`
+	// Distributed acknowledges that ACME coordination is required across
+	// replicas. It is accepted only with the Redis cache backend.
+	Distributed bool `yaml:"distributed"`
 	// MinVersion is the minimum accepted TLS version: "1.2" (default) or "1.3".
 	MinVersion string `yaml:"min_version"`
 	// CipherSuites optionally selects supported TLS 1.2 cipher suites by IANA
@@ -98,6 +110,28 @@ type TLSConfig struct {
 	// "require" (default) verifies a cert is presented and valid; "verify_if_given"
 	// verifies only when one is presented; "request" asks but does not enforce.
 	ClientAuth string `yaml:"client_auth"`
+}
+
+type ACMECacheConfig struct {
+	// Backend is "filesystem" (single replica) or "redis" (distributed).
+	Backend string `yaml:"backend"`
+	// Directory is the persistent filesystem cache location.
+	Directory string `yaml:"directory"`
+	// RedisURL may be supplied directly for development. Prefer RedisURLEnv or
+	// RedisURLFile in production; env wins over file, which wins over this value.
+	RedisURL     string `yaml:"redis_url"`
+	RedisURLEnv  string `yaml:"redis_url_env"`
+	RedisURLFile string `yaml:"redis_url_file"`
+	// Namespace is an optional operator-controlled prefix. Relay appends a
+	// deterministic account/domain scope so unrelated ACME state cannot collide.
+	Namespace string `yaml:"namespace"`
+	// OperationTimeout bounds individual Redis commands.
+	OperationTimeout time.Duration `yaml:"operation_timeout"`
+	// LockWaitTimeout bounds waiting for another replica to finish issuance.
+	LockWaitTimeout time.Duration `yaml:"lock_wait_timeout"`
+	// LockTTL is the lease lifetime; LockRenewInterval refreshes an owned lease.
+	LockTTL           time.Duration `yaml:"lock_ttl"`
+	LockRenewInterval time.Duration `yaml:"lock_renew_interval"`
 }
 
 type TLSCertificateConfig struct {

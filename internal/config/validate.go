@@ -159,14 +159,12 @@ func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {
 		if len(tls.Domains) == 0 {
 			errs.Addf("%s.domains: at least one domain is required for mode auto", prefix)
 		}
-		if strings.TrimSpace(tls.ACMECacheDir) == "" {
-			errs.Addf("%s.acme_cache_dir: required for mode auto", prefix)
-		}
 		for i, d := range tls.Domains {
 			if strings.TrimSpace(d) == "" {
 				errs.Addf("%s.domains[%d]: must not be empty", prefix, i)
 			}
 		}
+		validateACMECache(prefix, tls, errs)
 	default:
 		errs.Addf("%s.mode: must be one of manual, auto", prefix)
 	}
@@ -197,6 +195,90 @@ func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {
 	}
 	if strings.TrimSpace(tls.MinVersion) == "1.3" && len(tls.CipherSuites) != 0 {
 		errs.Addf("%s.cipher_suites: cannot be configured when min_version is 1.3", prefix)
+	}
+}
+
+func validateACMECache(prefix string, tls TLSConfig, errs *ValidationErrors) {
+	cache := tls.ACMECache
+	if namespace := strings.TrimSpace(cache.Namespace); namespace != "" {
+		valid := len(namespace) <= 64
+		for _, r := range namespace {
+			if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
+				!(r >= '0' && r <= '9') && r != '.' && r != '_' && r != '-' {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			errs.Addf("%s.acme_cache.namespace: must be at most 64 characters using only letters, digits, dot, underscore, or hyphen", prefix)
+		}
+	}
+	backend := strings.ToLower(strings.TrimSpace(cache.Backend))
+	legacyDir := strings.TrimSpace(tls.ACMECacheDir)
+	directory := strings.TrimSpace(cache.Directory)
+	if backend == "" {
+		if legacyDir != "" || directory != "" {
+			backend = "filesystem"
+		}
+	}
+	switch backend {
+	case "filesystem":
+		if directory == "" && legacyDir == "" {
+			errs.Addf("%s.acme_cache.directory: required for filesystem backend", prefix)
+		}
+		if strings.TrimSpace(cache.RedisURL) != "" || strings.TrimSpace(cache.RedisURLEnv) != "" || strings.TrimSpace(cache.RedisURLFile) != "" {
+			errs.Addf("%s.acme_cache: redis URL fields are invalid for filesystem backend", prefix)
+		}
+		if tls.Distributed {
+			errs.Addf("%s.distributed: requires acme_cache.backend redis", prefix)
+		}
+		if tls.Replicas > 1 {
+			errs.Addf("%s.replicas: multiple replicas require distributed: true and acme_cache.backend redis", prefix)
+		}
+	case "redis":
+		if strings.TrimSpace(cache.RedisURL) == "" && strings.TrimSpace(cache.RedisURLEnv) == "" && strings.TrimSpace(cache.RedisURLFile) == "" {
+			errs.Addf("%s.acme_cache: redis_url, redis_url_env, or redis_url_file is required for redis backend", prefix)
+		}
+		if rawURL := strings.TrimSpace(cache.RedisURL); rawURL != "" {
+			parsed, err := url.Parse(rawURL)
+			if err != nil || (parsed.Scheme != "redis" && parsed.Scheme != "rediss") || parsed.Host == "" {
+				errs.Addf("%s.acme_cache.redis_url: must be a valid redis:// or rediss:// URL", prefix)
+			}
+		}
+		if directory != "" || legacyDir != "" {
+			errs.Addf("%s.acme_cache: filesystem directory is invalid for redis backend", prefix)
+		}
+		if !tls.Distributed {
+			errs.Addf("%s.distributed: must be true for acme_cache.backend redis", prefix)
+		}
+	default:
+		errs.Addf("%s.acme_cache.backend: must be one of filesystem, redis", prefix)
+	}
+	if tls.Replicas < 0 {
+		errs.Addf("%s.replicas: must not be negative", prefix)
+	}
+	if cache.OperationTimeout < 0 {
+		errs.Addf("%s.acme_cache.operation_timeout: must be greater than 0", prefix)
+	}
+	if cache.LockWaitTimeout < 0 {
+		errs.Addf("%s.acme_cache.lock_wait_timeout: must be greater than 0", prefix)
+	}
+	if cache.LockTTL < 0 {
+		errs.Addf("%s.acme_cache.lock_ttl: must be greater than 0", prefix)
+	}
+	if cache.LockRenewInterval < 0 {
+		errs.Addf("%s.acme_cache.lock_renew_interval: must be greater than 0", prefix)
+	}
+	lockTTL := cache.LockTTL
+	if lockTTL == 0 {
+		lockTTL = 2 * time.Minute
+	}
+	renew := cache.LockRenewInterval
+	if renew == 0 {
+		renew = lockTTL / 3
+	}
+	if renew >= lockTTL {
+		errs.Addf("%s.acme_cache.lock_renew_interval: must be less than lock_ttl", prefix)
 	}
 }
 

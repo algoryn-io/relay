@@ -4,7 +4,14 @@ listener:
     tls:
       mode: auto
       domains: [relay.invalid]
-      acme_cache_dir: /var/lib/relay/acme
+      replicas: 1
+      acme_cache:
+        backend: filesystem
+        directory: /var/lib/relay/acme
+  timeouts:
+    read: 5s
+    write: 5s
+    idle: 15s
 
 routes: []
 backends: []

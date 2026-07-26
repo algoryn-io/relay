@@ -162,6 +162,8 @@ type Server struct {
 	httpServer   *http.Server
 	httpsServer  *http.Server // nil when HTTPS is not configured
 	tlsHandle    *TLSConfigHandle
+	tlsResource  io.Closer
+	tlsResources []io.Closer
 	httpPort     int
 	httpsPort    int
 	tlsMode      string
@@ -278,11 +280,18 @@ func New(
 	}
 
 	if httpsPort > 0 {
-		tlsCfg, handle, err := buildTLSConfig(cfg.Listener.HTTPS.TLS)
+		prepared, err := prepareTLSBundle(cfg.Listener.HTTPS.TLS)
 		if err != nil {
 			return nil, fmt.Errorf("tls config: %w", err)
 		}
+		handle := newTLSConfigHandle(prepared.config)
+		tlsCfg := prepared.config.Clone()
+		tlsCfg.GetConfigForClient = handle.GetConfigForClient
 		s.tlsHandle = handle
+		s.tlsResource = prepared.closer
+		if prepared.closer != nil {
+			s.tlsResources = append(s.tlsResources, prepared.closer)
+		}
 		s.httpsServer = &http.Server{
 			Addr:              fmt.Sprintf(":%d", httpsPort),
 			Handler:           s,
@@ -329,10 +338,10 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 		return fmt.Errorf("hot reload cannot change TLS mode from %q to %q; restart Relay", s.tlsMode, mode)
 	}
 
-	var preparedTLS *tls.Config
+	var preparedTLS *tlsPreparation
 	if s.tlsHandle != nil {
 		var err error
-		preparedTLS, err = prepareTLSConfig(cfg.Listener.HTTPS.TLS)
+		preparedTLS, err = prepareTLSBundle(cfg.Listener.HTTPS.TLS)
 		if err != nil {
 			return fmt.Errorf("prepare reloaded TLS config: %w", err)
 		}
@@ -340,13 +349,29 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 
 	newState, err := buildStateShared(cfg, rt, s.logger, s.tracing, s.metrics, s.prometheus)
 	if err != nil {
+		if preparedTLS != nil && preparedTLS.closer != nil {
+			_ = preparedTLS.closer.Close()
+		}
 		return fmt.Errorf("build reloaded state: %w", err)
 	}
 	newState.onClose = func() { s.removeState(newState) }
 	s.states[newState] = struct{}{}
 
 	if preparedTLS != nil {
-		s.tlsHandle.Store(preparedTLS)
+		oldResource := s.tlsResource
+		s.tlsHandle.Store(preparedTLS.config)
+		s.tlsResource = preparedTLS.closer
+		if preparedTLS.closer != nil {
+			s.tlsResources = append(s.tlsResources, preparedTLS.closer)
+		}
+		if oldResource != nil {
+			go func(resource io.Closer, delay time.Duration) {
+				timer := time.NewTimer(delay)
+				defer timer.Stop()
+				<-timer.C
+				_ = resource.Close()
+			}(oldResource, s.drainTimeout)
+		}
 	}
 	old := s.state.Swap(newState)
 	old.retire(s.drainTimeout)
@@ -463,6 +488,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 finished:
+	s.lifecycleMu.Lock()
+	tlsResources := append([]io.Closer(nil), s.tlsResources...)
+	s.tlsResources = nil
+	s.tlsResource = nil
+	s.lifecycleMu.Unlock()
+	for _, resource := range tlsResources {
+		_ = resource.Close()
+	}
 	close(s.shutdownDone)
 	return firstErr
 }
@@ -742,17 +775,30 @@ func buildStateShared(
 // Reload prepares a complete replacement before publishing it, so certificates,
 // client trust, authentication policy and protocol parameters change together.
 func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *TLSConfigHandle, error) {
-	prepared, err := prepareTLSConfig(cfg)
+	prepared, err := prepareTLSBundle(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	handle := newTLSConfigHandle(prepared)
-	listenerCfg := prepared.Clone()
+	handle := newTLSConfigHandle(prepared.config)
+	listenerCfg := prepared.config.Clone()
 	listenerCfg.GetConfigForClient = handle.GetConfigForClient
 	return listenerCfg, handle, nil
 }
 
 func prepareTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
+	prepared, err := prepareTLSBundle(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return prepared.config, nil
+}
+
+type tlsPreparation struct {
+	config *tls.Config
+	closer io.Closer
+}
+
+func prepareTLSBundle(cfg config.TLSConfig) (*tlsPreparation, error) {
 	switch normalizedTLSMode(cfg.Mode) {
 	case "manual":
 		certificates, err := loadSNICertificates(cfg)
@@ -766,23 +812,49 @@ func prepareTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
 		if err := applyTLSHardening(tlsCfg, cfg); err != nil {
 			return nil, err
 		}
-		return tlsCfg, nil
+		return &tlsPreparation{config: tlsCfg}, nil
 
 	case "auto":
-		cacheDir := strings.TrimSpace(cfg.ACMECacheDir)
-		if cacheDir == "" {
-			return nil, fmt.Errorf("acme_cache_dir is required when tls.mode is auto")
+		var cache autocert.Cache
+		var closer io.Closer
+		backend := strings.ToLower(strings.TrimSpace(cfg.ACMECache.Backend))
+		if backend == "" && (strings.TrimSpace(cfg.ACMECache.Directory) != "" || strings.TrimSpace(cfg.ACMECacheDir) != "") {
+			backend = "filesystem"
+		}
+		switch backend {
+		case "filesystem":
+			cacheDir := strings.TrimSpace(cfg.ACMECache.Directory)
+			if cacheDir == "" {
+				cacheDir = strings.TrimSpace(cfg.ACMECacheDir)
+			}
+			if cacheDir == "" {
+				return nil, fmt.Errorf("acme_cache.directory is required for filesystem ACME cache")
+			}
+			cache = autocert.DirCache(cacheDir)
+		case "redis":
+			redisCache, err := newRedisACMECache(cfg)
+			if err != nil {
+				return nil, err
+			}
+			cache = redisCache
+			closer = redisCache
+		default:
+			return nil, fmt.Errorf("acme_cache.backend must be filesystem or redis")
 		}
 		m := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
+			Email:      strings.TrimSpace(cfg.ACMEEmail),
 			HostPolicy: autocert.HostWhitelist(cfg.Domains...),
-			Cache:      autocert.DirCache(cacheDir),
+			Cache:      cache,
 		}
 		tlsCfg := m.TLSConfig()
 		if err := applyTLSHardening(tlsCfg, cfg); err != nil {
+			if closer != nil {
+				_ = closer.Close()
+			}
 			return nil, err
 		}
-		return tlsCfg, nil
+		return &tlsPreparation{config: tlsCfg, closer: closer}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown TLS mode %q", cfg.Mode)

@@ -60,7 +60,7 @@ When both are set for the same secret, the `*_env` source wins.
 | --- | --- | --- |
 | JWT HS256 secret | `secret_env` | `secret_file` |
 | OAuth2 client secret | `client_secret_env` | `client_secret_file` |
-| Redis URL | `redis_url_env` | `redis_url_file` |
+| Redis URL (rate limit or ACME cache) | `redis_url_env` | `redis_url_file` |
 | API keys | `keys_env` | `keys_file` |
 | Admin bearer token | `token_env` | `token_file` |
 
@@ -108,8 +108,12 @@ port is taken from `https.port` (omitted for 443), including bracket-safe IPv6.
 | `mode` | string | `manual` | `manual` (cert/key files) or `auto` (ACME/Let's Encrypt). |
 | `cert_file`, `key_file` | path | — | Default PEM cert/key for `mode: manual`; used for clients without SNI and for SNI names covered by its SAN (hot-reloaded). |
 | `certificates` | []object | `[]` | Additional manual-mode SNI certificates. Each entry has `hosts`, `cert_file`, and `key_file`. |
-| `domains` | []string | — | Domains for `mode: auto`. |
-| `acme_cache_dir` | path | — | Required writable, persistent cache for `mode: auto` (mount a volume in containers). |
+| `domains` | []string | — | Domains for `mode: auto`; included in the Redis cache namespace. |
+| `acme_email` | string | — | ACME account email; included in the Redis cache namespace. |
+| `acme_cache` | object | — | ACME cache backend. Use `filesystem` for one replica or `redis` for shared cache and issuance coordination. |
+| `acme_cache_dir` | path | — | Legacy shorthand for `acme_cache: {backend: filesystem, directory: ...}`. |
+| `replicas` | int | `1` | Declared replicas sharing this TLS config. Values above 1 require Redis coordination. |
+| `distributed` | bool | `false` | Required acknowledgement when `acme_cache.backend: redis`; multi-replica filesystem configs are rejected. |
 | `min_version` | string | `1.2` | `1.2` (hardened cipher list) or `1.3`. |
 | `cipher_suites` | []string | hardened TLS 1.2 set | Optional IANA names from Relay's supported AEAD/PFS TLS 1.2 suites. Not valid with `min_version: "1.3"`. |
 | `client_ca_file` | path | — | Enables inbound mTLS: clients must present a cert signed by this CA. |
@@ -150,6 +154,47 @@ the new configuration only after every file and parameter validates; on failure
 the previous TLS and request-routing state remains active. Listener HTTP/HTTPS
 ports and switching between `manual` and `auto` are restart-only changes and a
 reload that attempts either is rejected explicitly.
+
+For one replica, the filesystem backend remains supported:
+
+```yaml
+mode: auto
+domains: [api.example.com]
+acme_email: ops@example.com
+replicas: 1
+acme_cache:
+  backend: filesystem
+  directory: /var/lib/relay/acme
+```
+
+For multiple replicas, use Redis. Relay stores `autocert.Cache` data in a
+namespace derived from the normalized domain set and ACME account, and uses a
+renewable owner-token lease to ensure only one replica issues a missing
+certificate. Redis errors fail closed: Relay does not fall back to independent
+issuance.
+
+```yaml
+mode: auto
+domains: [api.example.com]
+acme_email: ops@example.com
+replicas: 3
+distributed: true
+acme_cache:
+  backend: redis
+  redis_url_env: RELAY_ACME_REDIS_URL
+  # Or redis_url_file: /run/secrets/acme-redis-url
+  namespace: production
+  operation_timeout: 500ms
+  lock_wait_timeout: 3m
+  lock_ttl: 2m
+  lock_renew_interval: 30s
+```
+
+`operation_timeout` defaults to `500ms`, `lock_wait_timeout` to `3m`, and
+`lock_ttl` to `2m`; renewal defaults to one third of the TTL and must remain
+below it. Lease release and publication are token-checked atomically in Redis,
+so an expired owner cannot delete another replica's lease or publish stale
+certificate data.
 
 ### `listener.admin`
 

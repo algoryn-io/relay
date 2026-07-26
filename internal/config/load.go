@@ -216,6 +216,36 @@ func (c *TimeoutsConfig) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
+func (c *ACMECacheConfig) UnmarshalYAML(node *yaml.Node) error {
+	type rawACMECache struct {
+		Backend           string       `yaml:"backend"`
+		Directory         string       `yaml:"directory"`
+		RedisURL          string       `yaml:"redis_url"`
+		RedisURLEnv       string       `yaml:"redis_url_env"`
+		RedisURLFile      string       `yaml:"redis_url_file"`
+		Namespace         string       `yaml:"namespace"`
+		OperationTimeout  timeDuration `yaml:"operation_timeout"`
+		LockWaitTimeout   timeDuration `yaml:"lock_wait_timeout"`
+		LockTTL           timeDuration `yaml:"lock_ttl"`
+		LockRenewInterval timeDuration `yaml:"lock_renew_interval"`
+	}
+	var raw rawACMECache
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	c.Backend = raw.Backend
+	c.Directory = raw.Directory
+	c.RedisURL = raw.RedisURL
+	c.RedisURLEnv = raw.RedisURLEnv
+	c.RedisURLFile = raw.RedisURLFile
+	c.Namespace = raw.Namespace
+	c.OperationTimeout = raw.OperationTimeout.Duration()
+	c.LockWaitTimeout = raw.LockWaitTimeout.Duration()
+	c.LockTTL = raw.LockTTL.Duration()
+	c.LockRenewInterval = raw.LockRenewInterval.Duration()
+	return nil
+}
+
 func (c *TracingConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawTracing struct {
 		Enabled     bool     `yaml:"enabled"`
