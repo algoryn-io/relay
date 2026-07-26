@@ -60,7 +60,7 @@ When both are set for the same secret, the `*_env` source wins.
 | --- | --- | --- |
 | JWT HS256 secret | `secret_env` | `secret_file` |
 | OAuth2 client secret | `client_secret_env` | `client_secret_file` |
-| Redis URL (rate limit or ACME cache) | `redis_url_env` | `redis_url_file` |
+| Redis URL (rate limit, response cache, or ACME cache) | `redis_url_env` | `redis_url_file` |
 | API keys | `keys_env` | `keys_file` |
 | Admin bearer token | `token_env` | `token_file` |
 | Health endpoint bearer token | `token_env` | `token_file` |
@@ -567,12 +567,22 @@ keys, use a narrowly scoped configuration and explicitly acknowledge the risk:
 | `methods` | `[GET, HEAD]` | Cacheable request methods. |
 | `cacheable_status` | `[200]` | Cacheable response status codes. |
 | `max_object_bytes` | `1048576` | Max cacheable body; larger responses stream uncached. |
-| `max_entries` | `1000` | LRU capacity. |
+| `max_entries` | `1000` | LRU capacity for `store: memory`. Ignored by Redis (TTL governs retention). |
 | `vary` | `[]` | Request headers folded into the cache key. |
+| `store` | `memory` | `memory` (per-instance LRU) or `redis` (shared across replicas). |
+| `redis_url` / `redis_url_env` / `redis_url_file` | — | Redis connection URL (`redis://`, `rediss://`) when `store: redis`. |
+| `namespace` | `relay:cache:v1` | Redis key prefix (maximum 64 safe characters). |
+| `operation_timeout` | `100ms` | Bound for a single Redis cache command. |
+| `fail_open` | `false` | When `store: redis`, treat lookup/invalidation errors as a miss/bypass (`true`) or return `503` (`false`). Write failures never fail the origin response. Prefer `fail_open: true` when the cache is an optimization. |
 
 Honors request/response `Cache-Control` (`no-store`, `no-cache`, `private`,
 `max-age`/`s-maxage`), skips `Set-Cookie` responses, honors the origin's `Vary`,
-and adds `X-Cache` / `Age`.
+and adds `X-Cache` / `Age`. Redis keys are SHA-256 digests under `namespace`, so
+logical keys stay bounded and do not embed raw header values.
+
+`PURGE` invalidates the cached `GET`/`HEAD` variants for the request URL (including
+configured `vary` headers) and returns `200` with `X-Cache: PURGED` without
+forwarding to the origin.
 
 **Authenticated requests are safe by default.** A request carrying `Authorization`
 or `Cookie` is only cached when the origin explicitly marks the response shareable
@@ -581,6 +591,19 @@ non-`public` cached entry is never served to an authenticated request. This
 prevents one user's response from being returned to another (RFC 7234 §3.2). To
 cache per-user responses intentionally, fold the identity into the key with
 `vary: [Authorization]`.
+
+```yaml
+- name: page-cache
+  type: cache
+  config:
+    store: redis
+    redis_url_env: RELAY_REDIS_URL
+    namespace: pages:v1
+    ttl: 30s
+    max_object_bytes: 1048576
+    vary: [Accept-Encoding]
+    fail_open: true
+```
 
 ### `oauth2` (RFC 7662 token introspection)
 

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -38,13 +39,26 @@ type CacheConfig struct {
 	// MaxObjectBytes caps the size of a cacheable response body. Larger responses
 	// stream through uncached. Defaults to 1 MB.
 	MaxObjectBytes int64
-	// MaxEntries bounds the number of cached responses (LRU eviction).
+	// MaxEntries bounds the number of cached responses for the memory store
+	// (LRU eviction). Ignored by the Redis store (TTL governs retention).
 	MaxEntries int
 	// Vary lists request header names whose values are folded into the cache key,
 	// so responses that differ by those headers are cached separately.
 	Vary []string
-	// Store overrides the backing store (tests). Defaults to an in-memory LRU.
-	Store cacheStore
+	// Store selects the backend: "memory" (default) or "redis".
+	Store string
+	// RedisURL is the Redis connection URL when Store == "redis".
+	RedisURL string
+	// Namespace prefixes Redis keys. Defaults to relay:cache:v1.
+	Namespace string
+	// OperationTimeout bounds a single Redis command. Defaults to 100ms.
+	OperationTimeout time.Duration
+	// FailOpen controls Redis failure behavior on lookup/invalidation:
+	// true treats errors as a miss/bypass; false returns 503. Set errors never
+	// fail the already-written origin response. Defaults to false.
+	FailOpen bool
+	// StoreBackend overrides the backing store (tests). Defaults from Store.
+	StoreBackend cacheStore
 	// Now overrides the clock (tests).
 	Now func() time.Time
 }
@@ -56,6 +70,7 @@ type cacheMiddleware struct {
 	maxObjectBytes int64
 	vary           []string
 	store          cacheStore
+	failOpen       bool
 	now            func() time.Time
 }
 
@@ -105,9 +120,30 @@ func NewCache(cfg CacheConfig) (Middleware, *cacheMiddleware, error) {
 	}
 	sort.Strings(vary)
 
-	store := cfg.Store
+	store := cfg.StoreBackend
 	if store == nil {
-		store = newCacheMemoryStore(cfg.MaxEntries, now)
+		switch strings.ToLower(strings.TrimSpace(cfg.Store)) {
+		case "redis":
+			if strings.TrimSpace(cfg.RedisURL) == "" {
+				return nil, nil, fmt.Errorf("redis_url is required when store is redis")
+			}
+			namespace := strings.TrimSpace(cfg.Namespace)
+			if namespace == "" {
+				namespace = defaultCacheRedisNamespace
+			}
+			if err := validateCacheNamespace(namespace); err != nil {
+				return nil, nil, err
+			}
+			rs, err := newCacheRedisStore(cfg.RedisURL, namespace, cfg.OperationTimeout, maxObj, now)
+			if err != nil {
+				return nil, nil, fmt.Errorf("create redis cache store: %w", err)
+			}
+			store = rs
+		case "", "memory":
+			store = newCacheMemoryStore(cfg.MaxEntries, now)
+		default:
+			return nil, nil, fmt.Errorf("unsupported cache store %q", cfg.Store)
+		}
 	}
 
 	m := &cacheMiddleware{
@@ -117,6 +153,7 @@ func NewCache(cfg CacheConfig) (Middleware, *cacheMiddleware, error) {
 		maxObjectBytes: maxObj,
 		vary:           vary,
 		store:          store,
+		failOpen:       cfg.FailOpen,
 		now:            now,
 	}
 	return m.handler, m, nil
@@ -132,6 +169,11 @@ func (m *cacheMiddleware) Close() error {
 
 func (m *cacheMiddleware) handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PURGE" {
+			m.handlePurge(w, r)
+			return
+		}
+
 		if _, ok := m.methods[r.Method]; !ok {
 			w.Header().Set("X-Cache", "BYPASS")
 			next.ServeHTTP(w, r)
@@ -151,7 +193,14 @@ func (m *cacheMiddleware) handler(next http.Handler) http.Handler {
 		// A request "no-cache" forces revalidation: skip the read but still allow
 		// the fresh response to be stored.
 		if _, noCache := reqCC["no-cache"]; !noCache {
-			if entry, ok := m.store.Get(key); ok {
+			entry, err := m.store.Get(key)
+			if err != nil {
+				if !m.failOpen {
+					http.Error(w, "cache unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				// Fail-open: treat Redis errors as a miss and continue to origin.
+			} else if entry != nil {
 				// A shared cache must not reuse a stored response for an
 				// authenticated request unless the origin marked it shareable
 				// (public/s-maxage). This prevents returning one user's response to
@@ -171,9 +220,34 @@ func (m *cacheMiddleware) handler(next http.Handler) http.Handler {
 		next.ServeHTTP(cw, r)
 
 		if resp := m.buildEntry(cw, authed); resp != nil {
-			m.store.Set(key, resp)
+			// Set failures never fail the already-written origin response.
+			_ = m.store.Set(key, resp)
 		}
 	})
+}
+
+// handlePurge invalidates the cached GET/HEAD variants for the request URL
+// (including configured Vary headers). It does not forward to the origin.
+func (m *cacheMiddleware) handlePurge(w http.ResponseWriter, r *http.Request) {
+	targets := []string{http.MethodGet, http.MethodHead}
+	var firstErr error
+	for _, method := range targets {
+		key := m.cacheKeyWithMethod(r, method)
+		if err := m.store.Delete(key); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if firstErr != nil {
+		if !m.failOpen {
+			http.Error(w, "cache unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("X-Cache", "BYPASS")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.Header().Set("X-Cache", "PURGED")
+	w.WriteHeader(http.StatusOK)
 }
 
 // requestIsAuthenticated reports whether a request carries a credential that can
@@ -184,8 +258,12 @@ func requestIsAuthenticated(r *http.Request) bool {
 }
 
 func (m *cacheMiddleware) cacheKey(r *http.Request) string {
+	return m.cacheKeyWithMethod(r, r.Method)
+}
+
+func (m *cacheMiddleware) cacheKeyWithMethod(r *http.Request, method string) string {
 	var b strings.Builder
-	b.WriteString(r.Method)
+	b.WriteString(method)
 	b.WriteByte('\x00')
 	b.WriteString(strings.ToLower(hostWithoutPort(r.Host)))
 	b.WriteByte('\x00')
@@ -313,7 +391,8 @@ func (m *cacheMiddleware) serve(w http.ResponseWriter, r *http.Request, entry *c
 	dst.Set("X-Cache", "HIT")
 	w.WriteHeader(entry.status)
 	if r.Method != http.MethodHead {
-		_, _ = w.Write(entry.body)
+		// Replays an opaque upstream body with the origin Content-Type; not HTML templating.
+		_, _ = w.Write(entry.body) // #nosec G705
 	}
 }
 

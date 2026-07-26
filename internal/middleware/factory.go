@@ -141,12 +141,17 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitObservers
 		return mw, nil, err
 	case "cache":
 		mw, closer, err := NewCache(CacheConfig{
-			TTL:             def.Config.TTL,
-			Methods:         def.Config.CacheMethods,
-			CacheableStatus: def.Config.CacheableStatus,
-			MaxObjectBytes:  def.Config.MaxObjectBytes,
-			MaxEntries:      def.Config.MaxEntries,
-			Vary:            def.Config.Vary,
+			TTL:              def.Config.TTL,
+			Methods:          def.Config.CacheMethods,
+			CacheableStatus:  def.Config.CacheableStatus,
+			MaxObjectBytes:   def.Config.MaxObjectBytes,
+			MaxEntries:       def.Config.MaxEntries,
+			Vary:             def.Config.Vary,
+			Store:            def.Config.RateLimitStore,
+			RedisURL:         def.Config.RedisURL,
+			Namespace:        def.Config.CacheNamespace,
+			OperationTimeout: def.Config.CacheOperationTimeout,
+			FailOpen:         def.Config.FailOpen,
 		})
 		if err != nil {
 			return nil, nil, err

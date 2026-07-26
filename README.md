@@ -395,20 +395,23 @@ configuration; it does not change runtime lookup behavior.
 ### Response cache (`type: cache`)
 
 - Caches idempotent responses (`GET`/`HEAD` by default) in a bounded in-memory
-  LRU with per-entry TTL
+  LRU or a shared Redis store (`store: redis`) with per-entry TTL
 - Honors request/response `Cache-Control` (`no-store`, `no-cache`, `private`,
   `max-age`/`s-maxage`), skips `Set-Cookie` responses, honors the origin's `Vary`,
   and streams (uncached) bodies larger than `max_object_bytes`
 - **Safe for authenticated routes:** a request with `Authorization`/`Cookie` is
   only cached/served when the response is explicitly `public`/`s-maxage`, so one
   user's response is never returned to another (RFC 7234)
-- Adds `X-Cache: HIT|MISS|BYPASS` and an `Age` header; `vary` folds request
-  headers into the cache key
+- Adds `X-Cache: HIT|MISS|BYPASS|PURGED` and an `Age` header; `vary` folds request
+  headers into the cache key; `PURGE` invalidates matching entries without
+  forwarding to the origin
+- Redis failures follow `fail_open` (`503` by default; set `true` to bypass)
 
 ```yaml
 - name: page-cache
   type: cache
   config:
+    store: memory # or redis
     ttl: 30s
     methods: [GET, HEAD]
     max_object_bytes: 1048576

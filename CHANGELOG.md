@@ -44,6 +44,9 @@ All notable changes to Relay are documented here. The format is based on
   limit did nothing when set in a config file. They are now parsed correctly.
 
 ### Added
+- Distributed response cache (`type: cache`, `store: redis`): shared Redis backend
+  with TTL, Vary-aware keys, object size limits, `PURGE` invalidation, configurable
+  `fail_open` on Redis errors, and the existing in-memory LRU as the default.
 - Observability artifacts: a Grafana dashboard (RED signals plus upstream latency,
   backend health, retries/retry-budget, circuit-breaker state and bulkhead) and
   Prometheus alerting rules (error rate, p99 latency, backend health, open

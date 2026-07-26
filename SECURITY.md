@@ -53,7 +53,9 @@ This decision can be revisited if a concrete, non-overlapping ruleset is needed.
   an authenticated request (`Authorization`/`Cookie`) unless the origin marks it
   `public`/`s-maxage`, so one user's data is never returned to another. Still,
   place `cache` after auth middleware in a route's pipeline and prefer explicit
-  `Cache-Control` on cacheable endpoints.
+  `Cache-Control` on cacheable endpoints. When using `store: redis`, Redis keys
+  are hashed under an operator namespace; restrict who can issue `PURGE` (e.g.
+  via upstream network policy or an auth middleware ahead of cache).
 - **JWT**: prefer RS256 with a JWKS endpoint over `https`, and set `issuer` /
   `audience`. Keep HS256 secrets >= 32 bytes and supply them via env vars.
 - **Admin/metrics**: keep them on the loopback/allowlist or a separate internal

@@ -485,7 +485,8 @@ type MiddlewareSettingsConfig struct {
 	// Key defines an ordered, composable bucket identity. By remains supported
 	// for legacy configurations and is mutually exclusive with key.selectors.
 	RateLimitKey RateLimitKeyConfig `yaml:"key"`
-	// Rate limit store: "memory" (default, in-process) or "redis" (distributed).
+	// RateLimitStore selects the backend for rate_limit and cache middleware:
+	// "memory" (default, in-process) or "redis" (distributed).
 	RateLimitStore string `yaml:"store"`
 	// MemoryMaxBuckets caps the number of in-process rate limit keys.
 	MemoryMaxBuckets int `yaml:"memory_max_buckets"`
@@ -533,6 +534,10 @@ type MiddlewareSettingsConfig struct {
 	MaxObjectBytes  int64         `yaml:"max_object_bytes"`
 	MaxEntries      int           `yaml:"max_entries"`
 	Vary            []string      `yaml:"vary"`
+	// CacheNamespace prefixes Redis keys for the cache middleware.
+	CacheNamespace string `yaml:"namespace"`
+	// CacheOperationTimeout bounds a single Redis cache command.
+	CacheOperationTimeout time.Duration `yaml:"operation_timeout"`
 	// OIDC discovery for jwt middleware: derive jwks_uri from the issuer's
 	// well-known document instead of configuring jwks_url directly.
 	OIDCIssuer string `yaml:"oidc_issuer"`

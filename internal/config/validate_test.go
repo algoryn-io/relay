@@ -664,6 +664,47 @@ func TestValidateCacheInvalidStatus(t *testing.T) {
 	assertValidationErrorContains(t, cfg.Validate(), "cacheable_status[0]: must be a valid HTTP status code")
 }
 
+func TestValidateCacheRedisRequiresURL(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "page-cache",
+			Type: "cache",
+			Config: MiddlewareSettingsConfig{
+				RateLimitStore: "redis",
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"page-cache"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "redis_url, redis_url_env or redis_url_file is required when store is redis")
+
+	cfg.Middleware[0].Config.RedisURL = "redis://localhost:6379"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() redis cache error = %v", err)
+	}
+}
+
+func TestValidateCacheRejectsInvalidStore(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "page-cache",
+			Type: "cache",
+			Config: MiddlewareSettingsConfig{
+				RateLimitStore: "disk",
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"page-cache"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "store: must be one of memory, redis")
+}
+
 func TestValidateJWTOIDCRequiresHTTPS(t *testing.T) {
 	t.Parallel()
 
