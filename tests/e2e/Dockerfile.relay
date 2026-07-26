@@ -1,0 +1,16 @@
+FROM golang:1.25.12-alpine3.23@sha256:cc985ef6f9c3bf9ece7488129c9abe0a150388ccdfa428d886fc709dca0b230a AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/relay ./cmd/relay
+
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
+RUN adduser -D -u 10001 relay
+COPY --from=builder /out/relay /usr/local/bin/relay
+USER 10001
+ENV RELAY_CONFIG=/etc/relay/relay.yaml
+EXPOSE 8088 8443
+HEALTHCHECK --interval=1s --timeout=1s --start-period=2s --retries=20 \
+  CMD wget -qO- http://localhost:8088/_relay/health || exit 1
+ENTRYPOINT ["/usr/local/bin/relay"]

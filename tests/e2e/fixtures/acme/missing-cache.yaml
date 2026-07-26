@@ -1,0 +1,14 @@
+listener:
+  https:
+    port: 8443
+    tls:
+      mode: auto
+      domains: [relay.invalid]
+  timeouts:
+    read: 5s
+    write: 5s
+    idle: 15s
+
+routes: []
+backends: []
+middleware: []

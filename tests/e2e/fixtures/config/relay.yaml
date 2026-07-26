@@ -1,0 +1,21 @@
+include:
+  - base.yaml
+  - reload.yaml
+
+listener:
+  http:
+    port: 8088
+  timeouts:
+    read: 5s
+    write: 5s
+    idle: 15s
+    read_header: 2s
+
+observability:
+  logs:
+    level: info
+    format: json
+
+reload:
+  watch: true
+  debounce: 100ms

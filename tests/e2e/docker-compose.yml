@@ -1,0 +1,77 @@
+name: ${E2E_PROJECT_NAME:-relay-e2e}
+
+x-upstream: &upstream
+  image: ${E2E_PROJECT_NAME:-relay-e2e}-upstream:local
+  build:
+    context: ../..
+    dockerfile: tests/e2e/Dockerfile.upstream
+  read_only: true
+  tmpfs:
+    - /tmp
+
+services:
+  upstream-v1:
+    <<: *upstream
+    command: ["-listen", ":8080", "-name", "v1"]
+
+  upstream-v2:
+    <<: *upstream
+    command: ["-listen", ":8080", "-name", "v2"]
+
+  upstream-mtls:
+    <<: *upstream
+    command:
+      - -listen
+      - :8443
+      - -name
+      - mtls
+      - -tls-cert
+      - /certs/server.crt
+      - -tls-key
+      - /certs/server.key
+      - -client-ca
+      - /certs/ca.crt
+    volumes:
+      - ${E2E_RUNTIME_DIR:?set E2E_RUNTIME_DIR}/certs:/certs:ro
+
+  redis:
+    image: redis:7.4.2-alpine@sha256:02419de7eddf55aa5bcf49efb74e88fa8d931b4d77c07eff8a6b2144472b6952
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    read_only: true
+    tmpfs:
+      - /data
+
+  relay:
+    image: ${E2E_PROJECT_NAME:-relay-e2e}-relay:local
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.relay
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      - upstream-v1
+      - upstream-v2
+      - upstream-mtls
+      - redis
+    environment:
+      RELAY_CONFIG: /etc/relay/relay.yaml
+    ports:
+      - 127.0.0.1:${E2E_PORT:-18088}:8088
+    volumes:
+      - ${E2E_RUNTIME_DIR:?set E2E_RUNTIME_DIR}/config:/etc/relay:ro
+      - ${E2E_RUNTIME_DIR:?set E2E_RUNTIME_DIR}/certs:/certs:ro
+
+  acme-validate:
+    profiles: ["validation"]
+    image: ${E2E_PROJECT_NAME:-relay-e2e}-relay:local
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile.relay
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/lib/relay/acme
+    volumes:
+      - ./fixtures/acme:/etc/relay/acme:ro
+    command: ["-config", "/etc/relay/acme/valid.yaml", "-validate"]

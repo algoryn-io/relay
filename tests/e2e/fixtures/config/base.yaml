@@ -1,0 +1,65 @@
+routes:
+  - name: basic
+    match:
+      path_prefix: /basic
+      methods: [GET]
+    backend: basic
+  - name: redis-closed
+    match:
+      path_prefix: /redis/closed
+      methods: [GET]
+    middleware: [redis-closed]
+    backend: basic
+  - name: redis-open
+    match:
+      path_prefix: /redis/open
+      methods: [GET]
+    middleware: [redis-open]
+    backend: basic
+  - name: mtls
+    match:
+      path_prefix: /mtls
+      methods: [GET]
+    backend: mtls
+
+backends:
+  - name: basic
+    strategy: round_robin
+    instances:
+      - url: http://upstream-v1:8080
+  - name: mtls
+    strategy: round_robin
+    health_check:
+      path: /health
+      interval: 200ms
+      timeout: 1s
+    tls:
+      ca_file: /certs/ca.crt
+      cert_file: /certs/client.crt
+      key_file: /certs/client.key
+    instances:
+      - url: https://upstream-mtls:8443
+
+middleware:
+  - name: redis-closed
+    type: rate_limit
+    enabled: true
+    config:
+      strategy: sliding_window
+      limit: 100
+      window: 1m
+      by: route
+      store: redis
+      redis_url: redis://redis:6379/0
+      fail_open: false
+  - name: redis-open
+    type: rate_limit
+    enabled: true
+    config:
+      strategy: sliding_window
+      limit: 100
+      window: 1m
+      by: route
+      store: redis
+      redis_url: redis://redis:6379/0
+      fail_open: true

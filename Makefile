@@ -9,13 +9,19 @@ GOLANGCI_LINT_VERSION := v2.12.2
 GOSEC_VERSION         := v2.28.0
 TOOLS_BIN             := $(CURDIR)/bin
 
-.PHONY: dev test build lint vuln security tools install-govulncheck install-golangci-lint install-gosec release docker load loadtest
+.PHONY: dev test test-e2e test-helm build lint vuln security tools install-govulncheck install-golangci-lint install-gosec release docker load loadtest
 
 dev:
 	go run ./cmd/relay -config config/example.yaml
 
 test:
 	go test -race ./...
+
+test-e2e:
+	bash tests/e2e/run.sh
+
+test-helm:
+	HELM_VERSION=v3.18.6 bash tests/e2e/helm.sh
 
 # In-process load smoke test (regression guard for the hot path).
 load:
