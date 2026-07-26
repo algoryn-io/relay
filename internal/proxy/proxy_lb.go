@@ -52,6 +52,7 @@ func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, er
 		for _, state := range healthy {
 			total += state.weight
 		}
+		// #nosec G404 -- load-balancer selection does not require cryptographic randomness.
 		pick := rand.IntN(total)
 		acc := 0
 		for _, state := range healthy {
@@ -67,7 +68,7 @@ func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, er
 
 	default: // round_robin
 		if c := p.roundRobin[backendName]; c != nil {
-			idx := int((c.Add(1) - 1) % uint64(len(healthy)))
+			idx := (c.Add(1) - 1) % uint64(len(healthy))
 			selected = healthy[idx]
 		} else {
 			selected = healthy[0]

@@ -8,6 +8,7 @@ on:
 env:
   GOVULNCHECK_VERSION: v1.1.4
   GOLANGCI_LINT_VERSION: v2.12.2
+  GOSEC_VERSION: v2.28.0
 
 jobs:
   test:
@@ -44,6 +45,29 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
           $(go env GOPATH)/bin/govulncheck ./...
+
+  gosec:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.25.12"
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}
+      - name: Run gosec
+        # gosec exits non-zero when it reports findings, but still writes the
+        # SARIF file. Upload runs with always() + hashFiles below.
+        run: $(go env GOPATH)/bin/gosec -fmt=sarif -out=gosec.sarif ./...
+      - name: Upload gosec SARIF
+        if: ${{ always() && hashFiles('gosec.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
 
   build:
     runs-on: ubuntu-latest

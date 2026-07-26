@@ -162,6 +162,7 @@ func computeBackoff(attempt int, cfg config.RetryConfig) time.Duration {
 
 	exp := float64(init) * math.Pow(2, float64(attempt))
 	// ±10% jitter
+	// #nosec G404 -- retry timing jitter is not used for a security-sensitive value.
 	jitter := exp * 0.1 * (2*rand.Float64() - 1)
 	d := time.Duration(exp + jitter)
 	if d > max {

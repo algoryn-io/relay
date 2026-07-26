@@ -67,7 +67,8 @@ func buildBackendTransport(protocol string, cfg config.BackendTLSConfig) (http.R
 	}
 
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec — user-explicit opt-in
+		// #nosec G402 -- this is an explicit backend TLS opt-in, disabled by default.
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
 	}
 
 	if cfg.CertFile != "" {

@@ -93,7 +93,7 @@ func (s *memoryStore) shardFor(key string) *memoryShard {
 		h ^= uint32(key[i])
 		h *= 16777619
 	}
-	return s.shards[h%uint32(len(s.shards))]
+	return s.shards[uint64(h)%uint64(len(s.shards))]
 }
 
 func (s *memoryStore) Check(_ context.Context, key string, limit int, window time.Duration, now time.Time) (bool, int, time.Time, error) {

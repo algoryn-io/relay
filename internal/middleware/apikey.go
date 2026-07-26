@@ -116,6 +116,7 @@ func LoadAPIKeys(resolvedEnv, keysFile string) (map[string]string, error) {
 	}
 
 	if keysFile != "" {
+		// #nosec G304 -- keysFile is an operator-controlled configuration value.
 		data, err := os.ReadFile(keysFile)
 		if err != nil {
 			return nil, fmt.Errorf("read keys_file %q: %w", keysFile, err)

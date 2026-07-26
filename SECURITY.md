@@ -15,6 +15,18 @@ coordinated disclosure timeline.
 
 Relay is pre-1.0; security fixes are applied to `main` and the latest release.
 
+## Static application security testing
+
+[`gosec`](https://github.com/securego/gosec) is Relay's baseline SAST engine. CI
+runs a pinned version, publishes its SARIF output to GitHub Code Scanning, and
+fails on unsuppressed findings. Run the same checks locally with `make security`.
+Suppressions must name the specific rule at the affected line and explain why
+the reported construct is safe.
+
+Semgrep is intentionally not adopted: its Go security rules would overlap with
+the baseline and add a redundant SAST engine without a distinct coverage goal.
+This decision can be revisited if a concrete, non-overlapping ruleset is needed.
+
 ## Hardening notes for operators
 
 - **TLS**: terminate TLS at Relay (`listener.https`) or at a trusted load
