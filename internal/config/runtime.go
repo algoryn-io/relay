@@ -37,9 +37,23 @@ func (cr *CompiledRewrite) Apply(path string) string {
 }
 
 type RouteRuntime struct {
-	Name                    string
-	Path                    string
-	PathPrefix              string
+	Name       string
+	Path       string
+	PathPrefix string
+	// PathRegex is the original RE2 pattern; PathRegexRe is compiled at build time.
+	PathRegex   string
+	PathRegexRe *regexp.Regexp
+	// PathGlob is the original glob; PathGlobRe is the precompiled full-path RE2.
+	PathGlob   string
+	PathGlobRe *regexp.Regexp
+	// PatternRank orders glob/regex routes (higher wins): literal length for
+	// globs, pattern length for regexes.
+	PatternRank int
+	// GRPC is true when the route was declared with match.grpc. The router also
+	// requires a gRPC Content-Type on the request.
+	GRPC                    bool
+	GRPCService             string
+	GRPCMethod              string
 	StripPrefix             string
 	Timeout                 time.Duration
 	MaxBodyBytes            int64
@@ -227,6 +241,41 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 
 		path := strings.TrimSpace(route.Match.Path)
 		pathPrefix := strings.TrimSpace(route.Match.PathPrefix)
+		pathRegex := strings.TrimSpace(route.Match.PathRegex)
+		pathGlob := strings.TrimSpace(route.Match.PathGlob)
+		grpcService := strings.TrimSpace(route.Match.GRPC.Service)
+		grpcMethod := strings.TrimSpace(route.Match.GRPC.Method)
+
+		var (
+			pathRegexRe *regexp.Regexp
+			pathGlobRe  *regexp.Regexp
+			patternRank int
+			isGRPC      bool
+		)
+
+		switch {
+		case pathRegex != "":
+			re, err := regexp.Compile(pathRegex)
+			if err != nil {
+				return nil, fmt.Errorf("route %q: compile path_regex: %w", route.Name, err)
+			}
+			pathRegexRe = re
+			patternRank = len(pathRegex)
+		case pathGlob != "":
+			re, err := CompilePathGlob(pathGlob)
+			if err != nil {
+				return nil, fmt.Errorf("route %q: compile path_glob: %w", route.Name, err)
+			}
+			pathGlobRe = re
+			patternRank = PathGlobLiteralLen(pathGlob)
+		case grpcService != "":
+			isGRPC = true
+			if grpcMethod != "" {
+				path = "/" + grpcService + "/" + grpcMethod
+			} else {
+				pathPrefix = "/" + grpcService
+			}
+		}
 
 		var hostSet map[string]struct{}
 		if len(route.Match.Hosts) > 0 {
@@ -270,6 +319,14 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			Name:                    route.Name,
 			Path:                    path,
 			PathPrefix:              pathPrefix,
+			PathRegex:               pathRegex,
+			PathRegexRe:             pathRegexRe,
+			PathGlob:                pathGlob,
+			PathGlobRe:              pathGlobRe,
+			PatternRank:             patternRank,
+			GRPC:                    isGRPC,
+			GRPCService:             grpcService,
+			GRPCMethod:              grpcMethod,
 			StripPrefix:             strings.TrimSpace(route.StripPrefix),
 			Timeout:                 route.Timeout,
 			MaxBodyBytes:            route.MaxBodyBytes,

@@ -286,9 +286,23 @@ type RouteMirrorConfig struct {
 }
 
 type MatchConfig struct {
-	Path       string   `yaml:"path"`
-	PathPrefix string   `yaml:"path_prefix"`
-	Methods    []string `yaml:"methods"`
+	Path       string `yaml:"path"`
+	PathPrefix string `yaml:"path_prefix"`
+	// PathRegex is a RE2 regular expression matched against the request path.
+	// Prefer anchoring with ^ and $ for full-path matches. Mutually exclusive
+	// with path, path_prefix, path_glob, and grpc.
+	PathRegex string `yaml:"path_regex"`
+	// PathGlob is a path glob matched against the full request path.
+	// `*` matches within one segment, `**` across segments, `?` one non-slash
+	// character. Compiled to RE2 at startup. Mutually exclusive with path,
+	// path_prefix, path_regex, and grpc.
+	PathGlob string `yaml:"path_glob"`
+	// GRPC matches gRPC requests by service and optional method. The request
+	// path is `/<service>/<method>` (gRPC-over-HTTP/2) and Content-Type must be
+	// application/grpc. Mutually exclusive with path, path_prefix, path_regex,
+	// and path_glob.
+	GRPC    GRPCMatchConfig `yaml:"grpc"`
+	Methods []string        `yaml:"methods"`
 	// Hosts restricts the route to requests whose Host header (port stripped,
 	// case-insensitive) matches one of these values. Empty means any host.
 	Hosts []string `yaml:"hosts"`
@@ -299,6 +313,14 @@ type MatchConfig struct {
 	// Query requires each listed query parameter to equal the given value.
 	// Empty means no query constraint.
 	Query map[string]string `yaml:"query"`
+}
+
+// GRPCMatchConfig selects a gRPC service and optional method.
+// When Method is empty, every method on Service matches (path prefix
+// `/<service>/`). When set, the path must equal `/<service>/<method>`.
+type GRPCMatchConfig struct {
+	Service string `yaml:"service"`
+	Method  string `yaml:"method"`
 }
 
 type BackendConfig struct {

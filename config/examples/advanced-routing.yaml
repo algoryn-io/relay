@@ -1,0 +1,55 @@
+# Advanced route matching: path_regex, path_glob, and gRPC service/method.
+# Precedence is deterministic: exact → longest prefix → glob → regex.
+# gRPC routes also require Content-Type application/grpc (or application/grpc+…).
+listener:
+  http:
+    port: 8088
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+
+routes:
+  - name: orders-regex
+    match:
+      path_regex: '^/api/v[0-9]+/orders$'
+      methods: [GET, POST]
+    backend: orders-http
+
+  - name: assets-glob
+    match:
+      path_glob: /assets/**
+      methods: [GET]
+    backend: assets
+
+  - name: greeter-say-hello
+    match:
+      grpc:
+        service: helloworld.Greeter
+        method: SayHello
+      methods: [POST]
+    backend: greeter-grpc
+
+  - name: greeter-all-methods
+    match:
+      grpc:
+        service: helloworld.Greeter
+      methods: [POST]
+    backend: greeter-grpc
+
+backends:
+  - name: orders-http
+    strategy: round_robin
+    instances:
+      - url: http://orders.internal:8080
+
+  - name: assets
+    strategy: round_robin
+    instances:
+      - url: http://assets.internal:8080
+
+  - name: greeter-grpc
+    strategy: round_robin
+    protocol: h2c
+    instances:
+      - url: http://greeter.internal:50051

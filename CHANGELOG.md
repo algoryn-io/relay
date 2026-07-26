@@ -44,6 +44,12 @@ All notable changes to Relay are documented here. The format is based on
   limit did nothing when set in a config file. They are now parsed correctly.
 
 ### Added
+- Advanced route matching: precompiled `match.path_regex` (RE2) and
+  `match.path_glob` (`*` / `**` / `?`), plus `match.grpc.service` /
+  `match.grpc.method` for gRPC-over-HTTP/2 routing (requires
+  `Content-Type: application/grpc`). Deterministic precedence remains
+  exact → longest prefix → glob → regex; see
+  `config/examples/advanced-routing.yaml`.
 - Per-route traffic splitting (`traffic`): deterministic percentage canary (stable
   hash bucket per header/cookie/IP), sticky sessions by cookie and/or header, and
   asynchronous request mirroring with concurrency limits, timeouts/cancellation,

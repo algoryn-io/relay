@@ -357,6 +357,9 @@ func (c *MatchConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawMatch struct {
 		Path       string            `yaml:"path"`
 		PathPrefix string            `yaml:"path_prefix"`
+		PathRegex  string            `yaml:"path_regex"`
+		PathGlob   string            `yaml:"path_glob"`
+		GRPC       GRPCMatchConfig   `yaml:"grpc"`
 		Methods    []string          `yaml:"methods"`
 		Hosts      []string          `yaml:"hosts"`
 		Headers    map[string]string `yaml:"headers"`
@@ -370,6 +373,9 @@ func (c *MatchConfig) UnmarshalYAML(node *yaml.Node) error {
 
 	c.Path = raw.Path
 	c.PathPrefix = raw.PathPrefix
+	c.PathRegex = raw.PathRegex
+	c.PathGlob = raw.PathGlob
+	c.GRPC = raw.GRPC
 	c.Methods = raw.Methods
 	c.Hosts = raw.Hosts
 	c.Headers = raw.Headers
