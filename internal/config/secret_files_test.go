@@ -22,10 +22,14 @@ func TestResolveSecretFilesPopulatesTargets(t *testing.T) {
 	clientSecret := writeSecret(t, "client", "client-secret\n")
 	redisURL := writeSecret(t, "redis", "rediss://cache:6379\n")
 	adminToken := writeSecret(t, "admin", "admin-token\n")
+	healthToken := writeSecret(t, "health", "health-token\n")
 
 	cfg := &Config{
 		Listener: ListenerConfig{
 			Admin: AdminConfig{TokenFile: adminToken},
+			Health: HealthEndpointsConfig{
+				Access: EndpointAccessConfig{TokenFile: healthToken},
+			},
 		},
 		Middleware: []MiddlewareConfig{
 			{Name: "jwt", Type: "jwt", Config: MiddlewareSettingsConfig{SecretFile: jwtSecret}},
@@ -40,6 +44,9 @@ func TestResolveSecretFilesPopulatesTargets(t *testing.T) {
 
 	if got := cfg.Listener.Admin.ResolvedToken; got != "admin-token" {
 		t.Errorf("admin token = %q, want admin-token", got)
+	}
+	if got := cfg.Listener.Health.Access.ResolvedToken; got != "health-token" {
+		t.Errorf("health token = %q, want health-token", got)
 	}
 	if got := cfg.Middleware[0].Config.ResolvedSecret; got != "super-secret-value" {
 		t.Errorf("jwt secret = %q, want super-secret-value (trimmed)", got)

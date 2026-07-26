@@ -19,11 +19,32 @@ const pathPrefix = "/_relay/admin"
 // All endpoints require the client IP to be in the configured allowlist, and,
 // when a token is configured, a matching bearer token.
 type Handler struct {
-	px          *proxy.Proxy
-	routes      map[string]config.RouteRuntime
+	px        *proxy.Proxy
+	routes    map[string]config.RouteRuntime
+	access    *AccessControl
+	readiness config.ReadinessPolicyConfig
+	logger    *slog.Logger
+}
+
+// AccessControl is the shared real-peer CIDR and bearer-token gate used by
+// admin and health endpoints. Forwarding headers are deliberately ignored.
+type AccessControl struct {
 	allowedNets []*net.IPNet
 	token       string
-	logger      *slog.Logger
+	public      bool
+}
+
+// NewAccessControl builds an endpoint access gate. With publicDefault true, an
+// empty CIDR list permits every real peer; otherwise it permits loopback only.
+func NewAccessControl(allowedCIDRs []string, token string, publicDefault bool) *AccessControl {
+	nets := httpx.ParseTrustedNets(allowedCIDRs)
+	public := publicDefault && len(allowedCIDRs) == 0
+	if !public && len(nets) == 0 {
+		_, lo4, _ := net.ParseCIDR("127.0.0.0/8")
+		_, lo6, _ := net.ParseCIDR("::1/128")
+		nets = []*net.IPNet{lo4, lo6}
+	}
+	return &AccessControl{allowedNets: nets, token: strings.TrimSpace(token), public: public}
 }
 
 // New builds an admin Handler. allowedCIDRs restricts access by IP range;
@@ -31,26 +52,35 @@ type Handler struct {
 // required as an "Authorization: Bearer <token>" header. logger, when non-nil,
 // receives audit entries for admin access and mutations.
 func New(px *proxy.Proxy, routes map[string]config.RouteRuntime, allowedCIDRs []string, token string, logger *slog.Logger) *Handler {
-	nets := httpx.ParseTrustedNets(allowedCIDRs)
-	if len(nets) == 0 {
-		_, lo4, _ := net.ParseCIDR("127.0.0.0/8")
-		_, lo6, _ := net.ParseCIDR("::1/128")
-		nets = []*net.IPNet{lo4, lo6}
+	return NewWithReadiness(px, routes, allowedCIDRs, token, config.ReadinessPolicyConfig{}, logger)
+}
+
+// NewWithReadiness builds an admin handler with the configured readiness policy
+// exposed through its authenticated diagnostic endpoint.
+func NewWithReadiness(
+	px *proxy.Proxy,
+	routes map[string]config.RouteRuntime,
+	allowedCIDRs []string,
+	token string,
+	readiness config.ReadinessPolicyConfig,
+	logger *slog.Logger,
+) *Handler {
+	return &Handler{
+		px: px, routes: routes,
+		access:    NewAccessControl(allowedCIDRs, token, false),
+		readiness: readiness, logger: logger,
 	}
-	return &Handler{px: px, routes: routes, allowedNets: nets, token: strings.TrimSpace(token), logger: logger}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Gate on the real TCP peer (RemoteAddr), not the forwarded client IP, so the
 	// allowlist cannot be bypassed by spoofing X-Forwarded-For.
 	peer := httpx.PeerIP(r)
-	peerIP := net.ParseIP(peer)
-	if peerIP == nil || !h.ipAllowed(peerIP) {
+	if status := h.access.Status(r); status == http.StatusForbidden {
 		h.audit("admin access denied (ip)", peer, r)
 		httpx.WriteError(w, http.StatusForbidden, "forbidden")
 		return
-	}
-	if !h.tokenOK(r) {
+	} else if status == http.StatusUnauthorized {
 		h.audit("admin access denied (token)", peer, r)
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -74,6 +104,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case len(parts) >= 1 && parts[0] == "circuit-breakers":
 		h.handleCircuits(w, r, parts[1:])
+
+	case len(parts) == 1 && (parts[0] == "readiness" || parts[0] == "ready") && r.Method == http.MethodGet:
+		evaluation := h.px.EvaluateReadiness(h.readiness)
+		status := "not_ready"
+		if evaluation.Ready {
+			status = "ready"
+		}
+		writeJSON(w, map[string]any{"status": status, "detail": evaluation})
 
 	default:
 		httpx.WriteError(w, http.StatusNotFound, "not_found")
@@ -190,8 +228,23 @@ func (h *Handler) handleCircuits(w http.ResponseWriter, r *http.Request, parts [
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func (h *Handler) ipAllowed(ip net.IP) bool {
-	for _, n := range h.allowedNets {
+// Status returns 0 when access is allowed, otherwise the HTTP rejection status.
+func (a *AccessControl) Status(r *http.Request) int {
+	peerIP := net.ParseIP(httpx.PeerIP(r))
+	if peerIP == nil || !a.ipAllowed(peerIP) {
+		return http.StatusForbidden
+	}
+	if !a.tokenOK(r) {
+		return http.StatusUnauthorized
+	}
+	return 0
+}
+
+func (a *AccessControl) ipAllowed(ip net.IP) bool {
+	if a.public {
+		return true
+	}
+	for _, n := range a.allowedNets {
 		if n.Contains(ip) {
 			return true
 		}
@@ -201,8 +254,8 @@ func (h *Handler) ipAllowed(ip net.IP) bool {
 
 // tokenOK reports whether the request carries the configured bearer token.
 // When no token is configured, access is permitted (IP-allowlist only).
-func (h *Handler) tokenOK(r *http.Request) bool {
-	if h.token == "" {
+func (a *AccessControl) tokenOK(r *http.Request) bool {
+	if a.token == "" {
 		return true
 	}
 	const prefix = "Bearer "
@@ -211,7 +264,7 @@ func (h *Handler) tokenOK(r *http.Request) bool {
 		return false
 	}
 	got := strings.TrimSpace(raw[len(prefix):])
-	return subtle.ConstantTimeCompare([]byte(got), []byte(h.token)) == 1
+	return subtle.ConstantTimeCompare([]byte(got), []byte(a.token)) == 1
 }
 
 func (h *Handler) audit(msg, peer string, r *http.Request) {

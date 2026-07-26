@@ -7,6 +7,15 @@ listener:
     idle: 60s
   # Per real TCP peer; 0 disables. Do not use this to infer clients behind a LB.
   max_connections_per_ip: 0
+  health:
+    # Public probes return only constant/opaque status by default. Optionally
+    # restrict access by immediate TCP peer and/or a bearer token:
+    # access:
+    #   allowed_cidrs: [10.42.0.0/16]
+    #   token_env: RELAY_HEALTH_TOKEN
+    readiness:
+      # any (default), all, or critical with critical_backends.
+      mode: any
 
 routes:
   - name: orders-route

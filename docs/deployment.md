@@ -80,6 +80,11 @@ What the chart provides: Deployment, Service, ConfigMap (your Relay config),
 optional Secret, ServiceAccount, optional HPA / PodDisruptionBudget / ServiceMonitor,
 liveness (`/_relay/health`) and readiness (`/_relay/ready`) probes, and a hardened
 security context (non-root uid 10001, read-only root filesystem, dropped caps).
+The default endpoints remain public but disclose only constant/opaque status.
+If `listener.health.access` restricts CIDRs, include the kubelet/node source
+ranges; if it requires a token, add the matching `Authorization` `httpHeaders`
+entry to both probe values (noting that literal probe headers are visible in the
+Pod spec).
 
 ### Config and secrets
 
@@ -90,7 +95,8 @@ security context (non-root uid 10001, read-only root filesystem, dropped caps).
   `envFrom`; or reference one with `existingSecret`.
 - **File secrets (recommended)**: mount a Secret as files with `extraVolumes` /
   `extraVolumeMounts` and reference them from the config with `secret_file`,
-  `client_secret_file`, `redis_url_file`, or `listener.admin.token_file`.
+  `client_secret_file`, `redis_url_file`, `listener.admin.token_file`, or
+  `listener.health.access.token_file`.
 - **Inbound TLS**: set `tls.existingSecret` to mount a Secret containing all
   default/SNI certs, keys, and client CA files at `tls.mountPath` (default
   `/etc/relay/tls`). With `reload.watch: true`, projected Secret rotations are

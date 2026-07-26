@@ -55,6 +55,8 @@ type serverState struct {
 	fabricDispatch     *observability.EventDispatcher
 	relayServiceName   string
 	adminH             http.Handler
+	healthAccess       *admin.AccessControl
+	readinessPolicy    config.ReadinessPolicyConfig
 	stripHeaders       []string // extra inbound headers to remove at the edge
 	owner              *resourceOwner
 
@@ -524,13 +526,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		st.metricsH.ServeHTTP(w, req)
 		return
 	case req.URL.Path == "/_relay/health":
+		if !allowHealthRequest(w, req, st.healthAccess) {
+			return
+		}
 		// Liveness: the process is up and serving.
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 		return
 	case req.URL.Path == "/_relay/ready":
-		writeReadiness(w, st.proxy)
+		if !allowHealthRequest(w, req, st.healthAccess) {
+			return
+		}
+		writeReadiness(w, st.proxy, st.readinessPolicy)
 		return
 	case req.URL.Path == st.prometheusPath:
 		// Same exposure as the JSON metrics endpoint: loopback plus any configured
@@ -734,7 +742,14 @@ func buildStateShared(
 		promPath = "/_relay/metrics/prometheus"
 	}
 
-	adminH := admin.New(rtProxy, rt.Routes, cfg.Listener.Admin.AllowedCIDRs, cfg.Listener.Admin.ResolvedToken, logger)
+	adminH := admin.NewWithReadiness(
+		rtProxy,
+		rt.Routes,
+		cfg.Listener.Admin.AllowedCIDRs,
+		cfg.Listener.Admin.ResolvedToken,
+		cfg.Listener.Health.Readiness,
+		logger,
+	)
 
 	st = &serverState{
 		proxy:              rtProxy,
@@ -750,10 +765,16 @@ func buildStateShared(
 		fabricDispatch:     fabricDispatch,
 		relayServiceName:   relaySvc,
 		adminH:             adminH,
-		stripHeaders:       cfg.Listener.StripRequestHeaders,
-		owner:              owner,
-		drained:            make(chan struct{}),
-		done:               make(chan struct{}),
+		healthAccess: admin.NewAccessControl(
+			cfg.Listener.Health.Access.AllowedCIDRs,
+			cfg.Listener.Health.Access.ResolvedToken,
+			true,
+		),
+		readinessPolicy: cfg.Listener.Health.Readiness,
+		stripHeaders:    cfg.Listener.StripRequestHeaders,
+		owner:           owner,
+		drained:         make(chan struct{}),
+		done:            make(chan struct{}),
 	}
 
 	if fabricDispatch != nil {
@@ -1020,16 +1041,31 @@ func metricsPeerAllowed(r *http.Request, allowedNets []*net.IPNet) bool {
 // there are no backends or at least one backend has a healthy instance; not
 // ready (503) when backends exist but none can serve. Intended for a k8s
 // readiness probe.
-func writeReadiness(w http.ResponseWriter, px *proxy.Proxy) {
-	healthy, total := px.Readiness()
+func writeReadiness(w http.ResponseWriter, px *proxy.Proxy, policy config.ReadinessPolicyConfig) {
+	evaluation := px.EvaluateReadiness(policy)
 	w.Header().Set("Content-Type", "application/json")
-	if total > 0 && healthy == 0 {
+	if !evaluation.Ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"status":"unavailable"}`))
+		_, _ = w.Write([]byte(`{"status":"not_ready"}`))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ready"}`))
+}
+
+func allowHealthRequest(w http.ResponseWriter, r *http.Request, access *admin.AccessControl) bool {
+	if access == nil {
+		return true
+	}
+	switch status := access.Status(r); status {
+	case 0:
+		return true
+	case http.StatusUnauthorized:
+		httpx.WriteError(w, status, "unauthorized")
+	default:
+		httpx.WriteError(w, http.StatusForbidden, "forbidden")
+	}
+	return false
 }
 
 // httpsRedirectHandler redirects only to a configured or allowlisted authority.

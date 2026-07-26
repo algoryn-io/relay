@@ -42,6 +42,13 @@ func (c *Config) ResolveSecretFiles(readFile func(string) ([]byte, error)) error
 		}
 		c.Listener.Admin.ResolvedToken = v
 	}
+	if path := strings.TrimSpace(c.Listener.Health.Access.TokenFile); path != "" && c.Listener.Health.Access.ResolvedToken == "" {
+		v, err := read("listener.health.access.token_file", path)
+		if err != nil {
+			return err
+		}
+		c.Listener.Health.Access.ResolvedToken = v
+	}
 
 	resolveACMERedisFile := func(prefix string, tls *TLSConfig) error {
 		if tls == nil {

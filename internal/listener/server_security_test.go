@@ -229,7 +229,7 @@ func TestServerReadinessUnavailableWhenAllUnhealthy(t *testing.T) {
 	}
 	var body map[string]string
 	decodeJSON(t, rec.Body, &body)
-	if body["status"] != "unavailable" {
-		t.Fatalf("status = %q, want unavailable", body["status"])
+	if body["status"] != "not_ready" {
+		t.Fatalf("status = %q, want not_ready", body["status"])
 	}
 }

@@ -36,6 +36,12 @@ config: |
     # Per real TCP peer (0 = disabled). Behind a load balancer prefer the
     # global/per-request limits; forwarded headers are not used at ConnState.
     max_connections_per_ip: 0
+    health:
+      # Keep probes public and opaque for the default Kubernetes httpGet probes.
+      # To restrict them, configure access.allowed_cidrs and/or token_env/file,
+      # then supply the matching Authorization header in both probe definitions.
+      readiness:
+        mode: any
 
   observability:
     logs:
@@ -141,7 +147,8 @@ resources:
     cpu: "1"
     memory: 256Mi
 
-# Liveness and readiness probes hit Relay's built-in endpoints.
+# Liveness and readiness probes hit Relay's minimal/opaque built-in endpoints.
+# These defaults remain compatible while listener.health.access is unrestricted.
 livenessProbe:
   httpGet:
     path: /_relay/health
