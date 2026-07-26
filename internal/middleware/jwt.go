@@ -52,8 +52,9 @@ type JWTConfig struct {
 	// RS256 with static PEM key
 	PublicKeyFile string
 	// RS256 with JWKS endpoint
-	JWKSUrl      string
-	JWKSCacheTTL time.Duration
+	JWKSUrl        string
+	JWKSCacheTTL   time.Duration
+	JWKSStaleGrace time.Duration
 	// RS256 with OIDC discovery: the issuer's well-known document is fetched to
 	// resolve the JWKS URI. Mutually exclusive with PublicKeyFile and JWKSUrl.
 	OIDCIssuer string
@@ -153,13 +154,17 @@ func newJWTJWKS(cfg JWTConfig, claimsToHeaders map[string]string) (Middleware, e
 	if u, err := url.Parse(jwksURL); err != nil || !strings.EqualFold(u.Scheme, "https") {
 		return nil, fmt.Errorf("jwt: jwks_url must be an https URL")
 	}
-	cache := newJWKSCache(jwksURL, cfg.JWKSCacheTTL, cfg.JWKSClient)
+	if cfg.JWKSStaleGrace < 0 || cfg.JWKSStaleGrace > maxJWKSStaleGrace {
+		return nil, fmt.Errorf("jwt: jwks_stale_grace must be between 0 and %s", maxJWKSStaleGrace)
+	}
+	cache := newJWKSCache(jwksURL, cfg.JWKSCacheTTL, cfg.JWKSStaleGrace, cfg.JWKSClient)
 	if cfg.Logger != nil {
 		cfg.Logger.Info("jwt middleware initialized",
 			"algorithm", "rs256",
 			"header", cfg.Header,
 			"jwks_url", cfg.JWKSUrl,
 			"jwks_cache_ttl", cache.ttl,
+			"jwks_stale_grace", cache.staleGrace,
 			"claims_to_headers", len(claimsToHeaders),
 		)
 	}

@@ -29,6 +29,8 @@ var (
 	}
 )
 
+const maxJWKSStaleGrace = 24 * time.Hour
+
 func validateConfig(c *Config) error {
 	var errs ValidationErrors
 
@@ -552,6 +554,14 @@ func validateJWTMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *Va
 		}
 		if (hasJWKS || hasOIDC) && cfg.JWKSCacheTTL < 0 {
 			errs.Addf("%s.jwks_cache_ttl: must be >= 0", prefix)
+		}
+		if hasJWKS || hasOIDC {
+			switch {
+			case cfg.JWKSStaleGrace < 0:
+				errs.Addf("%s.jwks_stale_grace: must be >= 0", prefix)
+			case cfg.JWKSStaleGrace > maxJWKSStaleGrace:
+				errs.Addf("%s.jwks_stale_grace: must be <= %s", prefix, maxJWKSStaleGrace)
+			}
 		}
 		if hasJWKS {
 			// The JWKS endpoint is the trust anchor for RS256 verification; a

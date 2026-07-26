@@ -199,13 +199,24 @@ Common fields: `name` (unique), `type` (one of the types below), `config`
 | `public_key_file` | — | RS256 static PEM public key. |
 | `jwks_url` | — | RS256 JWKS endpoint (`https` required); also requires non-empty `issuer` and `audience`. |
 | `oidc_issuer` | — | RS256 via OIDC discovery (`https`); resolves `jwks_uri` and requires non-empty `issuer` and `audience`. |
-| `jwks_cache_ttl` | `5m` | JWKS cache TTL. |
+| `jwks_cache_ttl` | `5m` | How long a successful JWKS set is used before Relay refreshes it. |
+| `jwks_stale_grace` | `0s` | Opt-in window for keys removed by a successful refresh or left stale by a failed refresh (`0s`–`24h`). |
 | `header` | `Authorization` | Header carrying the token (`Bearer` scheme for `Authorization`). |
 | `issuer` / `audience` | — | Enforce the `iss` / `aud` claims. Both are mandatory with remote JWKS or OIDC discovery, but remain optional for HS256 and static PEM keys. |
 | `claims_to_headers` | — | Map of claim → outbound header to inject. |
 | `jwt_log_failures` | `false` | Log structured warnings on rejection (never the raw token). |
 
 `public_key_file`, `jwks_url` and `oidc_issuer` are mutually exclusive.
+
+`jwks_cache_ttl` controls refresh frequency; it is not a revocation grace
+period. With the secure default `jwks_stale_grace: 0s`, a key absent from a
+successfully refreshed JWKS is rejected immediately, and an expired cache fails
+closed if refresh fails. A positive grace trades revocation speed for
+availability: removed keys remain usable only until their removal time plus the
+grace, while refresh failures can use the last successful set only until
+`last successful refresh + jwks_cache_ttl + jwks_stale_grace`. Failed requests
+never move either deadline. Keep the grace as short as the issuer's rotation and
+outage requirements permit; validation caps it at 24 hours.
 
 Pre-1.0 migration: configurations using `jwks_url` or `oidc_issuer` must now
 declare both `issuer` and `audience`. Header-only API keys and fail-closed

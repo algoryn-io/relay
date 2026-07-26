@@ -268,6 +268,10 @@ type MiddlewareSettingsConfig struct {
 	JWKSUrl string `yaml:"jwks_url"`
 	// JWKSCacheTTL is how long JWKS keys are cached. Defaults to 5m when zero.
 	JWKSCacheTTL time.Duration `yaml:"jwks_cache_ttl"`
+	// JWKSStaleGrace is an opt-in availability window for keys removed by a
+	// successful JWKS refresh or left stale by a failed refresh. Zero (default)
+	// revokes removed keys immediately and fails closed when refresh is required.
+	JWKSStaleGrace time.Duration `yaml:"jwks_stale_grace"`
 	// ExpectedIssuer, when set, requires the JWT "iss" claim to match exactly.
 	ExpectedIssuer string `yaml:"issuer"`
 	// ExpectedAudience, when set, requires the JWT "aud" claim to contain it.

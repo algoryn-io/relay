@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadMinimalValidConfig(t *testing.T) {
@@ -134,6 +135,30 @@ middleware:
 	}
 	if !cfg.Middleware[1].Config.AcknowledgeExtAuthzFailOpen {
 		t.Fatal("acknowledge_ext_authz_fail_open was not decoded")
+	}
+}
+
+func TestLoadJWKSStaleGrace(t *testing.T) {
+	t.Parallel()
+
+	path := writeTempConfig(t, `
+middleware:
+  - name: jwt-remote
+    type: jwt
+    config:
+      algorithm: rs256
+      jwks_url: https://issuer.example.com/jwks
+      jwks_cache_ttl: 5m
+      jwks_stale_grace: 10m
+      issuer: https://issuer.example.com
+      audience: relay-api
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Middleware[0].Config.JWKSStaleGrace; got != 10*time.Minute {
+		t.Fatalf("JWKSStaleGrace = %s, want 10m", got)
 	}
 }
 

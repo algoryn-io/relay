@@ -262,6 +262,9 @@ observability:
 - Validates signature and expiration. Remote RS256 (`jwks_url` or
   `oidc_issuer`) requires non-empty `issuer` and `audience`; these remain
   optional for HS256 and a static PEM key
+- Remote keys refresh on `jwks_cache_ttl`. Removed or refresh-stale keys are
+  rejected by default (`jwks_stale_grace: 0s`); a positive value up to 24h is
+  an explicit availability-over-revocation tradeoff
 
 ### Rate Limit (`type: rate_limit`)
 
