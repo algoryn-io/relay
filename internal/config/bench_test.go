@@ -14,7 +14,6 @@ func benchConfig(n int) *Config {
 			HTTP:     HTTPConfig{Port: 8080},
 			Timeouts: TimeoutsConfig{Read: 30 * time.Second, Write: 30 * time.Second, Idle: 60 * time.Second},
 		},
-		Observability: ObservabilityConfig{Metrics: MetricsConfig{FlushInterval: 30 * time.Second}},
 	}
 	for i := 0; i < n; i++ {
 		id := strconv.Itoa(i)

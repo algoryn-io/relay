@@ -465,10 +465,6 @@ func validConfig() *Config {
 				},
 			},
 		},
-		Observability: ObservabilityConfig{
-			Metrics: MetricsConfig{FlushInterval: 30 * time.Second},
-		},
-		Storage: StorageConfig{Path: "./data"},
-		Reload:  ReloadConfig{Watch: true, Debounce: 500 * time.Millisecond},
+		Reload: ReloadConfig{Watch: true, Debounce: 500 * time.Millisecond},
 	}
 }

@@ -108,14 +108,6 @@ observability:
   logs:
     level: info
     format: text
-  metrics:
-    flush_interval: 30s
-
-storage:
-  path: ./data
-  retention:
-    metrics_days: 90
-    logs_days: 30
 
 reload:
   watch: false

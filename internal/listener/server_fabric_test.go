@@ -46,7 +46,6 @@ func TestServerWithFabricEnabledHandlesRequest(t *testing.T) {
 			Idle:  60 * time.Second,
 		},
 	})
-	cfg.Storage = config.StorageConfig{Path: t.TempDir() + "/relay.db"}
 	cfg.Reload = config.ReloadConfig{Debounce: time.Millisecond}
 	cfg.Observability.Fabric = config.FabricConfig{
 		Enabled:     true,

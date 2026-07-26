@@ -242,8 +242,6 @@ observability:
     format: json
     file: ./logs/access.log
     max_size_mb: 10
-  metrics:
-    flush_interval: 30s
 
 ```
 

@@ -14,10 +14,7 @@ type Config struct {
 	Backends      []BackendConfig     `yaml:"backends"`
 	Middleware    []MiddlewareConfig  `yaml:"middleware"`
 	Observability ObservabilityConfig `yaml:"observability"`
-	// Storage is retained only for backwards-compatible parsing. Relay does not
-	// persist request, metrics, or log data; use external storage instead.
-	Storage StorageConfig `yaml:"storage"`
-	Reload  ReloadConfig  `yaml:"reload"`
+	Reload        ReloadConfig        `yaml:"reload"`
 }
 
 type ListenerConfig struct {
@@ -342,13 +339,7 @@ type MiddlewareSettingsConfig struct {
 }
 
 type ObservabilityConfig struct {
-	// Dashboard is retained only for backwards-compatible parsing. Use the
-	// shipped Grafana dashboard; Relay does not host a dashboard server.
-	Dashboard DashboardConfig `yaml:"dashboard"`
-	Logs      LogsConfig      `yaml:"logs"`
-	// Metrics is retained for backwards-compatible parsing. Metrics are exposed
-	// immediately; no in-process flush interval exists.
-	Metrics    MetricsConfig    `yaml:"metrics"`
+	Logs       LogsConfig       `yaml:"logs"`
 	Fabric     FabricConfig     `yaml:"fabric"`
 	Prometheus PrometheusConfig `yaml:"prometheus"`
 	Tracing    TracingConfig    `yaml:"tracing"`
@@ -387,12 +378,6 @@ type FabricConfig struct {
 	QueueSize   int    `yaml:"queue_size"`
 }
 
-type DashboardConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Port    int    `yaml:"port"`
-	Path    string `yaml:"path"`
-}
-
 type LogsConfig struct {
 	Level      string `yaml:"level"`
 	Format     string `yaml:"format"`
@@ -400,21 +385,6 @@ type LogsConfig struct {
 	MaxSizeMB  int    `yaml:"max_size_mb"`
 	MaxAgeDays int    `yaml:"max_age_days"`
 	Compress   bool   `yaml:"compress"`
-}
-
-type MetricsConfig struct {
-	FlushInterval time.Duration `yaml:"flush_interval"`
-}
-
-type StorageConfig struct {
-	Path      string          `yaml:"path"`
-	Retention RetentionConfig `yaml:"retention"`
-}
-
-type RetentionConfig struct {
-	RequestsDays int `yaml:"requests_days"`
-	MetricsDays  int `yaml:"metrics_days"`
-	LogsDays     int `yaml:"logs_days"`
 }
 
 type ReloadConfig struct {

@@ -293,9 +293,6 @@ func TestBulkheadValidationRejectsNegative(t *testing.T) {
 			HTTP:     config.HTTPConfig{Port: 8080},
 			Timeouts: config.TimeoutsConfig{Read: time.Second, Write: time.Second, Idle: time.Second},
 		},
-		Observability: config.ObservabilityConfig{
-			Metrics: config.MetricsConfig{FlushInterval: time.Second},
-		},
 		Backends: []config.BackendConfig{
 			{
 				Name:     "b",

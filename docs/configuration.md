@@ -10,6 +10,7 @@ optional unless noted; a minimal config needs a listener port, one route, and it
 backend.
 
 - [Top-level structure](#top-level-structure)
+- [Compatibility and migrations](#compatibility-and-migrations)
 - [Secret sources (`*_env` / `*_file`)](#secret-sources)
 - [`listener`](#listener)
 - [`routes`](#routes)
@@ -28,9 +29,25 @@ listener: {}         # ports, TLS, timeouts, admin, edge hardening
 routes: []           # request matching → backend + middleware
 backends: []         # upstream pools, load balancing, resilience
 middleware: []       # named, reusable middleware referenced by routes
-observability: {}    # logs, metrics, tracing
+observability: {}    # logs, Prometheus, tracing, Fabric telemetry
 reload: {}           # config hot-reload
 ```
+
+## Compatibility and migrations
+
+Relay is pre-1.0. Configuration compatibility is not guaranteed across minor
+versions when removing fields that have no runtime effect. Such removals are
+treated as breaking changes: they are called out in the changelog, examples are
+updated in the same release, and the strict YAML decoder rejects stale fields
+instead of silently ignoring them. Run `relay -config relay.yaml -validate`
+before upgrading.
+
+The legacy `observability.dashboard`, top-level `storage`, and
+`observability.metrics.flush_interval` settings have been removed because Relay
+never served the React dashboard, persisted data, or buffered metric flushes.
+Delete those blocks when migrating. Prometheus metrics remain available under
+`observability.prometheus`, and the shipped Grafana dashboard and Prometheus
+rules remain supported deployment artifacts.
 
 ## Secret sources
 
@@ -293,7 +310,7 @@ Fails closed (`503`) when the endpoint is unreachable.
 | `max_size_mb` | — | Size-based rotation threshold. |
 | `max_age_days`, `compress` | — | Rotation retention / compression. |
 
-### `metrics` / `prometheus`
+### `prometheus`
 
 | Field | Default | Description |
 | --- | --- | --- |
@@ -310,7 +327,7 @@ Fails closed (`503`) when the endpoint is unreachable.
 | `sample_rate` | `1.0` | Fraction of traces sampled (0.0–1.0). |
 | `service_name` | `relay` | Service name reported to the collector. |
 
-### `fabric` / `dashboard`
+### `fabric`
 
 | Field | Description |
 | --- | --- |

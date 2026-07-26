@@ -38,9 +38,6 @@ listener:
     read: 30s
     write: 30s
     idle: 60s
-observability:
-  metrics:
-    flush_interval: 30s
 `,
 		"routes/orders.yaml": `
 routes:
@@ -97,9 +94,6 @@ listener:
     read: 30s
     write: 30s
     idle: 60s
-observability:
-  metrics:
-    flush_interval: 30s
 routes:
   - name: a
     match: { path: /a, methods: [GET] }
@@ -150,9 +144,6 @@ listener:
     read: 30s
     write: 30s
     idle: 60s
-observability:
-  metrics:
-    flush_interval: 30s
 `,
 		"left.yaml":  "include: [base.yaml]\n",
 		"right.yaml": "include: [base.yaml]\n",

@@ -30,7 +30,6 @@ loadtest:
 	go run ./scripts/loadtest -url $(URL) -c $(C) -d $(D)
 
 build:
-	cd dashboard && npm ci && npm run build
 	go build -ldflags "$(LDFLAGS)" -o bin/relay ./cmd/relay
 
 install-govulncheck:
