@@ -167,33 +167,6 @@ routes:
 
 Header-based route matching still works for explicit canary flags:
 
-For **percentage canaries**, sticky sessions, and async mirroring on a single route,
-use `traffic` (see [configuration](docs/configuration.md#routestraffic) and
-`config/examples/traffic-splitting.yaml`):
-
-```yaml
-routes:
-  - name: api
-    match:
-      path_prefix: /api
-      methods: [GET, POST]
-    backend: api-stable
-    traffic:
-      canary:
-        backend: api-canary
-        percent: 10
-        key:
-          header: X-User-Id
-      sticky:
-        cookie: relay_affinity
-        cookie_ttl: 24h
-      mirror:
-        backend: api-shadow
-        exclude_request_body: true
-```
-
-Header-based route matching still works for explicit canary flags:
-
 ```yaml
 routes:
   - name: canary
@@ -313,6 +286,12 @@ middleware:
     config:
       preset: secure
 
+  - name: edge-compress
+    type: compression
+    config:
+      encodings: [br, gzip]
+      min_bytes: 1024
+
 observability:
   logs:
     level: info
@@ -397,6 +376,22 @@ configuration; it does not change runtime lookup behavior.
   config:
     request_set: { X-Env: prod }
     response_del: [Server]
+```
+
+### Compression (`type: compression`)
+
+- Negotiates `br` / `gzip` from `Accept-Encoding` (preference order configurable)
+- Skips responses that already have `Content-Encoding`, `Range` / `206`,
+  excluded statuses, `Cache-Control: no-transform`, or non-compressible types
+- Adds `Vary: Accept-Encoding` when compressing; see
+  `config/examples/edge-compression.yaml`
+
+```yaml
+- name: edge-compress
+  type: compression
+  config:
+    encodings: [br, gzip]
+    min_bytes: 1024
 ```
 
 ### JWT via OIDC discovery (`type: jwt`, `algorithm: rs256`)

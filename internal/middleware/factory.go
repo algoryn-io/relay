@@ -127,6 +127,17 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitObservers
 			PermissionsPolicy:       def.Config.PermissionsPolicy,
 		})
 		return mw, nil, err
+	case "compression":
+		mw, err := NewCompression(CompressionConfig{
+			Encodings:           def.Config.CompressionEncodings,
+			MinBytes:            def.Config.CompressionMinBytes,
+			GzipLevel:           def.Config.CompressionGzipLevel,
+			BrotliQuality:       def.Config.CompressionBrotliQuality,
+			ContentTypes:        def.Config.CompressionContentTypes,
+			ExcludeContentTypes: def.Config.CompressionExcludeContentTypes,
+			ExcludeStatus:       def.Config.CompressionExcludeStatus,
+		})
+		return mw, nil, err
 	case "api_key":
 		keys, err := LoadAPIKeys(def.Config.ResolvedKeys, def.Config.KeysFile)
 		if err != nil {

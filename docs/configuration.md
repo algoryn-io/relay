@@ -506,8 +506,8 @@ middleware:
 
 Common fields: `name` (unique), `type` (one of the types below), `config`
 (type-specific). Supported `type` values: `jwt`, `rate_limit`, `body_limit`,
-`ip_filter`, `cors`, `header`, `security_headers`, `api_key`, `cache`, `oauth2`,
-`ext_authz`.
+`ip_filter`, `cors`, `header`, `security_headers`, `compression`, `api_key`,
+`cache`, `oauth2`, `ext_authz`.
 
 ### `jwt`
 
@@ -660,6 +660,37 @@ CSP `frame-ancestors 'none'`. Override any field below, or set it to `off`:
     x_frame_options: off
     content_security_policy: "default-src 'self'; frame-ancestors 'self'"
     referrer_policy: strict-origin-when-cross-origin
+```
+
+### `compression`
+
+Edge response compression with `Accept-Encoding` negotiation. Prefer listing it
+early in a route's middleware list so it wraps the final response. Responses that
+already carry `Content-Encoding`, `Cache-Control: no-transform`, a `Range`
+request, status `204`/`206`/`304` (by default), or a non-compressible
+`Content-Type` are left untouched.
+
+| `config` field | Default | Description |
+| --- | --- | --- |
+| `encodings` | `[br, gzip]` | Allowed encodings in preference order when the client accepts more than one. |
+| `min_bytes` | `1024` | Minimum uncompressed body size before compressing. |
+| `gzip_level` | gzip default | Gzip level (`-2`…`9`). |
+| `brotli_quality` | `5` | Brotli quality (`1`…`11`). |
+| `content_types` | text/*, JSON, JS, XML, WASM, SVG | Allowlist of exact types or prefixes ending in `/`. |
+| `exclude_content_types` | octet-stream, zip, gzip, brotli, gRPC | Denylist applied after the allowlist. |
+| `exclude_status` | `[204, 206, 304]` | Response statuses that must not be compressed. |
+
+```yaml
+- name: edge-compress
+  type: compression
+  config:
+    encodings: [br, gzip]
+    min_bytes: 1024
+    content_types:
+      - text/
+      - application/json
+      - application/javascript
+      - image/svg+xml
 ```
 
 ### `api_key`
