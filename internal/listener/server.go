@@ -174,6 +174,7 @@ type Server struct {
 	tracing      *observability.TracingHandle
 	metrics      *observability.Metrics
 	prometheus   *observability.PrometheusCollector
+	operational  *observability.OperationalEvents
 	state        atomic.Pointer[serverState]
 	lifecycleMu  sync.Mutex
 	shuttingDown bool
@@ -216,11 +217,12 @@ func New(
 
 	metrics := observability.NewMetrics(100)
 	prometheus := observability.NewPrometheusCollector()
+	operational := observability.NewOperationalEvents(logger, prometheus)
 	var tracingHandle *observability.TracingHandle
 	if len(tracing) > 0 {
 		tracingHandle = tracing[0]
 	}
-	st, err := buildStateShared(cfg, rt, logger, tracingHandle, metrics, prometheus)
+	st, err := buildStateShared(cfg, rt, logger, tracingHandle, metrics, prometheus, operational)
 	if err != nil {
 		return nil, err
 	}
@@ -236,6 +238,7 @@ func New(
 		tracing:           tracingHandle,
 		metrics:           metrics,
 		prometheus:        prometheus,
+		operational:       operational,
 		httpPort:          cfg.Listener.HTTP.Port,
 		httpsPort:         cfg.Listener.HTTPS.Port,
 		tlsMode:           normalizedTLSMode(cfg.Listener.HTTPS.TLS.Mode),
@@ -247,6 +250,8 @@ func New(
 	st.onClose = func() { s.removeState(st) }
 	s.states[st] = struct{}{}
 	s.state.Store(st)
+	s.operational.SetFabric(st.fabricDispatch, st.relayServiceName)
+	s.operational.ConfigureRateLimitRedisSources(rateLimitRedisSources(rt))
 	s.connectionLimiter.setMetrics(st.prometheus)
 	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
 	s.maxRequestBodyBytes.Store(cfg.Listener.MaxRequestBodyBytes)
@@ -350,7 +355,7 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 		}
 	}
 
-	newState, err := buildStateShared(cfg, rt, s.logger, s.tracing, s.metrics, s.prometheus)
+	newState, err := buildStateShared(cfg, rt, s.logger, s.tracing, s.metrics, s.prometheus, s.operational)
 	if err != nil {
 		if preparedTLS != nil && preparedTLS.closer != nil {
 			_ = preparedTLS.closer.Close()
@@ -377,6 +382,8 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 		}
 	}
 	old := s.state.Swap(newState)
+	s.operational.SetFabric(newState.fabricDispatch, newState.relayServiceName)
+	s.operational.ConfigureRateLimitRedisSources(rateLimitRedisSources(rt))
 	old.retire(s.drainTimeout)
 
 	s.connectionLimiter.setLimit(cfg.Listener.MaxConnectionsPerIP)
@@ -391,7 +398,7 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 // replacing the registry when request-handling state is rebuilt.
 func (s *Server) RecordConfigReload(result, stage string) {
 	if s != nil {
-		s.prometheus.RecordConfigReload(result, stage)
+		s.operational.RecordConfigReload(result, stage)
 	}
 }
 
@@ -626,6 +633,7 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		nil,
 		observability.NewMetrics(100),
 		observability.NewPrometheusCollector(),
+		nil,
 	)
 }
 
@@ -636,6 +644,7 @@ func buildStateShared(
 	tracing *observability.TracingHandle,
 	metrics *observability.Metrics,
 	promCollector *observability.PrometheusCollector,
+	operational *observability.OperationalEvents,
 ) (st *serverState, err error) {
 	owner := &resourceOwner{}
 	defer func() {
@@ -658,7 +667,10 @@ func buildStateShared(
 	}))
 	rtProxy.SetWebSocketIdleTimeout(cfg.Listener.Timeouts.WebSocketIdle)
 
-	mwRegistry, mwClosers, err := middleware.BuildRegistry(rt.Middleware, logger, promCollector)
+	if operational == nil {
+		operational = observability.NewOperationalEvents(logger, promCollector)
+	}
+	mwRegistry, mwClosers, err := middleware.BuildRegistry(rt.Middleware, logger, operational)
 	if err != nil {
 		return nil, err
 	}
@@ -794,6 +806,19 @@ func buildStateShared(
 	}
 
 	return st, nil
+}
+
+func rateLimitRedisSources(rt *config.RuntimeConfig) []string {
+	if rt == nil {
+		return nil
+	}
+	sources := make([]string, 0)
+	for name, definition := range rt.Middleware {
+		if definition.Type == "rate_limit" && strings.EqualFold(strings.TrimSpace(definition.Config.RateLimitStore), "redis") {
+			sources = append(sources, name)
+		}
+	}
+	return sources
 }
 
 // buildTLSConfig creates a stable listener config backed by an atomic handle.

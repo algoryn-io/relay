@@ -6,7 +6,9 @@ The Relay dashboard JSON lives in
 
 It covers the RED signals (request rate, errors, latency p50/p95/p99) plus
 Relay's resilience metrics: upstream latency, backend health, retries and retry
-budget, circuit-breaker state, and bulkhead in-flight/rejections.
+budget, circuit-breaker state, bulkhead in-flight/rejections, configuration
+reloads, Redis rate-limit health, fail-open bypasses and memory eviction
+pressure. Operational state transitions are shown as dashboard annotations.
 
 ## Import manually
 
@@ -25,3 +27,5 @@ helm upgrade relay ./deploy/helm/relay --set metrics.dashboards.enabled=true
 The metrics endpoints are loopback-only by default — make sure
 `observability.prometheus.allowed_cidrs` permits your Prometheus, otherwise there
 is no data to display. See [../../docs/deployment.md](../../docs/deployment.md).
+Incident procedures are in
+[../../docs/operational-events-runbook.md](../../docs/operational-events-runbook.md).

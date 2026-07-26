@@ -124,9 +124,8 @@ func main() {
 
 		newCfg, files, loadErr := config.LoadWithFiles(configPath)
 		result := watchReloadResult{files: appendTLSWatchFiles(files, newCfg), debounce: currentDebounce()}
-		fail := func(stage string, reloadErr error) watchReloadResult {
+		fail := func(stage string, _ error) watchReloadResult {
 			server.RecordConfigReload("failure", stage)
-			logger.Error("config reload failed", "stage", stage, "error", reloadErr)
 			return result
 		}
 		if loadErr != nil {
@@ -166,7 +165,6 @@ func main() {
 		result.success = true
 		result.debounce = newCfg.Reload.Debounce
 		server.RecordConfigReload("success", "observability")
-		logger.Info("config reloaded", "path", configPath, "stage", "observability")
 		return result
 	}
 

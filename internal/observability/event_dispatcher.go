@@ -24,6 +24,7 @@ type EventDispatcher struct {
 	handler FabricDispatchHandler
 	logger  *slog.Logger
 
+	mu        sync.RWMutex
 	closeOnce sync.Once
 	closed    chan struct{}
 	done      chan struct{}
@@ -88,12 +89,19 @@ func (d *EventDispatcher) HasCapacity() bool {
 	if d == nil {
 		return false
 	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	return len(d.ch) < cap(d.ch)
 }
 
 // TryEnqueue forwards an item to the async processor. It never blocks the caller:
 // if the buffer is full, the item is dropped and an error is logged.
 func (d *EventDispatcher) TryEnqueue(item FabricDispatchItem) {
+	if d == nil {
+		return
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	select {
 	case <-d.closed:
 		return
@@ -110,9 +118,14 @@ func (d *EventDispatcher) TryEnqueue(item FabricDispatchItem) {
 
 // Close stops accepting new items and waits for the processor to drain the channel.
 func (d *EventDispatcher) Close() {
+	if d == nil {
+		return
+	}
 	d.closeOnce.Do(func() {
+		d.mu.Lock()
 		close(d.closed)
 		close(d.ch)
+		d.mu.Unlock()
 	})
 	<-d.done
 }

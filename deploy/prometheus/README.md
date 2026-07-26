@@ -32,4 +32,12 @@ helm upgrade relay ./deploy/helm/relay --set metrics.prometheusRule.enabled=true
 | `RelayCircuitBreakerOpen` | warning | a backend circuit breaker is open for 5m |
 | `RelayBulkheadRejecting` | warning | a backend bulkhead sheds requests for 10m |
 | `RelayRetryBudgetExhausted` | warning | retries suppressed by the budget for 10m |
+| `RelayConfigReloadFailing` | warning | a reload failure remains visible for 2m |
+| `RelayRateLimitRedisUnavailable` | critical | the latest Redis checks fail for 2m |
+| `RelayRateLimitRedisDegraded` | warning | fail-open Redis degradation lasts 5m |
+| `RelayRateLimitFailOpenBypass` | warning | fail-open bypasses persist for 2m |
+| `RelayRateLimitMemoryEvictionPressure` | warning | evictions exceed 0.1/s for 10m |
 | `RelayTargetDown` | critical | a Relay scrape target is down for 5m |
+
+Operational response procedures are documented in
+[`../../docs/operational-events-runbook.md`](../../docs/operational-events-runbook.md).
