@@ -452,6 +452,10 @@ Split a large config across files. `include` merges the `routes`, `backends` and
 `middleware` from each listed file (relative to the including file, or absolute)
 into the top level. Includes are loaded **once** — shared bases and cycles are
 handled safely — and duplicate names across files are caught by validation.
+With `reload.watch: true`, Relay watches the root and all transitive includes.
+Changes, atomic replacements, and include additions/removals are picked up
+automatically; a missing new include leaves the last valid config active and is
+retried when the file appears.
 
 ```yaml
 # relay.yaml

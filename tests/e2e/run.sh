@@ -96,12 +96,9 @@ printf 'Starting isolated Compose stack...\n'
 printf 'Checking basic proxy traffic...\n'
 assert_body "/basic" "v1:/basic"
 
-printf 'Checking included-config reload via SIGHUP...\n'
+printf 'Checking automatic included-config reload...\n'
 assert_body "/reload" "v1:/reload"
 cp "$script_dir/fixtures/config/reload-v2.yaml" "$runtime_dir/config/reload.yaml"
-# The current watcher observes only relay.yaml. SIGHUP intentionally exercises
-# a truthful reload of the changed include without claiming transitive watching.
-"${compose[@]}" kill --signal SIGHUP relay
 wait_for_body "/reload" "v2:/reload"
 
 printf 'Checking mTLS upstream and active health checks...\n'

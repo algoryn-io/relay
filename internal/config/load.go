@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -17,7 +18,22 @@ const (
 )
 
 func Load(path string) (*Config, error) {
-	return loadWithIncludes(path, make(map[string]struct{}))
+	cfg, _, err := LoadWithFiles(path)
+	return cfg, err
+}
+
+// LoadWithFiles loads path and returns every canonical file path encountered,
+// including the root and transitive includes. The file list is also returned
+// on error so callers can watch a missing include and recover when it appears.
+func LoadWithFiles(path string) (*Config, []string, error) {
+	loaded := make(map[string]struct{})
+	cfg, err := loadWithIncludes(path, loaded)
+	files := make([]string, 0, len(loaded))
+	for file := range loaded {
+		files = append(files, file)
+	}
+	sort.Strings(files)
+	return cfg, files, err
 }
 
 // loadWithIncludes loads a single config file and recursively merges any files
@@ -30,6 +46,7 @@ func loadWithIncludes(path string, loaded map[string]struct{}) (*Config, error) 
 	if err != nil {
 		return nil, fmt.Errorf("resolve config path %q: %w", path, err)
 	}
+	abs = filepath.Clean(abs)
 	if _, seen := loaded[abs]; seen {
 		// Already merged via another include; contribute nothing further.
 		return &Config{}, nil
@@ -37,23 +54,23 @@ func loadWithIncludes(path string, loaded map[string]struct{}) (*Config, error) 
 	loaded[abs] = struct{}{}
 
 	// #nosec G304 -- path is the operator-selected root or an include resolved from it.
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(abs)
 	if err != nil {
-		return nil, fmt.Errorf("read config %q: %w", path, err)
+		return nil, fmt.Errorf("read config %q: %w", abs, err)
 	}
 
 	var cfg Config
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("decode config %q: %w", path, err)
+		return nil, fmt.Errorf("decode config %q: %w", abs, err)
 	}
 
 	cfg.normalizeAliases()
 
 	includes := cfg.Include
 	cfg.Include = nil
-	baseDir := filepath.Dir(path)
+	baseDir := filepath.Dir(abs)
 	for _, inc := range includes {
 		incPath := inc
 		if !filepath.IsAbs(incPath) {
