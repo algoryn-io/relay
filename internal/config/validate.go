@@ -24,18 +24,19 @@ var (
 		"weighted_random":   {},
 	}
 	validMiddlewareTypes = map[string]struct{}{
-		"jwt":              {},
-		"rate_limit":       {},
-		"body_limit":       {},
-		"ip_filter":        {},
-		"cors":             {},
-		"header":           {},
-		"security_headers": {},
-		"compression":      {},
-		"api_key":          {},
-		"cache":            {},
-		"oauth2":           {},
-		"ext_authz":        {},
+		"jwt":                 {},
+		"rate_limit":          {},
+		"body_limit":          {},
+		"ip_filter":           {},
+		"cors":                {},
+		"header":              {},
+		"security_headers":    {},
+		"compression":         {},
+		"json_body_transform": {},
+		"api_key":             {},
+		"cache":               {},
+		"oauth2":              {},
+		"ext_authz":           {},
 	}
 	validInboundTLS12CipherSuites = map[string]struct{}{
 		tls.CipherSuiteName(tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256):       {},
@@ -1086,7 +1087,7 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 
 		if _, ok := validMiddlewareTypes[middleware.Type]; !ok {
-			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors, header, security_headers, compression, api_key, cache, oauth2, ext_authz", prefix)
+			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors, header, security_headers, compression, json_body_transform, api_key, cache, oauth2, ext_authz", prefix)
 		}
 
 		if middleware.Type == "jwt" {
@@ -1177,6 +1178,9 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 		if middleware.Type == "compression" {
 			validateCompressionMiddleware(prefix+".config", middleware.Config, errs)
+		}
+		if middleware.Type == "json_body_transform" {
+			validateJSONBodyTransformMiddleware(prefix+".config", middleware.Config, errs)
 		}
 		if middleware.Type == "api_key" {
 			validateAPIKeyMiddleware(prefix+".config", middleware.Config, errs)
@@ -1556,6 +1560,79 @@ func hasUnsafeHeaderValue(value string) bool {
 		}
 	}
 	return false
+}
+
+func validateJSONBodyTransformMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
+	if cfg.MaxBytes <= 0 {
+		errs.Addf("%s.max_bytes: must be greater than 0", prefix)
+	}
+	if len(cfg.CompressionContentTypes) == 0 {
+		errs.Addf("%s.content_types: must not be empty", prefix)
+	}
+	for i, ct := range cfg.CompressionContentTypes {
+		if strings.TrimSpace(ct) == "" {
+			errs.Addf("%s.content_types[%d]: must not be empty", prefix, i)
+		}
+	}
+	hasRequest := jsonBodyOpsConfigured(cfg.JSONBodyRequest)
+	hasResponse := jsonBodyOpsConfigured(cfg.JSONBodyResponse)
+	if !hasRequest && !hasResponse {
+		errs.Addf("%s: at least one of request or response transforms is required", prefix)
+	}
+	if hasRequest {
+		validateJSONBodyTransformOps(prefix+".request", cfg.JSONBodyRequest, errs)
+	}
+	if hasResponse {
+		validateJSONBodyTransformOps(prefix+".response", cfg.JSONBodyResponse, errs)
+	}
+}
+
+func jsonBodyOpsConfigured(ops JSONBodyTransformOpsConfig) bool {
+	return len(ops.Rename) > 0 || len(ops.Add) > 0 || len(ops.Remove) > 0
+}
+
+func validateJSONBodyTransformOps(prefix string, ops JSONBodyTransformOpsConfig, errs *ValidationErrors) {
+	seenTargets := make(map[string]string, len(ops.Rename))
+	for from, to := range ops.Rename {
+		from = strings.TrimSpace(from)
+		to = strings.TrimSpace(to)
+		if from == "" {
+			errs.Addf("%s.rename: source field must not be empty", prefix)
+			continue
+		}
+		if to == "" {
+			errs.Addf("%s.rename.%s: target field must not be empty", prefix, from)
+			continue
+		}
+		if from == to {
+			errs.Addf("%s.rename.%s: source and target must differ", prefix, from)
+			continue
+		}
+		if other, ok := seenTargets[to]; ok {
+			errs.Addf("%s.rename.%s: target %q already used by %q", prefix, from, to, other)
+			continue
+		}
+		seenTargets[to] = from
+	}
+	for from := range ops.Rename {
+		from = strings.TrimSpace(from)
+		if from == "" {
+			continue
+		}
+		if other, ok := seenTargets[from]; ok {
+			errs.Addf("%s.rename: chained rename from %q via target %q is not supported", prefix, other, from)
+		}
+	}
+	for key := range ops.Add {
+		if strings.TrimSpace(key) == "" {
+			errs.Addf("%s.add: field name must not be empty", prefix)
+		}
+	}
+	for i, key := range ops.Remove {
+		if strings.TrimSpace(key) == "" {
+			errs.Addf("%s.remove[%d]: field name must not be empty", prefix, i)
+		}
+	}
 }
 
 func validateCompressionMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {

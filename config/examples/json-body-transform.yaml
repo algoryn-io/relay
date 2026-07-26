@@ -1,0 +1,47 @@
+# Declarative JSON body transforms (top-level rename / add / remove).
+# Only buffers when Content-Type matches the allowlist and Content-Length is
+# known and within max_bytes. Streaming and non-JSON bodies pass through
+# untouched.
+listener:
+  http:
+    port: 8088
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+
+routes:
+  - name: legacy-api
+    match:
+      path_prefix: /legacy
+      methods: [POST, PUT, PATCH]
+    backend: api
+    middleware: [json-shim]
+
+backends:
+  - name: api
+    strategy: round_robin
+    instances:
+      - url: http://api.internal:8080
+
+middleware:
+  - name: json-shim
+    type: json_body_transform
+    config:
+      max_bytes: 1048576
+      content_types:
+        - application/json
+        - application/vnd.api+json
+      request:
+        rename:
+          user_id: id
+        add:
+          source: relay
+        remove:
+          - password
+          - ssn
+      response:
+        rename:
+          internal_id: id
+        remove:
+          - debug

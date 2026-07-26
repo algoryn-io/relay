@@ -231,6 +231,91 @@ func TestValidateSecurityHeadersAcceptsSafePresetOverride(t *testing.T) {
 	}
 }
 
+func TestValidateJSONBodyTransformMiddleware(t *testing.T) {
+	t.Parallel()
+
+	t.Run("accepts explicit config", func(t *testing.T) {
+		t.Parallel()
+		cfg := validConfig()
+		cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+			Name: "json-shim",
+			Type: "json_body_transform",
+			Config: MiddlewareSettingsConfig{
+				MaxBytes:                1048576,
+				CompressionContentTypes: []string{"application/json", "application/vnd.api+json"},
+				JSONBodyRequest: JSONBodyTransformOpsConfig{
+					Rename: map[string]string{"user_id": "id"},
+					Add:    map[string]any{"source": "relay"},
+					Remove: []string{"password"},
+				},
+				JSONBodyResponse: JSONBodyTransformOpsConfig{
+					Remove: []string{"internal"},
+				},
+			},
+		})
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	tests := map[string]struct {
+		settings MiddlewareSettingsConfig
+		want     string
+	}{
+		"missing max_bytes": {
+			settings: MiddlewareSettingsConfig{
+				CompressionContentTypes: []string{"application/json"},
+				JSONBodyRequest:         JSONBodyTransformOpsConfig{Remove: []string{"a"}},
+			},
+			want: "max_bytes: must be greater than 0",
+		},
+		"missing content_types": {
+			settings: MiddlewareSettingsConfig{
+				MaxBytes:        1024,
+				JSONBodyRequest: JSONBodyTransformOpsConfig{Remove: []string{"a"}},
+			},
+			want: "content_types: must not be empty",
+		},
+		"missing transforms": {
+			settings: MiddlewareSettingsConfig{
+				MaxBytes:                1024,
+				CompressionContentTypes: []string{"application/json"},
+			},
+			want: "at least one of request or response transforms is required",
+		},
+		"chained rename": {
+			settings: MiddlewareSettingsConfig{
+				MaxBytes:                1024,
+				CompressionContentTypes: []string{"application/json"},
+				JSONBodyRequest: JSONBodyTransformOpsConfig{
+					Rename: map[string]string{"a": "b", "b": "c"},
+				},
+			},
+			want: "chained rename",
+		},
+		"empty remove": {
+			settings: MiddlewareSettingsConfig{
+				MaxBytes:                1024,
+				CompressionContentTypes: []string{"application/json"},
+				JSONBodyRequest:         JSONBodyTransformOpsConfig{Remove: []string{""}},
+			},
+			want: "remove[0]: field name must not be empty",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validConfig()
+			cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+				Name:   "json-shim",
+				Type:   "json_body_transform",
+				Config: tc.settings,
+			})
+			assertValidationErrorContains(t, cfg.Validate(), tc.want)
+		})
+	}
+}
+
 func TestValidateCompressionMiddleware(t *testing.T) {
 	t.Parallel()
 

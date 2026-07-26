@@ -138,6 +138,22 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitObservers
 			ExcludeStatus:       def.Config.CompressionExcludeStatus,
 		})
 		return mw, nil, err
+	case "json_body_transform":
+		mw, err := NewJSONBodyTransform(JSONBodyTransformConfig{
+			MaxBytes:     def.Config.MaxBytes,
+			ContentTypes: def.Config.CompressionContentTypes,
+			Request: JSONBodyOps{
+				Rename: def.Config.JSONBodyRequest.Rename,
+				Add:    def.Config.JSONBodyRequest.Add,
+				Remove: def.Config.JSONBodyRequest.Remove,
+			},
+			Response: JSONBodyOps{
+				Rename: def.Config.JSONBodyResponse.Rename,
+				Add:    def.Config.JSONBodyResponse.Add,
+				Remove: def.Config.JSONBodyResponse.Remove,
+			},
+		})
+		return mw, nil, err
 	case "api_key":
 		keys, err := LoadAPIKeys(def.Config.ResolvedKeys, def.Config.KeysFile)
 		if err != nil {

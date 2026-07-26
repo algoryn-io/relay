@@ -31,8 +31,9 @@ no extra infrastructure.
 - **Auth & security** — JWT (HS256/RS256/JWKS/**OIDC discovery**), API keys,
   **OAuth2 introspection** (RFC 7662), **external authorization** (`ext_authz`),
   IP filter, CORS, body limit, inbound/outbound **mTLS**, TLS hardening, edge
-  header stripping, reusable **security-header presets**, and host-safe
-  HTTP→HTTPS redirects.
+  header stripping, reusable **security-header presets**, host-safe
+  HTTP→HTTPS redirects, edge **compression**, and bounded **JSON body
+  transforms**.
 - **Rate limiting & caching** — sliding-window rate limiting (in-memory or shared
   via **Redis**); response **cache** with `Cache-Control`/`Vary` awareness.
 - **Observability** — structured `slog` logs, **Prometheus** metrics, **OpenTelemetry**
@@ -392,6 +393,24 @@ configuration; it does not change runtime lookup behavior.
   config:
     encodings: [br, gzip]
     min_bytes: 1024
+```
+
+### JSON body transform (`type: json_body_transform`)
+
+- Declarative top-level `rename` / `add` / `remove` on request and/or response
+  JSON objects (`max_bytes` and `content_types` required)
+- Streaming, oversize, encoded, and non-matching content types pass through
+  without buffering; see `config/examples/json-body-transform.yaml`
+
+```yaml
+- name: json-shim
+  type: json_body_transform
+  config:
+    max_bytes: 1048576
+    content_types: [application/json]
+    request:
+      rename: {user_id: id}
+      remove: [password]
 ```
 
 ### JWT via OIDC discovery (`type: jwt`, `algorithm: rs256`)

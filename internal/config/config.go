@@ -543,6 +543,14 @@ type MiddlewareConfig struct {
 	Config  MiddlewareSettingsConfig `yaml:"config"`
 }
 
+// JSONBodyTransformOpsConfig is a bounded top-level JSON object transform:
+// rename, add, and/or remove fields. Nested paths are intentionally unsupported.
+type JSONBodyTransformOpsConfig struct {
+	Rename map[string]string `yaml:"rename"`
+	Add    map[string]any    `yaml:"add"`
+	Remove []string          `yaml:"remove"`
+}
+
 // RateLimitSelectorConfig is one ordered component of a rate-limit bucket key.
 // Type is ip, route, header, claim, tenant, or identity. Header selectors use
 // Name and verified JWT claim selectors use Claim.
@@ -704,6 +712,10 @@ type MiddlewareSettingsConfig struct {
 	CompressionContentTypes        []string `yaml:"content_types"`
 	CompressionExcludeContentTypes []string `yaml:"exclude_content_types"`
 	CompressionExcludeStatus       []int    `yaml:"exclude_status"`
+	// JSON body transform middleware fields. content_types and max_bytes are
+	// required and reuse the shared YAML keys above.
+	JSONBodyRequest  JSONBodyTransformOpsConfig `yaml:"request"`
+	JSONBodyResponse JSONBodyTransformOpsConfig `yaml:"response"`
 }
 
 type ObservabilityConfig struct {

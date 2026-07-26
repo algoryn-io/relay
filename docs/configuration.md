@@ -506,8 +506,8 @@ middleware:
 
 Common fields: `name` (unique), `type` (one of the types below), `config`
 (type-specific). Supported `type` values: `jwt`, `rate_limit`, `body_limit`,
-`ip_filter`, `cors`, `header`, `security_headers`, `compression`, `api_key`,
-`cache`, `oauth2`, `ext_authz`.
+`ip_filter`, `cors`, `header`, `security_headers`, `compression`,
+`json_body_transform`, `api_key`, `cache`, `oauth2`, `ext_authz`.
 
 ### `jwt`
 
@@ -691,6 +691,47 @@ request, status `204`/`206`/`304` (by default), or a non-compressible
       - application/json
       - application/javascript
       - image/svg+xml
+```
+
+### `json_body_transform`
+
+Declarative, top-level JSON object transforms for request and/or response
+bodies: `rename`, `add`, and `remove`. Nested JSON paths are not supported.
+`max_bytes` and `content_types` are required — Relay never buffers without an
+explicit allowlist and size bound. Bodies that are streaming (chunked /
+unknown `Content-Length`), larger than `max_bytes`, already encoded, or whose
+`Content-Type` is not listed pass through without buffering. Non-object JSON
+(arrays/scalars) is left unchanged. Invalid request JSON returns
+`400 json_body_invalid`; invalid response JSON is passed through unmodified.
+
+Ops apply in order: rename → remove → add.
+
+| `config` field | Description |
+| --- | --- |
+| `max_bytes` | Maximum body size to buffer (> 0, required). |
+| `content_types` | Allowlist of exact types or prefixes ending in `/` (required). |
+| `request.rename` / `request.add` / `request.remove` | Transform inbound JSON objects before proxying. |
+| `response.rename` / `response.add` / `response.remove` | Transform outbound JSON objects (requires a known `Content-Length` ≤ `max_bytes`). |
+
+At least one request or response op is required.
+
+```yaml
+- name: json-shim
+  type: json_body_transform
+  config:
+    max_bytes: 1048576
+    content_types:
+      - application/json
+    request:
+      rename:
+        user_id: id
+      add:
+        source: relay
+      remove:
+        - password
+    response:
+      remove:
+        - debug
 ```
 
 ### `api_key`
