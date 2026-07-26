@@ -1,0 +1,26 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  default: standard
+  disable:
+    # Existing unchecked cleanup calls are tracked separately; keep the pinned
+    # toolchain from turning this CI-hardening change into a broad refactor.
+    - errcheck
+  exclusions:
+    rules:
+      # Preserve existing style while retaining Staticcheck's correctness checks.
+      - linters:
+          - staticcheck
+        text: "QF1001|QF1008|QF1011|ST1023"
+
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

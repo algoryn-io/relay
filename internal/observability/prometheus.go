@@ -13,11 +13,11 @@ import (
 // backend health state. It satisfies proxy.HealthNotifier so the health loop can
 // push updates without the proxy package importing this one.
 type PrometheusCollector struct {
-	requestsTotal    *prometheus.CounterVec
-	requestDuration  *prometheus.HistogramVec
-	activeRequests   *prometheus.GaugeVec
-	backendHealthy   *prometheus.GaugeVec
-	upstreamDuration *prometheus.HistogramVec
+	requestsTotal       *prometheus.CounterVec
+	requestDuration     *prometheus.HistogramVec
+	activeRequests      *prometheus.GaugeVec
+	backendHealthy      *prometheus.GaugeVec
+	upstreamDuration    *prometheus.HistogramVec
 	retryTotal          *prometheus.CounterVec
 	retryBudgetExceeded *prometheus.CounterVec
 	circuitState        *prometheus.GaugeVec

@@ -57,4 +57,3 @@ func NewTracingMiddleware(routeName, backendName string) middleware.Middleware {
 		})
 	}
 }
-
