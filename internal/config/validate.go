@@ -460,6 +460,7 @@ func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[stri
 		}
 
 		validateRouteFailover(prefix+".failover", route.Backend, route.Failover, backendNames, errs)
+		validateRouteTraffic(prefix+".traffic", route.Backend, route.Traffic, backendNames, errs)
 
 		for j, name := range route.Middleware {
 			if _, ok := middlewareNames[name]; !ok {
@@ -511,6 +512,117 @@ func indexedFailoverPrefix(prefix string, failover RouteFailoverConfig, i int) s
 		return prefix + ".secondary"
 	}
 	return fmt.Sprintf("%s.backends[%d]", prefix, i)
+}
+
+func validateRouteTraffic(
+	prefix, primary string,
+	traffic RouteTrafficConfig,
+	backendNames map[string]struct{},
+	errs *ValidationErrors,
+) {
+	validateRouteCanary(prefix+".canary", primary, traffic.Canary, backendNames, errs)
+	validateRouteSticky(prefix+".sticky", traffic.Sticky, errs)
+	validateRouteMirror(prefix+".mirror", primary, traffic.Mirror, backendNames, errs)
+}
+
+func validateRouteCanary(
+	prefix, primary string,
+	canary RouteCanaryConfig,
+	backendNames map[string]struct{},
+	errs *ValidationErrors,
+) {
+	backend := strings.TrimSpace(canary.Backend)
+	hasKey := strings.TrimSpace(canary.Key.Header) != "" || strings.TrimSpace(canary.Key.Cookie) != ""
+	if backend == "" && canary.Percent == 0 && !hasKey {
+		return
+	}
+	if backend == "" {
+		errs.Addf("%s.backend: required when canary is configured", prefix)
+		return
+	}
+	if _, ok := backendNames[backend]; !ok {
+		errs.Addf("%s.backend: unknown backend %q", prefix, backend)
+	}
+	if backend == primary {
+		errs.Addf("%s.backend: must differ from the primary backend", prefix)
+	}
+	if canary.Percent < 0 || canary.Percent > 100 {
+		errs.Addf("%s.percent: must be between 0 and 100", prefix)
+	}
+	if strings.TrimSpace(canary.Key.Header) != "" && strings.ContainsAny(canary.Key.Header, " \t\r\n") {
+		errs.Addf("%s.key.header: must not contain whitespace", prefix)
+	}
+	if strings.TrimSpace(canary.Key.Cookie) != "" && strings.ContainsAny(canary.Key.Cookie, " \t\r\n;=") {
+		errs.Addf("%s.key.cookie: must be a valid cookie name", prefix)
+	}
+}
+
+func validateRouteSticky(prefix string, sticky RouteStickyConfig, errs *ValidationErrors) {
+	cookie := strings.TrimSpace(sticky.Cookie)
+	header := strings.TrimSpace(sticky.Header)
+	if cookie == "" && header == "" {
+		if sticky.CookieTTL != 0 || strings.TrimSpace(sticky.CookiePath) != "" {
+			errs.Addf("%s: cookie or header is required", prefix)
+		}
+		return
+	}
+	if cookie != "" && strings.ContainsAny(cookie, " \t\r\n;=") {
+		errs.Addf("%s.cookie: must be a valid cookie name", prefix)
+	}
+	if header != "" && strings.ContainsAny(header, " \t\r\n") {
+		errs.Addf("%s.header: must not contain whitespace", prefix)
+	}
+	if sticky.CookieTTL < 0 {
+		errs.Addf("%s.cookie_ttl: must be >= 0", prefix)
+	}
+	if cookie == "" && sticky.CookieTTL > 0 {
+		errs.Addf("%s.cookie_ttl: requires sticky.cookie", prefix)
+	}
+	if path := strings.TrimSpace(sticky.CookiePath); path != "" && !strings.HasPrefix(path, "/") {
+		errs.Addf("%s.cookie_path: must start with /", prefix)
+	}
+}
+
+func validateRouteMirror(
+	prefix, primary string,
+	mirror RouteMirrorConfig,
+	backendNames map[string]struct{},
+	errs *ValidationErrors,
+) {
+	backend := strings.TrimSpace(mirror.Backend)
+	configured := backend != "" ||
+		mirror.Percent != 0 ||
+		mirror.MaxConcurrent != 0 ||
+		mirror.Timeout != 0 ||
+		mirror.excludeRequestBodySet ||
+		len(mirror.ExcludeHeaders) > 0
+	if !configured {
+		return
+	}
+	if backend == "" {
+		errs.Addf("%s.backend: required when mirror is configured", prefix)
+		return
+	}
+	if _, ok := backendNames[backend]; !ok {
+		errs.Addf("%s.backend: unknown backend %q", prefix, backend)
+	}
+	if backend == primary {
+		errs.Addf("%s.backend: must differ from the primary backend", prefix)
+	}
+	if mirror.Percent < 0 || mirror.Percent > 100 {
+		errs.Addf("%s.percent: must be between 0 and 100", prefix)
+	}
+	if mirror.MaxConcurrent < 0 {
+		errs.Addf("%s.max_concurrent: must be >= 0", prefix)
+	}
+	if mirror.Timeout < 0 {
+		errs.Addf("%s.timeout: must be >= 0", prefix)
+	}
+	for i, h := range mirror.ExcludeHeaders {
+		if strings.TrimSpace(h) == "" {
+			errs.Addf("%s.exclude_headers[%d]: header name must not be empty", prefix, i)
+		}
+	}
 }
 
 func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[string]struct{} {

@@ -10,7 +10,7 @@ import (
 // has an open circuit breaker. Callers translate this to 503.
 var errAllCircuitsOpen = errors.New("all instances have open circuits")
 
-// errBulkheadFull is returned by resolveRouteBackend when every candidate
+// errBulkheadFull is returned by resolveBackendChain when every candidate
 // backend rejected the request due to its concurrency limit.
 var errBulkheadFull = errors.New("bulkhead full")
 

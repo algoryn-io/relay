@@ -278,6 +278,7 @@ func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 		Middlewares             []string                         `yaml:"middlewares"`
 		Backend                 string                           `yaml:"backend"`
 		Failover                RouteFailoverConfig              `yaml:"failover"`
+		Traffic                 RouteTrafficConfig               `yaml:"traffic"`
 		StripPrefix             string                           `yaml:"strip_prefix"`
 		Timeout                 timeDuration                     `yaml:"timeout"`
 		MaxBodyBytes            int64                            `yaml:"max_body_bytes"`
@@ -298,6 +299,7 @@ func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.Middlewares = raw.Middlewares
 	c.Backend = raw.Backend
 	c.Failover = raw.Failover
+	c.Traffic = raw.Traffic
 	c.StripPrefix = raw.StripPrefix
 	c.Timeout = raw.Timeout.Duration()
 	c.MaxBodyBytes = raw.MaxBodyBytes
@@ -305,6 +307,49 @@ func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.AddRequestHeaders = raw.AddRequestHeaders
 	c.PropagateClientIdentity = raw.PropagateClientIdentity
 
+	return nil
+}
+
+func (c *RouteStickyConfig) UnmarshalYAML(node *yaml.Node) error {
+	type rawSticky struct {
+		Cookie     string       `yaml:"cookie"`
+		Header     string       `yaml:"header"`
+		CookieTTL  timeDuration `yaml:"cookie_ttl"`
+		CookiePath string       `yaml:"cookie_path"`
+	}
+	var raw rawSticky
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	c.Cookie = raw.Cookie
+	c.Header = raw.Header
+	c.CookieTTL = raw.CookieTTL.Duration()
+	c.CookiePath = raw.CookiePath
+	return nil
+}
+
+func (c *RouteMirrorConfig) UnmarshalYAML(node *yaml.Node) error {
+	type rawMirror struct {
+		Backend            string       `yaml:"backend"`
+		Percent            int          `yaml:"percent"`
+		MaxConcurrent      int          `yaml:"max_concurrent"`
+		Timeout            timeDuration `yaml:"timeout"`
+		ExcludeRequestBody *bool        `yaml:"exclude_request_body"`
+		ExcludeHeaders     []string     `yaml:"exclude_headers"`
+	}
+	var raw rawMirror
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	c.Backend = raw.Backend
+	c.Percent = raw.Percent
+	c.MaxConcurrent = raw.MaxConcurrent
+	c.Timeout = raw.Timeout.Duration()
+	c.ExcludeHeaders = raw.ExcludeHeaders
+	if raw.ExcludeRequestBody != nil {
+		c.ExcludeRequestBody = *raw.ExcludeRequestBody
+		c.excludeRequestBodySet = true
+	}
 	return nil
 }
 

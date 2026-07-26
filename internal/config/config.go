@@ -208,9 +208,12 @@ type RouteConfig struct {
 	Backend     string      `yaml:"backend"`
 	// Failover lists secondary backends tried when the primary cannot serve
 	// (no healthy instances / all circuits open / bulkhead full).
-	Failover    RouteFailoverConfig `yaml:"-"` // set via UnmarshalYAML
-	StripPrefix string              `yaml:"-"` // set via UnmarshalYAML
-	Timeout     time.Duration       `yaml:"-"` // set via UnmarshalYAML
+	Failover RouteFailoverConfig `yaml:"-"` // set via UnmarshalYAML
+	// Traffic configures canary percentage splits, sticky sessions, and async
+	// request mirroring for this route.
+	Traffic     RouteTrafficConfig `yaml:"-"` // set via UnmarshalYAML
+	StripPrefix string             `yaml:"-"` // set via UnmarshalYAML
+	Timeout     time.Duration      `yaml:"-"` // set via UnmarshalYAML
 	// MaxBodyBytes caps the request body size for this route. Requests with a
 	// larger body are rejected with 413. 0 means no limit.
 	MaxBodyBytes int64 `yaml:"-"` // set via UnmarshalYAML
@@ -233,6 +236,53 @@ type RouteFailoverConfig struct {
 	Secondary string `yaml:"secondary"`
 	// Backends is an ordered list of secondary backends. Mutually exclusive with Secondary.
 	Backends []string `yaml:"backends"`
+}
+
+// RouteTrafficConfig holds optional per-route traffic policies.
+type RouteTrafficConfig struct {
+	Canary RouteCanaryConfig `yaml:"canary"`
+	Sticky RouteStickyConfig `yaml:"sticky"`
+	Mirror RouteMirrorConfig `yaml:"mirror"`
+}
+
+// RouteCanaryConfig sends a deterministic percentage of requests to a canary
+// backend. The same key always maps to the same 0–99 bucket.
+type RouteCanaryConfig struct {
+	Backend string                `yaml:"backend"`
+	Percent int                   `yaml:"percent"`
+	Key     RouteTrafficKeyConfig `yaml:"key"`
+}
+
+// RouteTrafficKeyConfig selects the request attribute hashed for deterministic
+// canary / mirror sampling. Header is tried first, then cookie; when both are
+// empty or absent the client IP is used.
+type RouteTrafficKeyConfig struct {
+	Header string `yaml:"header"`
+	Cookie string `yaml:"cookie"`
+}
+
+// RouteStickyConfig pins a client to one backend instance via cookie and/or
+// header affinity.
+type RouteStickyConfig struct {
+	Cookie     string        `yaml:"cookie"`
+	Header     string        `yaml:"header"`
+	CookieTTL  time.Duration `yaml:"cookie_ttl"`
+	CookiePath string        `yaml:"cookie_path"`
+}
+
+// RouteMirrorConfig fires an asynchronous shadow copy of the request to another
+// backend. The client response always comes from the primary path; mirror
+// failures are ignored. Bodies and sensitive headers are excluded by default.
+type RouteMirrorConfig struct {
+	Backend            string        `yaml:"backend"`
+	Percent            int           `yaml:"percent"`
+	MaxConcurrent      int           `yaml:"max_concurrent"`
+	Timeout            time.Duration `yaml:"timeout"`
+	ExcludeRequestBody bool          `yaml:"exclude_request_body"`
+	ExcludeHeaders     []string      `yaml:"exclude_headers"`
+	// excludeRequestBodySet tracks whether exclude_request_body was present so
+	// runtime can default it to true when omitted.
+	excludeRequestBodySet bool `yaml:"-"`
 }
 
 type MatchConfig struct {
