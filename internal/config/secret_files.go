@@ -43,6 +43,29 @@ func (c *Config) ResolveSecretFiles(readFile func(string) ([]byte, error)) error
 		c.Listener.Admin.ResolvedToken = v
 	}
 
+	resolveACMERedisFile := func(prefix string, tls *TLSConfig) error {
+		if tls == nil {
+			return nil
+		}
+		cache := &tls.ACMECache
+		if path := strings.TrimSpace(cache.RedisURLFile); path != "" && strings.TrimSpace(cache.RedisURL) == "" {
+			v, err := read(prefix+".acme_cache.redis_url_file", path)
+			if err != nil {
+				return err
+			}
+			cache.RedisURL = v
+		}
+		return nil
+	}
+	if err := resolveACMERedisFile("listener.https.tls", &c.Listener.HTTPS.TLS); err != nil {
+		return err
+	}
+	// Listener.TLS is a compatibility alias. Resolve it as well because callers
+	// may construct Config directly without going through Load normalization.
+	if err := resolveACMERedisFile("listener.tls", &c.Listener.TLS); err != nil {
+		return err
+	}
+
 	for i := range c.Middleware {
 		mw := &c.Middleware[i]
 		cfg := &mw.Config

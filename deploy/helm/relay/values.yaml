@@ -1,9 +1,11 @@
 # Default values for the Relay chart.
 # This is a YAML-formatted file. Override with --set or a custom values file.
 
-# Number of Relay replicas. Relay is stateless, so it scales horizontally; put
-# multiple replicas behind the Service and (for shared rate limiting) point the
-# rate_limit middleware at a shared Redis.
+# Number of Relay replicas. Keep listener.https.tls.replicas in the Relay config
+# aligned with this value. Automatic TLS with more than one replica requires
+# distributed: true and acme_cache.backend: redis; Relay rejects an unsafe
+# multi-replica filesystem cache. Supply its URL through existingSecret,
+# extraEnv, or a read-only Secret volume plus redis_url_file.
 replicaCount: 1
 
 image:
@@ -75,7 +77,8 @@ config: |
 
 # Secrets injected as environment variables (e.g. JWT_SECRET referenced by a
 # middleware's secret_env). Rendered into a Secret and exposed via envFrom.
-# Prefer file-based secrets (extraVolumes + *_file config) for stronger isolation.
+# Prefer file-based secrets (extraVolumes + *_file config) for stronger isolation,
+# including listener.https.tls.acme_cache.redis_url_file.
 secrets: {}
 # secrets:
 #   JWT_SECRET: "change-me"

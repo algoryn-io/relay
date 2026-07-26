@@ -1,0 +1,25 @@
+listener:
+  https:
+    port: 8443
+    tls:
+      mode: auto
+      domains: [relay.invalid]
+      acme_email: ops@relay.invalid
+      replicas: 3
+      distributed: true
+      acme_cache:
+        backend: redis
+        redis_url: redis://redis:6379/0
+        namespace: e2e
+        operation_timeout: 250ms
+        lock_wait_timeout: 30s
+        lock_ttl: 1m
+        lock_renew_interval: 15s
+  timeouts:
+    read: 5s
+    write: 5s
+    idle: 15s
+
+routes: []
+backends: []
+middleware: []

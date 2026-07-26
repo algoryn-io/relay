@@ -55,7 +55,11 @@ listener:
     tls:
       mode: auto
       domains: [api.example.com]
-      acme_cache_dir: /etc/relay/tls/acme
+      acme_email: ops@example.com
+      replicas: 1
+      acme_cache:
+        backend: filesystem
+        directory: /etc/relay/tls/acme
 ```
 
 Or terminate TLS with `mode: manual` and your own cert/key (hot-rotated on reload).
@@ -149,11 +153,14 @@ coordination: run N replicas behind the Service (or an HPA).
 | Response cache | in-memory (per instance) | per-instance is fine; each caches independently |
 | Config | one file / ConfigMap | same file/ConfigMap on every replica; rolling restart to change |
 | Backend discovery | static URLs | a Kubernetes `Service` DNS name load-balances pods |
-| TLS | ACME or manual in Relay | usually terminated at the LB / Gateway |
+| TLS | ACME filesystem cache or manual | Redis ACME cache/lease, or terminate at the LB / Gateway |
 
-The only state that must be shared for correctness across replicas is distributed
-rate limiting — point the `rate_limit` middleware at Redis. Everything else is
-per-instance by design.
+When Relay terminates automatic TLS on multiple replicas, declare `replicas`,
+set `distributed: true`, and configure `acme_cache.backend: redis`. Relay rejects
+a declared multi-replica filesystem cache because it can cause duplicate ACME
+orders and account rate-limit exhaustion. Supply the Redis URL with
+`redis_url_env` or `redis_url_file`; this remains compatible with a read-only
+container root. Redis unavailability fails certificate cache operations closed.
 
 ---
 
@@ -167,4 +174,4 @@ per-instance by design.
 - [ ] Secrets provided via env or `*_file` — never committed to the config.
 - [ ] TLS configured (ACME auto, manual, or terminated upstream) with a hardened `min_version`.
 - [ ] Admin API restricted (`listener.admin.allowed_cidrs` + `token_env`/`token_file`).
-- [ ] For multiple replicas: `store: redis` for rate limiting.
+- [ ] For multiple replicas: `store: redis` for shared rate limiting and Redis ACME coordination when Relay terminates automatic TLS.

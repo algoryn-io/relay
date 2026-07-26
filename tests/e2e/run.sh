@@ -113,11 +113,13 @@ assert_status "/redis/open" "200"
 
 printf 'Checking ACME configuration on a read-only root filesystem...\n'
 "${compose[@]}" --profile validation run --rm --no-deps acme-validate
+"${compose[@]}" --profile validation run --rm --no-deps acme-validate \
+  -config /etc/relay/acme/distributed.yaml -validate
 if output="$("${compose[@]}" --profile validation run --rm --no-deps acme-validate \
   -config /etc/relay/acme/missing-cache.yaml -validate 2>&1)"; then
-  fail "ACME configuration without a writable cache was accepted"
+  fail "ACME configuration without a cache backend was accepted"
 fi
-[[ "$output" == *"acme_cache_dir"* ]] ||
-  fail "invalid ACME config failed without reporting acme_cache_dir"
+[[ "$output" == *"acme_cache.backend"* ]] ||
+  fail "invalid ACME config failed without reporting acme_cache.backend"
 
 printf 'Relay E2E runtime suite passed.\n'

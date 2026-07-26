@@ -7,8 +7,8 @@ an isolated Docker Compose project. It covers:
 - automatically reloading a changed file-based `include`;
 - Redis unavailable with default fail-closed and explicit `fail_open: true`;
 - an upstream requiring a client certificate, with active health checks;
-- ACME configuration validation in a read-only container, including safe
-  rejection when `acme_cache_dir` is missing.
+- filesystem and distributed Redis ACME configuration validation in a read-only
+  container, including safe rejection when `acme_cache.backend` is missing.
 
 The include test changes an included file without sending `SIGHUP`; the
 transitive file watcher detects it and reloads the merged configuration.
@@ -33,6 +33,6 @@ HELM_VERSION=v3.18.6 bash tests/e2e/helm.sh
 
 It runs strict `helm lint`, renders the complete chart, extracts `relay.yaml`
 from the rendered ConfigMap, validates it with Relay itself, and checks the
-rendered read-only-root and config-checksum safeguards. ACME checks use
-`relay.invalid` and `-validate`; they never request a certificate or contact
-Let's Encrypt.
+rendered read-only-root and config-checksum safeguards. Filesystem and Redis
+ACME checks use `relay.invalid` and `-validate`; they never create an ACME
+manager, connect to Redis, request a certificate, or contact Let's Encrypt.
