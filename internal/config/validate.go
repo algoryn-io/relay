@@ -464,6 +464,9 @@ func validateBackendTLS(prefix string, cfg BackendTLSConfig, errs *ValidationErr
 	if hasKey && !hasCert {
 		errs.Addf("%s.cert_file: required when key_file is set", prefix)
 	}
+	if cfg.InsecureSkipVerify && !cfg.AcknowledgeInsecureSkipVerify {
+		errs.Addf("%s.acknowledge_insecure_skip_verify: must be true when insecure_skip_verify is enabled", prefix)
+	}
 }
 
 func validateAPIKeyMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
