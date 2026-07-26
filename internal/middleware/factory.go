@@ -79,6 +79,17 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 			ResponseDel: def.Config.ResponseDel,
 		})
 		return mw, nil, err
+	case "security_headers":
+		mw, err := NewSecurityHeaders(SecurityHeadersConfig{
+			Preset:                  def.Config.SecurityHeadersPreset,
+			StrictTransportSecurity: def.Config.StrictTransportSecurity,
+			ContentSecurityPolicy:   def.Config.ContentSecurityPolicy,
+			XFrameOptions:           def.Config.XFrameOptions,
+			XContentTypeOptions:     def.Config.XContentTypeOptions,
+			ReferrerPolicy:          def.Config.ReferrerPolicy,
+			PermissionsPolicy:       def.Config.PermissionsPolicy,
+		})
+		return mw, nil, err
 	case "api_key":
 		keys, err := LoadAPIKeys(def.Config.ResolvedKeys, def.Config.KeysFile)
 		if err != nil {

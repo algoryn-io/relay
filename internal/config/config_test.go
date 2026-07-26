@@ -56,6 +56,7 @@ func TestLoadFullValidConfig(t *testing.T) {
 listener:
   http:
     port: 80
+    canonical_host: api.example.com
   https:
     port: 443
     tls:
@@ -159,6 +160,34 @@ middleware:
 	}
 	if got := cfg.Middleware[0].Config.JWKSStaleGrace; got != 10*time.Minute {
 		t.Fatalf("JWKSStaleGrace = %s, want 10m", got)
+	}
+}
+
+func TestLoadSecurityHeadersAndRedirectHosts(t *testing.T) {
+	t.Parallel()
+
+	path := writeTempConfig(t, `
+listener:
+  http:
+    port: 80
+    redirect_allowed_hosts: [api.example.com, "2001:db8::1"]
+middleware:
+  - name: browser-security
+    type: security_headers
+    config:
+      preset: secure
+      x_frame_options: off
+      content_security_policy: "default-src 'self'; frame-ancestors 'self'"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Listener.HTTP.RedirectAllowedHosts; len(got) != 2 {
+		t.Fatalf("RedirectAllowedHosts = %#v", got)
+	}
+	if got := cfg.Middleware[0].Config.SecurityHeadersPreset; got != "secure" {
+		t.Fatalf("SecurityHeadersPreset = %q, want secure", got)
 	}
 }
 

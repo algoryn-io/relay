@@ -60,6 +60,13 @@ type AdminConfig struct {
 
 type HTTPConfig struct {
 	Port int `yaml:"port"`
+	// CanonicalHost is the fixed hostname used by HTTP-to-HTTPS redirects.
+	// It must not contain a port; the configured HTTPS port is applied.
+	CanonicalHost string `yaml:"canonical_host"`
+	// RedirectAllowedHosts restricts request Host values that may be reflected
+	// into an HTTPS redirect when CanonicalHost is empty. Entries never include
+	// ports and may be DNS names, IPv4 addresses, or IPv6 addresses.
+	RedirectAllowedHosts []string `yaml:"redirect_allowed_hosts"`
 }
 
 type HTTPSConfig struct {
@@ -357,6 +364,15 @@ type MiddlewareSettingsConfig struct {
 	// AcknowledgeExtAuthzFailOpen must be set when ext_authz fail_open is true.
 	// It is a validation-only acknowledgement and does not alter request handling.
 	AcknowledgeExtAuthzFailOpen bool `yaml:"acknowledge_ext_authz_fail_open"`
+	// Security headers middleware fields. A value of "off" explicitly disables
+	// a header inherited from a preset.
+	SecurityHeadersPreset   string `yaml:"preset"`
+	StrictTransportSecurity string `yaml:"strict_transport_security"`
+	ContentSecurityPolicy   string `yaml:"content_security_policy"`
+	XFrameOptions           string `yaml:"x_frame_options"`
+	XContentTypeOptions     string `yaml:"x_content_type_options"`
+	ReferrerPolicy          string `yaml:"referrer_policy"`
+	PermissionsPolicy       string `yaml:"permissions_policy"`
 }
 
 type ObservabilityConfig struct {

@@ -129,7 +129,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 	// HTTP server: either serves requests directly, or redirects to HTTPS.
 	httpHandler := http.Handler(s)
 	if httpsPort > 0 && cfg.Listener.HTTP.Port > 0 {
-		httpHandler = httpsRedirectHandler(httpsPort)
+		httpHandler = httpsRedirectHandler(cfg.Listener.HTTP, httpsPort)
 	}
 
 	if cfg.Listener.HTTP.Port > 0 {
@@ -676,23 +676,83 @@ func writeReadiness(w http.ResponseWriter, px *proxy.Proxy) {
 	_, _ = w.Write([]byte(`{"status":"ready"}`))
 }
 
-// httpsRedirectHandler returns an http.Handler that permanently redirects
-// every request to the same path on the HTTPS port.
-func httpsRedirectHandler(httpsPort int) http.Handler {
+// httpsRedirectHandler redirects only to a configured or allowlisted authority.
+// It never reflects an arbitrary request Host into Location.
+func httpsRedirectHandler(cfg config.HTTPConfig, httpsPort int) http.Handler {
+	canonicalHost := normalizeConfiguredRedirectHost(cfg.CanonicalHost)
+	allowedHosts := make(map[string]struct{}, len(cfg.RedirectAllowedHosts))
+	for _, host := range cfg.RedirectAllowedHosts {
+		allowedHosts[normalizeConfiguredRedirectHost(host)] = struct{}{}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		host := r.Host
-		if host == "" {
-			host = r.URL.Host
+		requestHost, ok := requestHostname(r.Host)
+		if !ok {
+			http.Error(w, "invalid Host header", http.StatusBadRequest)
+			return
 		}
-		// Strip any existing port from the host.
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			host = h
+		if len(allowedHosts) > 0 {
+			if _, ok := allowedHosts[requestHost]; !ok {
+				http.Error(w, "Host header is not allowed", http.StatusBadRequest)
+				return
+			}
 		}
-		target := fmt.Sprintf("https://%s:%d%s", host, httpsPort, r.RequestURI)
-		if httpsPort == 443 {
-			target = fmt.Sprintf("https://%s%s", host, r.RequestURI)
+		targetHost := canonicalHost
+		if targetHost == "" {
+			if _, ok := allowedHosts[requestHost]; !ok {
+				http.Error(w, "Host header is not allowed", http.StatusBadRequest)
+				return
+			}
+			targetHost = requestHost
 		}
-		// #nosec G710 -- the fixed scheme and request Host preserve the same authority.
-		http.Redirect(w, r, target, http.StatusMovedPermanently)
+
+		targetURL := *r.URL
+		targetURL.Scheme = "https"
+		targetURL.Host = httpsAuthority(targetHost, httpsPort)
+		targetURL.User = nil
+		targetURL.Opaque = ""
+		if targetURL.Path == "" {
+			targetURL.Path = "/"
+		}
+		w.Header().Set("Location", targetURL.String())
+		w.WriteHeader(http.StatusMovedPermanently)
 	})
+}
+
+func normalizeConfiguredRedirectHost(host string) string {
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	return strings.ToLower(strings.TrimSuffix(host, "."))
+}
+
+func requestHostname(authority string) (string, bool) {
+	if authority == "" || strings.ContainsAny(authority, "/\\@?# \t\r\n") {
+		return "", false
+	}
+	host := authority
+	if parsed, _, err := net.SplitHostPort(authority); err == nil {
+		host = parsed
+	} else {
+		switch {
+		case strings.HasPrefix(authority, "[") && strings.HasSuffix(authority, "]"):
+			host = authority[1 : len(authority)-1]
+		case net.ParseIP(authority) != nil:
+			host = authority
+		case strings.Contains(authority, ":"):
+			return "", false
+		}
+	}
+	host = normalizeConfiguredRedirectHost(host)
+	return host, host != ""
+}
+
+func httpsAuthority(host string, port int) string {
+	if port != 443 {
+		return net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	}
+	if strings.Contains(host, ":") {
+		return "[" + host + "]"
+	}
+	return host
 }
