@@ -227,7 +227,7 @@ func TestCacheLRUEviction(t *testing.T) {
 	}
 	store.Set("a", mk("a"))
 	store.Set("b", mk("b"))
-	_, _ = store.Get("a") // make "a" most-recently-used
+	_, _ = store.Get("a")   // make "a" most-recently-used
 	store.Set("c", mk("c")) // should evict "b"
 
 	if _, ok := store.Get("b"); ok {
