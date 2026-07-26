@@ -84,7 +84,7 @@ Controls the `/_relay/admin/*` management API.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `allowed_cidrs` | []cidr/ip | loopback | IP ranges (real TCP peer) allowed to call admin endpoints. |
-| `token_env` / `token_file` | string | — | Optional bearer token required in addition to the IP allowlist. |
+| `token_env` / `token_file` | string | — | Bearer token required in addition to the IP allowlist whenever `allowed_cidrs` extends beyond loopback. |
 
 ---
 
