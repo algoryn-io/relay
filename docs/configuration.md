@@ -254,7 +254,9 @@ query-constrained) wins, with fallback to a catch-all.
 | Field | Type | Description |
 | --- | --- | --- |
 | `name` | string | Unique route name (`id` is an alias). |
-| `backend` | string | Name of the target backend. |
+| `backend` | string | Name of the primary target backend. |
+| `failover.secondary` | string | Single secondary backend used when the primary cannot serve. Mutually exclusive with `failover.backends`. |
+| `failover.backends` | []string | Ordered secondary backends tried after the primary. Mutually exclusive with `failover.secondary`. |
 | `middleware` | []string | Names of middleware to apply, in order (`middlewares` is an alias). |
 | `match.path` | string | Exact path match. Mutually exclusive with `path_prefix`. |
 | `match.path_prefix` | string | Prefix match (`/v1` matches `/v1` and `/v1/x`, not `/v10`); longest match wins. |
@@ -278,8 +280,16 @@ query-constrained) wins, with fallback to a catch-all.
 | `name` | string | — | Unique backend name. |
 | `protocol` | string | `http1` | `http1` (HTTP/1.1, h2 via ALPN for https) or `h2c` (cleartext HTTP/2, e.g. gRPC). `h2c` cannot be combined with `tls`. |
 | `strategy` | string | — | `round_robin`, `least_connections`, or `weighted_random`. |
-| `instances[].url` | url | — | Upstream URL (`http`/`https`). |
+| `instances[].url` | url | — | Upstream URL (`http`/`https`). Mutually exclusive with `discovery.dns`. |
 | `instances[].weight` | int | `1` | Traffic share for `weighted_random` (0 → 1). |
+| `discovery.dns.name` | string | — | DNS name to resolve (`A`/`AAAA`) or full SRV QNAME. |
+| `discovery.dns.record_type` | string | `A` | `A`, `AAAA`, or `SRV`. |
+| `discovery.dns.port` | int | — | Port for constructed URLs (required for `A`/`AAAA`; unused for `SRV`). |
+| `discovery.dns.scheme` | string | `http` | `http` or `https` for discovered instance URLs. |
+| `discovery.dns.refresh_interval` | duration | `30s` | Cap between re-resolves; effective interval is `min(TTL, refresh_interval)` clamped by `ttl_min`/`ttl_max`. |
+| `discovery.dns.ttl_min` | duration | `1s` | Floor for very short DNS TTLs. |
+| `discovery.dns.ttl_max` | duration | — | Optional ceiling for long DNS TTLs. |
+| `discovery.dns.weight` | int | `1` | Default weight for `A`/`AAAA` answers (`SRV` uses the record weight). |
 | `health_check.path` | path | — | Active health-check path (enables checks when set with `interval`). |
 | `health_check.interval` | duration | — | Time between checks. |
 | `health_check.timeout` | duration | — | Per-check timeout. |
@@ -307,15 +317,54 @@ query-constrained) wins, with fallback to a catch-all.
 | `propagate_client_identity.fields` | []string | `[]` | Explicit allowlist: `subject`, `san_dns`, `san_email`, `san_ip`, `san_uri`, `fingerprint_sha256`. Raw/PEM certificates are never forwarded. |
 | `propagate_client_identity.acknowledge_verified_https` | bool | `false` | Required acknowledgement when the upstream uses verified HTTPS without outbound mTLS. |
 
+Exactly one of static `instances` or `discovery.dns` is required per backend.
+DNS discovery supports only standard A/AAAA/SRV resolution (including Kubernetes
+Service DNS names via cluster DNS). There is no Kubernetes Endpoints/Services API
+or Consul integration. Discovered pools are replaced atomically; existing
+instance health/circuit/outlier state is preserved for URLs that remain.
+
+Route failover keeps `backend` as the primary and tries `failover.secondary` /
+`failover.backends` when the primary has no selectable instance (unhealthy,
+ejected, or all circuits open) or its bulkhead is full. Retries stay on the
+chosen backend for the request.
+
+```yaml
+routes:
+  - name: orders
+    match:
+      path_prefix: /orders
+      methods: [GET, POST]
+    backend: orders-primary
+    failover:
+      secondary: orders-dr
+
+backends:
+  - name: orders-primary
+    strategy: round_robin
+    discovery:
+      dns:
+        name: orders.default.svc.cluster.local
+        record_type: A
+        port: 8080
+        scheme: http
+        refresh_interval: 15s
+        ttl_min: 1s
+        ttl_max: 1m
+  - name: orders-dr
+    strategy: round_robin
+    instances:
+      - url: http://orders-dr.internal:8080
+```
+
 Identity propagation fails validation unless every backend instance uses HTTPS
-with certificate verification enabled. Outbound mTLS satisfies the stronger
-trust-boundary requirement; otherwise
-`acknowledge_verified_https: true` is mandatory. A route may replace its
-backend's policy with its own `propagate_client_identity` object. Relay always
-strips the reserved `X-Relay-Client-Cert-*` headers before setting allowlisted
-values from `TLS.VerifiedChains`; an absent or unverified client certificate
-produces no identity headers. Subject/SAN values containing controls or exceeding
-the bounded header value size are omitted.
+with certificate verification enabled (for DNS discovery, `discovery.dns.scheme`
+must be `https`). Outbound mTLS satisfies the stronger trust-boundary
+requirement; otherwise `acknowledge_verified_https: true` is mandatory. A route
+may replace its backend's policy with its own `propagate_client_identity` object.
+Relay always strips the reserved `X-Relay-Client-Cert-*` headers before setting
+allowlisted values from `TLS.VerifiedChains`; an absent or unverified client
+certificate produces no identity headers. Subject/SAN values containing controls
+or exceeding the bounded header value size are omitted.
 
 ```yaml
 propagate_client_identity:

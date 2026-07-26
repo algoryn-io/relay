@@ -459,12 +459,58 @@ func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[stri
 			errs.Addf("%s.backend: unknown backend %q", prefix, route.Backend)
 		}
 
+		validateRouteFailover(prefix+".failover", route.Backend, route.Failover, backendNames, errs)
+
 		for j, name := range route.Middleware {
 			if _, ok := middlewareNames[name]; !ok {
 				errs.Addf("%s.middleware[%d]: unknown middleware %q", prefix, j, name)
 			}
 		}
 	}
+}
+
+func validateRouteFailover(
+	prefix, primary string,
+	failover RouteFailoverConfig,
+	backendNames map[string]struct{},
+	errs *ValidationErrors,
+) {
+	hasSecondary := strings.TrimSpace(failover.Secondary) != ""
+	hasList := len(failover.Backends) > 0
+	if !hasSecondary && !hasList {
+		return
+	}
+	if hasSecondary && hasList {
+		errs.Addf("%s: secondary and backends are mutually exclusive", prefix)
+		return
+	}
+
+	names := normalizeFailoverBackends(failover)
+	if len(names) == 0 {
+		errs.Addf("%s: at least one secondary backend is required", prefix)
+		return
+	}
+
+	seen := make(map[string]struct{}, len(names))
+	for i, name := range names {
+		if name == primary {
+			errs.Addf("%s: secondary backend %q must differ from the primary backend", prefix, name)
+		}
+		if _, ok := backendNames[name]; !ok {
+			errs.Addf("%s: unknown backend %q", indexedFailoverPrefix(prefix, failover, i), name)
+		}
+		if _, ok := seen[name]; ok {
+			errs.Addf("%s: duplicate backend %q", prefix, name)
+		}
+		seen[name] = struct{}{}
+	}
+}
+
+func indexedFailoverPrefix(prefix string, failover RouteFailoverConfig, i int) string {
+	if strings.TrimSpace(failover.Secondary) != "" {
+		return prefix + ".secondary"
+	}
+	return fmt.Sprintf("%s.backends[%d]", prefix, i)
 }
 
 func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[string]struct{} {
@@ -496,8 +542,17 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 			errs.Addf("%s.protocol: h2c (cleartext) cannot be combined with tls", prefix)
 		}
 
-		if len(backend.Instances) == 0 {
-			errs.Addf("%s.instances: must contain at least one instance", prefix)
+		hasDNS := backend.Discovery.DNS != nil
+		hasInstances := len(backend.Instances) > 0
+		switch {
+		case hasDNS && hasInstances:
+			errs.Addf("%s: discovery.dns and instances are mutually exclusive", prefix)
+		case !hasDNS && !hasInstances:
+			errs.Addf("%s: exactly one of instances or discovery.dns is required", prefix)
+		}
+
+		if hasDNS {
+			validateDNSDiscovery(prefix+".discovery.dns", backend.Discovery.DNS, errs)
 		}
 
 		validatePositiveDuration(prefix+".health_check.interval", backend.HealthCheck.Interval, errs, true)
@@ -540,6 +595,114 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 	}
 
 	return seen
+}
+
+func validateDNSDiscovery(prefix string, dns *DNSDiscoveryConfig, errs *ValidationErrors) {
+	if dns == nil {
+		return
+	}
+
+	recordType := strings.ToUpper(strings.TrimSpace(dns.RecordType))
+	switch recordType {
+	case "", "A", "AAAA", "SRV":
+	default:
+		errs.Addf("%s.record_type: must be one of A, AAAA, SRV", prefix)
+	}
+	if recordType == "" {
+		recordType = "A"
+	}
+
+	name := strings.TrimSpace(dns.Name)
+	switch {
+	case name == "":
+		errs.Addf("%s.name: required", prefix)
+	case recordType == "SRV":
+		if !isValidSRVName(name) {
+			errs.Addf("%s.name: must be a valid SRV name (e.g. _http._tcp.service.namespace.svc.cluster.local)", prefix)
+		}
+	default:
+		if !isValidDiscoveryHostname(name) {
+			errs.Addf("%s.name: must be a valid DNS hostname", prefix)
+		}
+	}
+
+	switch strings.ToLower(strings.TrimSpace(dns.Scheme)) {
+	case "", "http", "https":
+	default:
+		errs.Addf("%s.scheme: must be http or https", prefix)
+	}
+
+	if recordType == "A" || recordType == "AAAA" {
+		if dns.Port <= 0 || dns.Port > 65535 {
+			errs.Addf("%s.port: required for %s records (1-65535)", prefix, recordType)
+		}
+	} else if dns.Port != 0 {
+		errs.Addf("%s.port: not used for SRV records (port comes from the SRV answer)", prefix)
+	}
+
+	if dns.RefreshInterval < 0 {
+		errs.Addf("%s.refresh_interval: must be >= 0", prefix)
+	}
+	if dns.TTLMin < 0 {
+		errs.Addf("%s.ttl_min: must be >= 0", prefix)
+	}
+	if dns.TTLMax < 0 {
+		errs.Addf("%s.ttl_max: must be >= 0", prefix)
+	}
+	if dns.TTLMin > 0 && dns.TTLMax > 0 && dns.TTLMin > dns.TTLMax {
+		errs.Addf("%s.ttl_min: must be <= ttl_max", prefix)
+	}
+	if dns.Weight < 0 {
+		errs.Addf("%s.weight: must be >= 0", prefix)
+	}
+}
+
+func isValidDiscoveryHostname(name string) bool {
+	name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
+	if name == "" || len(name) > 253 || strings.ContainsAny(name, "/\\@?#: \t\r\n*") {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if r != '-' && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isValidSRVName(name string) bool {
+	name = strings.TrimSuffix(name, ".")
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	labels := strings.Split(name, ".")
+	if len(labels) < 3 {
+		return false
+	}
+	for _, label := range labels {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for i, r := range label {
+			ok := (r >= 'a' && r <= 'z') ||
+				(r >= 'A' && r <= 'Z') ||
+				(r >= '0' && r <= '9') ||
+				r == '-' ||
+				(r == '_' && i == 0)
+			if !ok {
+				return false
+			}
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateRouteIdentityPolicies(routes []RouteConfig, backends []BackendConfig, errs *ValidationErrors) {
@@ -599,6 +762,15 @@ func validateClientIdentityPropagation(
 		u, err := url.Parse(instance.URL)
 		if err == nil && !strings.EqualFold(u.Scheme, "https") {
 			errs.Addf("%s: backend instance %d must use https", prefix, i)
+		}
+	}
+	if backend.Discovery.DNS != nil {
+		scheme := strings.ToLower(strings.TrimSpace(backend.Discovery.DNS.Scheme))
+		if scheme == "" {
+			scheme = "http"
+		}
+		if scheme != "https" {
+			errs.Addf("%s: discovery.dns.scheme must be https", prefix)
 		}
 	}
 	outboundMTLS := strings.TrimSpace(backend.TLS.CertFile) != "" &&

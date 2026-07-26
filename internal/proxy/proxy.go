@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"algoryn.io/relay/internal/config"
+	"algoryn.io/relay/internal/discovery"
 	"algoryn.io/relay/internal/httpx"
 )
 
@@ -98,7 +99,10 @@ type Proxy struct {
 	metricsMu         sync.RWMutex
 	metrics           ProxyMetrics
 	clock             clock
-	healthWG          sync.WaitGroup // tracks health-check goroutines for clean shutdown
+	resolver          discovery.Resolver
+	discoveryTTL      map[string]time.Duration // last observed DNS TTL per backend
+	healthWG          sync.WaitGroup           // tracks health-check goroutines for clean shutdown
+	discoveryWG       sync.WaitGroup           // tracks DNS discovery goroutines for clean shutdown
 }
 
 func (p *Proxy) SetHealthNotifier(n HealthNotifier) {
@@ -131,6 +135,18 @@ func (p *Proxy) metricsSink() ProxyMetrics {
 }
 
 func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
+	return newProxy(rt, logger, &discovery.DNSResolver{})
+}
+
+// NewWithResolver is like New but injects a DNS resolver (used by tests).
+func NewWithResolver(rt *config.RuntimeConfig, logger *slog.Logger, resolver discovery.Resolver) (*Proxy, error) {
+	if resolver == nil {
+		resolver = &discovery.DNSResolver{}
+	}
+	return newProxy(rt, logger, resolver)
+}
+
+func newProxy(rt *config.RuntimeConfig, logger *slog.Logger, resolver discovery.Resolver) (*Proxy, error) {
 	if rt == nil {
 		return nil, fmt.Errorf("runtime config is nil")
 	}
@@ -150,6 +166,8 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		retryBudgets:      make(map[string]*retryBudget, len(rt.Backends)),
 		metrics:           nopMetrics{},
 		clock:             realClock{},
+		resolver:          resolver,
+		discoveryTTL:      make(map[string]time.Duration, len(rt.Backends)),
 	}
 
 	for name, backend := range rt.Backends {
@@ -213,6 +231,12 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		p.instances[name] = states
 		p.roundRobin[name] = new(atomic.Uint64)
 
+		if backend.Discovery != nil {
+			// Initial resolve before serving; the loop continues on TTL/refresh.
+			p.refreshDiscoveredBackend(name, backend.Discovery)
+			p.startDiscovery(name, backend.Discovery)
+		}
+
 		if hasHealthCheck {
 			p.healthWG.Add(1)
 			go p.healthLoop(name, backend.HealthCheck)
@@ -230,9 +254,11 @@ func (p *Proxy) Close() {
 		if p.cancel != nil {
 			p.cancel()
 		}
-		// Wait for health-check goroutines to observe the cancellation and exit, so
-		// no background checks outlive the proxy after a reload or shutdown.
+		// Wait for health-check and DNS discovery goroutines to observe the
+		// cancellation and exit, so no background work outlives the proxy after
+		// a reload or shutdown.
 		p.healthWG.Wait()
+		p.discoveryWG.Wait()
 		closeTransport := func(rt http.RoundTripper) {
 			if tr, ok := rt.(interface{ CloseIdleConnections() }); ok {
 				tr.CloseIdleConnections()
@@ -251,12 +277,6 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		return
 	}
 
-	backend, ok := p.backends[route.BackendName]
-	if !ok {
-		httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
-		return
-	}
-
 	// Preserve values derived from the original request before any mutations.
 	clientIP := httpx.ClientIP(r)
 	proto := r.Header.Get("X-Forwarded-Proto")
@@ -268,28 +288,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		}
 	}
 	originalHost := r.Host
-	backendName := backend.Name
 
-	// Bulkhead: limit concurrent in-flight requests per backend.
-	if bh := p.bulkheads[backendName]; bh != nil {
-		if !bh.Acquire() {
-			p.metricsSink().RecordBulkheadRejected(backendName)
+	// Pick primary or a secondary failover backend (and acquire its bulkhead).
+	backend, releaseBackend, err := p.resolveRouteBackend(route)
+	if err != nil {
+		if errors.Is(err, errBulkheadFull) {
 			if p.logger != nil {
-				p.logger.Warn("bulkhead full, request rejected",
-					"backend", backendName,
-					"limit", bh.Limit(),
-					"in_flight", bh.InFlight(),
+				p.logger.Warn("bulkhead full across failover group",
+					"route", route.Name,
+					"primary", route.BackendName,
 				)
 			}
 			httpx.WriteError(w, http.StatusServiceUnavailable, "bulkhead_full")
 			return
 		}
-		p.metricsSink().SetBulkheadInFlight(backendName, bh.InFlight())
-		defer func() {
-			bh.Release()
-			p.metricsSink().SetBulkheadInFlight(backendName, bh.InFlight())
-		}()
+		if errors.Is(err, errAllCircuitsOpen) {
+			httpx.WriteError(w, http.StatusServiceUnavailable, "circuit_open")
+			return
+		}
+		httpx.WriteError(w, http.StatusBadGateway, "bad_gateway")
+		return
 	}
+	defer releaseBackend()
+	backendName := backend.Name
 
 	// WebSocket (and other protocol upgrades) bypass the retry loop and
 	// responseBuffer: the real ResponseWriter must remain accessible for

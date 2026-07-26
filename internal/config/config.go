@@ -200,14 +200,17 @@ type RewriteRule struct {
 }
 
 type RouteConfig struct {
-	Name        string        `yaml:"name"`
-	ID          string        `yaml:"id"`
-	Match       MatchConfig   `yaml:"match"`
-	Middleware  []string      `yaml:"middleware"`
-	Middlewares []string      `yaml:"-"`
-	Backend     string        `yaml:"backend"`
-	StripPrefix string        `yaml:"-"` // set via UnmarshalYAML
-	Timeout     time.Duration `yaml:"-"` // set via UnmarshalYAML
+	Name        string      `yaml:"name"`
+	ID          string      `yaml:"id"`
+	Match       MatchConfig `yaml:"match"`
+	Middleware  []string    `yaml:"middleware"`
+	Middlewares []string    `yaml:"-"`
+	Backend     string      `yaml:"backend"`
+	// Failover lists secondary backends tried when the primary cannot serve
+	// (no healthy instances / all circuits open / bulkhead full).
+	Failover    RouteFailoverConfig `yaml:"-"` // set via UnmarshalYAML
+	StripPrefix string              `yaml:"-"` // set via UnmarshalYAML
+	Timeout     time.Duration       `yaml:"-"` // set via UnmarshalYAML
 	// MaxBodyBytes caps the request body size for this route. Requests with a
 	// larger body are rejected with 413. 0 means no limit.
 	MaxBodyBytes int64 `yaml:"-"` // set via UnmarshalYAML
@@ -220,6 +223,16 @@ type RouteConfig struct {
 	AddRequestHeaders map[string]string `yaml:"-"` // set via UnmarshalYAML
 	// PropagateClientIdentity overrides the backend identity policy for this route.
 	PropagateClientIdentity *ClientIdentityPropagationConfig `yaml:"-"`
+}
+
+// RouteFailoverConfig configures primary→secondary backend failover for a route.
+// The route's Backend is always the primary. Secondary backends are tried in
+// order when the primary cannot accept the request.
+type RouteFailoverConfig struct {
+	// Secondary is a single secondary backend name (shorthand for backends: [name]).
+	Secondary string `yaml:"secondary"`
+	// Backends is an ordered list of secondary backends. Mutually exclusive with Secondary.
+	Backends []string `yaml:"backends"`
 }
 
 type MatchConfig struct {
@@ -253,7 +266,40 @@ type BackendConfig struct {
 	TLS                     BackendTLSConfig                `yaml:"tls"`
 	PropagateClientIdentity ClientIdentityPropagationConfig `yaml:"propagate_client_identity"`
 	Bulkhead                BulkheadConfig                  `yaml:"bulkhead"`
-	Instances               []InstanceConfig                `yaml:"instances"`
+	// Discovery enables dynamic DNS endpoint discovery. Mutually exclusive with
+	// static Instances. Only DNS (A/AAAA/SRV) is supported — not K8s/Consul APIs.
+	Discovery DiscoveryConfig  `yaml:"discovery"`
+	Instances []InstanceConfig `yaml:"instances"`
+}
+
+// DiscoveryConfig selects a dynamic backend discovery mechanism.
+type DiscoveryConfig struct {
+	DNS *DNSDiscoveryConfig `yaml:"dns"`
+}
+
+// DNSDiscoveryConfig resolves backend instances from DNS A, AAAA, or SRV records.
+// Kubernetes Service DNS names work through ordinary cluster DNS resolution.
+type DNSDiscoveryConfig struct {
+	// Name is the DNS name to query (A/AAAA) or the full SRV QNAME
+	// (e.g. _http._tcp.orders.default.svc.cluster.local).
+	Name string `yaml:"name"`
+	// RecordType is A (default), AAAA, or SRV.
+	RecordType string `yaml:"record_type"`
+	// Port is required for A/AAAA when building instance URLs. Ignored for SRV
+	// (the SRV port is used).
+	Port int `yaml:"port"`
+	// Scheme is http (default) or https for constructed instance URLs.
+	Scheme string `yaml:"scheme"`
+	// RefreshInterval caps how long Relay waits between re-resolves. The effective
+	// interval is min(DNS TTL, refresh_interval) clamped by ttl_min/ttl_max.
+	RefreshInterval time.Duration `yaml:"refresh_interval"`
+	// TTLMin floors very short DNS TTLs (default 1s when unset at runtime).
+	TTLMin time.Duration `yaml:"ttl_min"`
+	// TTLMax caps long DNS TTLs. 0 means no extra cap beyond refresh_interval.
+	TTLMax time.Duration `yaml:"ttl_max"`
+	// Weight is the default instance weight for A/AAAA records (default 1).
+	// SRV answers use the record weight.
+	Weight int `yaml:"weight"`
 }
 
 // ClientIdentityPropagationConfig controls the small, Relay-owned set of mTLS

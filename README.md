@@ -21,10 +21,12 @@ no extra infrastructure.
   `query`; most-specific-wins with catch-all fallback (virtual hosting, canary,
   API versioning).
 - **Load balancing & upstreams** — `round_robin`, `least_connections`,
-  `weighted_random`; active health checks; HTTP/1.1, TLS (h2 via ALPN) and
-  cleartext HTTP/2 (`h2c`) backends for gRPC.
+  `weighted_random`; active health checks; **DNS discovery** (A/AAAA/SRV with
+  TTL-aware pool updates); HTTP/1.1, TLS (h2 via ALPN) and cleartext HTTP/2
+  (`h2c`) backends for gRPC.
 - **Resilience** — retries with backoff and a retry **budget**, circuit breaker,
-  per-backend **bulkhead**, global concurrency cap, per-route timeouts.
+  per-backend **bulkhead**, per-route **primary/secondary failover**, global
+  concurrency cap, per-route timeouts.
 - **Auth & security** — JWT (HS256/RS256/JWKS/**OIDC discovery**), API keys,
   **OAuth2 introspection** (RFC 7662), **external authorization** (`ext_authz`),
   IP filter, CORS, body limit, inbound/outbound **mTLS**, TLS hardening, edge

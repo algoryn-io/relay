@@ -44,6 +44,11 @@ All notable changes to Relay are documented here. The format is based on
   limit did nothing when set in a config file. They are now parsed correctly.
 
 ### Added
+- DNS backend discovery (`discovery.dns`): resolve A/AAAA/SRV records with TTL-aware
+  refresh and atomic instance-pool updates. Kubernetes Service DNS works through
+  ordinary cluster DNS; there is no Kubernetes Endpoints or Consul API client.
+- Per-route backend failover (`failover.secondary` / `failover.backends`): when the
+  primary backend cannot serve, Relay tries ordered secondary backends.
 - Distributed response cache (`type: cache`, `store: redis`): shared Redis backend
   with TTL, Vary-aware keys, object size limits, `PURGE` invalidation, configurable
   `fail_open` on Redis errors, and the existing in-memory LRU as the default.
