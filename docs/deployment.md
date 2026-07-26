@@ -158,7 +158,7 @@ coordination: run N replicas behind the Service (or an HPA).
 | Rate limiting | in-memory (per instance) | set `store: redis` for a shared limit |
 | Response cache | in-memory (per instance) | set `store: redis` for a shared cache; keep memory for per-instance |
 | Config | one file / ConfigMap | same file/ConfigMap on every replica; rolling restart to change |
-| Backend discovery | static URLs | a Kubernetes `Service` DNS name load-balances pods |
+| Backend discovery | static `instances` or `discovery.dns` (A/AAAA/SRV) | point `discovery.dns.name` at the Kubernetes `Service` DNS name; Relay refreshes the pool from DNS TTLs (no Endpoints/Consul API) |
 | TLS | ACME filesystem cache or manual | Redis ACME cache/lease, or terminate at the LB / Gateway |
 
 When Relay terminates automatic TLS on multiple replicas, declare `replicas`,

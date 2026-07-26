@@ -277,6 +277,7 @@ func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 		Middleware              []string                         `yaml:"middleware"`
 		Middlewares             []string                         `yaml:"middlewares"`
 		Backend                 string                           `yaml:"backend"`
+		Failover                RouteFailoverConfig              `yaml:"failover"`
 		StripPrefix             string                           `yaml:"strip_prefix"`
 		Timeout                 timeDuration                     `yaml:"timeout"`
 		MaxBodyBytes            int64                            `yaml:"max_body_bytes"`
@@ -296,6 +297,7 @@ func (c *RouteConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.Middleware = raw.Middleware
 	c.Middlewares = raw.Middlewares
 	c.Backend = raw.Backend
+	c.Failover = raw.Failover
 	c.StripPrefix = raw.StripPrefix
 	c.Timeout = raw.Timeout.Duration()
 	c.MaxBodyBytes = raw.MaxBodyBytes
@@ -344,6 +346,7 @@ func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 		TLS                     BackendTLSConfig                `yaml:"tls"`
 		PropagateClientIdentity ClientIdentityPropagationConfig `yaml:"propagate_client_identity"`
 		Bulkhead                BulkheadConfig                  `yaml:"bulkhead"`
+		Discovery               DiscoveryConfig                 `yaml:"discovery"`
 		Instances               []InstanceConfig                `yaml:"instances"`
 	}
 
@@ -366,8 +369,35 @@ func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.TLS = raw.TLS
 	c.PropagateClientIdentity = raw.PropagateClientIdentity
 	c.Bulkhead = raw.Bulkhead
+	c.Discovery = raw.Discovery
 	c.Instances = raw.Instances
 
+	return nil
+}
+
+func (c *DNSDiscoveryConfig) UnmarshalYAML(node *yaml.Node) error {
+	type rawDNS struct {
+		Name            string       `yaml:"name"`
+		RecordType      string       `yaml:"record_type"`
+		Port            int          `yaml:"port"`
+		Scheme          string       `yaml:"scheme"`
+		RefreshInterval timeDuration `yaml:"refresh_interval"`
+		TTLMin          timeDuration `yaml:"ttl_min"`
+		TTLMax          timeDuration `yaml:"ttl_max"`
+		Weight          int          `yaml:"weight"`
+	}
+	var raw rawDNS
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	c.Name = raw.Name
+	c.RecordType = raw.RecordType
+	c.Port = raw.Port
+	c.Scheme = raw.Scheme
+	c.RefreshInterval = raw.RefreshInterval.Duration()
+	c.TTLMin = raw.TTLMin.Duration()
+	c.TTLMax = raw.TTLMax.Duration()
+	c.Weight = raw.Weight
 	return nil
 }
 

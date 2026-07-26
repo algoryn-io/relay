@@ -1,0 +1,41 @@
+# DNS discovery + primary/secondary failover.
+# Point discovery.dns.name at a normal DNS name (including a Kubernetes Service
+# DNS name). Relay does not call the Kubernetes or Consul APIs.
+listener:
+  http:
+    port: 8088
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+
+routes:
+  - name: orders-route
+    match:
+      path_prefix: /api/orders
+      methods: [GET, POST]
+    backend: orders-primary
+    failover:
+      secondary: orders-secondary
+
+backends:
+  - name: orders-primary
+    strategy: round_robin
+    health_check:
+      path: /health
+      interval: 10s
+      timeout: 2s
+    discovery:
+      dns:
+        name: orders.default.svc.cluster.local
+        record_type: A
+        port: 8080
+        scheme: http
+        refresh_interval: 15s
+        ttl_min: 1s
+        ttl_max: 1m
+
+  - name: orders-secondary
+    strategy: round_robin
+    instances:
+      - url: http://orders-dr.internal:8080

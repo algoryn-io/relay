@@ -60,11 +60,13 @@ type RouteRuntime struct {
 	// Specificity ranks how constrained the route is (host + header + query
 	// predicates). The router prefers higher-specificity routes so a narrow
 	// host/header override wins over a catch-all sharing the same path.
-	Specificity    int
-	Backend        BackendRuntime
-	BackendName    string
-	Middleware     []MiddlewareRuntime
-	MiddlewareRefs []string
+	Specificity int
+	Backend     BackendRuntime
+	BackendName string
+	// FailoverBackends are secondary backends tried after BackendName.
+	FailoverBackends []string
+	Middleware       []MiddlewareRuntime
+	MiddlewareRefs   []string
 }
 
 type BackendRuntime struct {
@@ -78,7 +80,10 @@ type BackendRuntime struct {
 	TLS                     BackendTLSConfig
 	PropagateClientIdentity ClientIdentityPropagationConfig
 	Bulkhead                BulkheadConfig
-	Instances               []InstanceRuntime
+	// Discovery holds DNS discovery settings when instances are dynamic.
+	// Nil means static Instances.
+	Discovery *DNSDiscoveryConfig
+	Instances []InstanceRuntime
 }
 
 // IsH2C reports whether the backend is reached over cleartext HTTP/2.
@@ -121,6 +126,27 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			instances = append(instances, InstanceRuntime{URL: instance.URL, Weight: w})
 		}
 
+		var discovery *DNSDiscoveryConfig
+		if backend.Discovery.DNS != nil {
+			dns := *backend.Discovery.DNS
+			if strings.TrimSpace(dns.RecordType) == "" {
+				dns.RecordType = "A"
+			}
+			if strings.TrimSpace(dns.Scheme) == "" {
+				dns.Scheme = "http"
+			}
+			if dns.RefreshInterval <= 0 {
+				dns.RefreshInterval = 30 * time.Second
+			}
+			if dns.TTLMin <= 0 {
+				dns.TTLMin = time.Second
+			}
+			if dns.Weight <= 0 {
+				dns.Weight = 1
+			}
+			discovery = &dns
+		}
+
 		rt.Backends[backend.Name] = BackendRuntime{
 			Name:                    backend.Name,
 			Protocol:                backend.Protocol,
@@ -132,6 +158,7 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			TLS:                     backend.TLS,
 			PropagateClientIdentity: backend.PropagateClientIdentity,
 			Bulkhead:                backend.Bulkhead,
+			Discovery:               discovery,
 			Instances:               instances,
 		}
 	}
@@ -201,6 +228,8 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			identityPolicy = *route.PropagateClientIdentity
 		}
 
+		failover := normalizeFailoverBackends(route.Failover)
+
 		rt.Routes[route.Name] = RouteRuntime{
 			Name:                    route.Name,
 			Path:                    path,
@@ -219,6 +248,7 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			Specificity:             specificity,
 			Backend:                 rt.Backends[route.Backend],
 			BackendName:             route.Backend,
+			FailoverBackends:        failover,
 			Middleware:              middleware,
 			MiddlewareRefs:          append([]string(nil), route.Middleware...),
 		}
@@ -240,6 +270,29 @@ func normalizeHeaderMatch(in map[string]string) map[string]string {
 			continue
 		}
 		out[textproto.CanonicalMIMEHeaderKey(k)] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// normalizeFailoverBackends returns the ordered secondary backend list from
+// either failover.secondary or failover.backends.
+func normalizeFailoverBackends(cfg RouteFailoverConfig) []string {
+	if sec := strings.TrimSpace(cfg.Secondary); sec != "" {
+		return []string{sec}
+	}
+	if len(cfg.Backends) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(cfg.Backends))
+	for _, name := range cfg.Backends {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		out = append(out, name)
 	}
 	if len(out) == 0 {
 		return nil

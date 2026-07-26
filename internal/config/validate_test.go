@@ -1018,6 +1018,147 @@ func TestValidateRateLimitCompositeSelectors(t *testing.T) {
 	assertValidationErrorContains(t, err, "by and key.selectors are mutually exclusive")
 }
 
+func TestValidateDNSDiscoveryAndFailover(t *testing.T) {
+	t.Parallel()
+
+	t.Run("dns discovery valid", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Backends[0].Instances = nil
+		cfg.Backends[0].Discovery = DiscoveryConfig{
+			DNS: &DNSDiscoveryConfig{
+				Name:            "orders.default.svc.cluster.local",
+				RecordType:      "A",
+				Port:            8080,
+				Scheme:          "http",
+				RefreshInterval: 10 * time.Second,
+			},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("dns and instances mutually exclusive", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Backends[0].Discovery = DiscoveryConfig{
+			DNS: &DNSDiscoveryConfig{Name: "orders.svc.local", Port: 8080},
+		}
+		assertValidationErrorContains(t, cfg.Validate(), "discovery.dns and instances are mutually exclusive")
+	})
+
+	t.Run("dns port required for A", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Backends[0].Instances = nil
+		cfg.Backends[0].Discovery = DiscoveryConfig{
+			DNS: &DNSDiscoveryConfig{Name: "orders.svc.local", RecordType: "A"},
+		}
+		assertValidationErrorContains(t, cfg.Validate(), "port: required for A records")
+	})
+
+	t.Run("failover secondary", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Backends = append(cfg.Backends, BackendConfig{
+			Name:      "orders-dr",
+			Strategy:  "round_robin",
+			Instances: []InstanceConfig{{URL: "http://localhost:8081"}},
+		})
+		cfg.Routes[0].Failover = RouteFailoverConfig{Secondary: "orders-dr"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("failover unknown backend", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Routes[0].Failover = RouteFailoverConfig{Secondary: "missing"}
+		assertValidationErrorContains(t, cfg.Validate(), `unknown backend "missing"`)
+	})
+
+	t.Run("failover secondary equals primary", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Routes[0].Failover = RouteFailoverConfig{Secondary: "orders-backend"}
+		assertValidationErrorContains(t, cfg.Validate(), "must differ from the primary backend")
+	})
+
+	t.Run("failover secondary and backends exclusive", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Backends = append(cfg.Backends, BackendConfig{
+			Name:      "orders-dr",
+			Strategy:  "round_robin",
+			Instances: []InstanceConfig{{URL: "http://localhost:8081"}},
+		})
+		cfg.Routes[0].Failover = RouteFailoverConfig{
+			Secondary: "orders-dr",
+			Backends:  []string{"orders-dr"},
+		}
+		assertValidationErrorContains(t, cfg.Validate(), "secondary and backends are mutually exclusive")
+	})
+}
+
+func TestLoadDNSDiscoveryAndFailoverYAML(t *testing.T) {
+	t.Parallel()
+
+	path := writeTempConfig(t, `
+listener:
+  http:
+    port: 8080
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+routes:
+  - name: orders
+    match:
+      path: /orders
+      methods: [GET]
+    backend: orders-primary
+    failover:
+      secondary: orders-secondary
+backends:
+  - name: orders-primary
+    strategy: round_robin
+    discovery:
+      dns:
+        name: orders.default.svc.cluster.local
+        record_type: A
+        port: 8080
+        scheme: http
+        refresh_interval: 15s
+        ttl_min: 1s
+        ttl_max: 1m
+  - name: orders-secondary
+    strategy: round_robin
+    instances:
+      - url: http://localhost:9090
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Routes[0].Failover.Secondary != "orders-secondary" {
+		t.Fatalf("failover.secondary = %q", cfg.Routes[0].Failover.Secondary)
+	}
+	dns := cfg.Backends[0].Discovery.DNS
+	if dns == nil || dns.Name != "orders.default.svc.cluster.local" || dns.Port != 8080 {
+		t.Fatalf("unexpected discovery: %+v", dns)
+	}
+	if dns.RefreshInterval != 15*time.Second || dns.TTLMax != time.Minute {
+		t.Fatalf("unexpected TTL knobs: %+v", dns)
+	}
+
+	rt, err := BuildRuntime(cfg)
+	if err != nil {
+		t.Fatalf("BuildRuntime() error = %v", err)
+	}
+	route := rt.Routes["orders"]
+	if len(route.FailoverBackends) != 1 || route.FailoverBackends[0] != "orders-secondary" {
+		t.Fatalf("FailoverBackends = %v", route.FailoverBackends)
+	}
+	if rt.Backends["orders-primary"].Discovery == nil {
+		t.Fatal("expected runtime discovery config")
+	}
+}
+
 func validConfig() *Config {
 	return &Config{
 		Listener: ListenerConfig{

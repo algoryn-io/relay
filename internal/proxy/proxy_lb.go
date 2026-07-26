@@ -10,6 +10,10 @@ import (
 // has an open circuit breaker. Callers translate this to 503.
 var errAllCircuitsOpen = errors.New("all instances have open circuits")
 
+// errBulkheadFull is returned by resolveRouteBackend when every candidate
+// backend rejected the request due to its concurrency limit.
+var errBulkheadFull = errors.New("bulkhead full")
+
 func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, error) {
 	// Read lock only: instance health is written under the write lock (health
 	// loop / drain), while activeRequests and the round-robin counter are atomic.
