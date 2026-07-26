@@ -231,6 +231,81 @@ func TestValidateSecurityHeadersAcceptsSafePresetOverride(t *testing.T) {
 	}
 }
 
+func TestValidateCompressionMiddleware(t *testing.T) {
+	t.Parallel()
+
+	t.Run("accepts defaults", func(t *testing.T) {
+		t.Parallel()
+		cfg := validConfig()
+		cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+			Name: "edge-compress",
+			Type: "compression",
+		})
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("accepts explicit config", func(t *testing.T) {
+		t.Parallel()
+		cfg := validConfig()
+		cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+			Name: "edge-compress",
+			Type: "compression",
+			Config: MiddlewareSettingsConfig{
+				CompressionEncodings:           []string{"br", "gzip"},
+				CompressionMinBytes:            512,
+				CompressionGzipLevel:           6,
+				CompressionBrotliQuality:       4,
+				CompressionContentTypes:        []string{"text/", "application/json"},
+				CompressionExcludeContentTypes: []string{"application/grpc"},
+				CompressionExcludeStatus:       []int{204, 206, 304},
+			},
+		})
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	tests := map[string]struct {
+		settings MiddlewareSettingsConfig
+		want     string
+	}{
+		"bad encoding": {
+			settings: MiddlewareSettingsConfig{CompressionEncodings: []string{"zstd"}},
+			want:     "encodings[0]: must be one of br, gzip",
+		},
+		"negative min_bytes": {
+			settings: MiddlewareSettingsConfig{CompressionMinBytes: -1},
+			want:     "min_bytes: must be >= 0",
+		},
+		"bad gzip level": {
+			settings: MiddlewareSettingsConfig{CompressionGzipLevel: 99},
+			want:     "gzip_level: must be between -2 and 9",
+		},
+		"bad brotli quality": {
+			settings: MiddlewareSettingsConfig{CompressionBrotliQuality: 12},
+			want:     "brotli_quality: must be between 1 and 11",
+		},
+		"bad exclude status": {
+			settings: MiddlewareSettingsConfig{CompressionExcludeStatus: []int{999}},
+			want:     "exclude_status[0]: must be a valid HTTP status code",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validConfig()
+			cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+				Name:   "edge-compress",
+				Type:   "compression",
+				Config: tc.settings,
+			})
+			assertValidationErrorContains(t, cfg.Validate(), tc.want)
+		})
+	}
+}
+
 func TestValidateInsecureBackendTLSRequiresAcknowledgement(t *testing.T) {
 	t.Parallel()
 

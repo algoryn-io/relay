@@ -44,6 +44,10 @@ All notable changes to Relay are documented here. The format is based on
   limit did nothing when set in a config file. They are now parsed correctly.
 
 ### Added
+- Edge response compression middleware (`type: compression`): negotiates
+  brotli/gzip from `Accept-Encoding`, skips already-encoded bodies, Range/206,
+  excluded statuses/content types, and `Cache-Control: no-transform`; see
+  `config/examples/edge-compression.yaml`.
 - Advanced route matching: precompiled `match.path_regex` (RE2) and
   `match.path_glob` (`*` / `**` / `?`), plus `match.grpc.service` /
   `match.grpc.method` for gRPC-over-HTTP/2 routing (requires

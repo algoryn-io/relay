@@ -286,6 +286,12 @@ middleware:
     config:
       preset: secure
 
+  - name: edge-compress
+    type: compression
+    config:
+      encodings: [br, gzip]
+      min_bytes: 1024
+
 observability:
   logs:
     level: info
@@ -370,6 +376,22 @@ configuration; it does not change runtime lookup behavior.
   config:
     request_set: { X-Env: prod }
     response_del: [Server]
+```
+
+### Compression (`type: compression`)
+
+- Negotiates `br` / `gzip` from `Accept-Encoding` (preference order configurable)
+- Skips responses that already have `Content-Encoding`, `Range` / `206`,
+  excluded statuses, `Cache-Control: no-transform`, or non-compressible types
+- Adds `Vary: Accept-Encoding` when compressing; see
+  `config/examples/edge-compression.yaml`
+
+```yaml
+- name: edge-compress
+  type: compression
+  config:
+    encodings: [br, gzip]
+    min_bytes: 1024
 ```
 
 ### JWT via OIDC discovery (`type: jwt`, `algorithm: rs256`)

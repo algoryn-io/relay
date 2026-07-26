@@ -696,6 +696,14 @@ type MiddlewareSettingsConfig struct {
 	XContentTypeOptions     string `yaml:"x_content_type_options"`
 	ReferrerPolicy          string `yaml:"referrer_policy"`
 	PermissionsPolicy       string `yaml:"permissions_policy"`
+	// Compression middleware fields.
+	CompressionEncodings           []string `yaml:"encodings"`
+	CompressionMinBytes            int      `yaml:"min_bytes"`
+	CompressionGzipLevel           int      `yaml:"gzip_level"`
+	CompressionBrotliQuality       int      `yaml:"brotli_quality"`
+	CompressionContentTypes        []string `yaml:"content_types"`
+	CompressionExcludeContentTypes []string `yaml:"exclude_content_types"`
+	CompressionExcludeStatus       []int    `yaml:"exclude_status"`
 }
 
 type ObservabilityConfig struct {

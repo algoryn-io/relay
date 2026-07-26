@@ -1,0 +1,55 @@
+# Edge response compression (gzip / brotli) negotiated from Accept-Encoding.
+# Skips already-encoded responses, Range/206, excluded statuses, and
+# non-compressible content types.
+listener:
+  http:
+    port: 8088
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+      methods: [GET, POST]
+    backend: api
+    # List compression early so it wraps the final response body.
+    middleware: [edge-compress]
+
+  - name: assets
+    match:
+      path_prefix: /assets
+      methods: [GET, HEAD]
+    backend: assets
+    middleware: [edge-compress]
+
+backends:
+  - name: api
+    strategy: round_robin
+    instances:
+      - url: http://api.internal:8080
+
+  - name: assets
+    strategy: round_robin
+    instances:
+      - url: http://assets.internal:8080
+
+middleware:
+  - name: edge-compress
+    type: compression
+    config:
+      encodings: [br, gzip]
+      min_bytes: 1024
+      brotli_quality: 5
+      content_types:
+        - text/
+        - application/json
+        - application/javascript
+        - application/xml
+        - image/svg+xml
+      exclude_content_types:
+        - application/octet-stream
+        - application/grpc
+      exclude_status: [204, 206, 304]

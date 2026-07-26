@@ -31,6 +31,7 @@ var (
 		"cors":             {},
 		"header":           {},
 		"security_headers": {},
+		"compression":      {},
 		"api_key":          {},
 		"cache":            {},
 		"oauth2":           {},
@@ -1085,7 +1086,7 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 
 		if _, ok := validMiddlewareTypes[middleware.Type]; !ok {
-			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors, header, security_headers, api_key, cache, oauth2, ext_authz", prefix)
+			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors, header, security_headers, compression, api_key, cache, oauth2, ext_authz", prefix)
 		}
 
 		if middleware.Type == "jwt" {
@@ -1173,6 +1174,9 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 		if middleware.Type == "security_headers" {
 			validateSecurityHeadersMiddleware(prefix+".config", middleware.Config, errs)
+		}
+		if middleware.Type == "compression" {
+			validateCompressionMiddleware(prefix+".config", middleware.Config, errs)
 		}
 		if middleware.Type == "api_key" {
 			validateAPIKeyMiddleware(prefix+".config", middleware.Config, errs)
@@ -1552,6 +1556,51 @@ func hasUnsafeHeaderValue(value string) bool {
 		}
 	}
 	return false
+}
+
+func validateCompressionMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
+	if len(cfg.CompressionEncodings) > 0 {
+		seen := make(map[string]struct{}, len(cfg.CompressionEncodings))
+		for i, enc := range cfg.CompressionEncodings {
+			normalized := strings.ToLower(strings.TrimSpace(enc))
+			switch normalized {
+			case "br", "gzip":
+				if _, ok := seen[normalized]; ok {
+					errs.Addf("%s.encodings[%d]: duplicate encoding %q", prefix, i, normalized)
+					continue
+				}
+				seen[normalized] = struct{}{}
+			case "":
+				errs.Addf("%s.encodings[%d]: must not be empty", prefix, i)
+			default:
+				errs.Addf("%s.encodings[%d]: must be one of br, gzip", prefix, i)
+			}
+		}
+	}
+	if cfg.CompressionMinBytes < 0 {
+		errs.Addf("%s.min_bytes: must be >= 0", prefix)
+	}
+	if cfg.CompressionGzipLevel != 0 && (cfg.CompressionGzipLevel < -2 || cfg.CompressionGzipLevel > 9) {
+		errs.Addf("%s.gzip_level: must be between -2 and 9", prefix)
+	}
+	if cfg.CompressionBrotliQuality != 0 && (cfg.CompressionBrotliQuality < 1 || cfg.CompressionBrotliQuality > 11) {
+		errs.Addf("%s.brotli_quality: must be between 1 and 11", prefix)
+	}
+	for i, ct := range cfg.CompressionContentTypes {
+		if strings.TrimSpace(ct) == "" {
+			errs.Addf("%s.content_types[%d]: must not be empty", prefix, i)
+		}
+	}
+	for i, ct := range cfg.CompressionExcludeContentTypes {
+		if strings.TrimSpace(ct) == "" {
+			errs.Addf("%s.exclude_content_types[%d]: must not be empty", prefix, i)
+		}
+	}
+	for i, code := range cfg.CompressionExcludeStatus {
+		if code < 100 || code > 599 {
+			errs.Addf("%s.exclude_status[%d]: must be a valid HTTP status code", prefix, i)
+		}
+	}
 }
 
 func validateCacheMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
