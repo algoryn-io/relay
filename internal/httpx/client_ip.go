@@ -129,18 +129,6 @@ func ParseTrustedNets(entries []string) []*net.IPNet {
 	return nets
 }
 
-func resolveClientIP(r *http.Request, trustedNets []*net.IPNet) string {
-	remoteIP := normalizeIP(remoteAddrIP(r))
-	if len(trustedNets) == 0 {
-		return remoteIP
-	}
-	remote := net.ParseIP(remoteIP)
-	if remote == nil || !isTrustedNet(remote, trustedNets) {
-		return remoteIP
-	}
-	return resolveClientIPFromChain(remoteIP, parseForwardedFor(r.Header.Values("X-Forwarded-For")), true, trustedNets)
-}
-
 func resolveClientIPFromChain(remoteIP string, chain []string, peerTrusted bool, trustedNets []*net.IPNet) string {
 	if !peerTrusted {
 		return remoteIP
