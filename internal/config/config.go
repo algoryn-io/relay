@@ -589,12 +589,53 @@ type FabricConfig struct {
 }
 
 type LogsConfig struct {
-	Level      string `yaml:"level"`
-	Format     string `yaml:"format"`
-	File       string `yaml:"file"`
-	MaxSizeMB  int    `yaml:"max_size_mb"`
-	MaxAgeDays int    `yaml:"max_age_days"`
-	Compress   bool   `yaml:"compress"`
+	Level      string          `yaml:"level"`
+	Format     string          `yaml:"format"`
+	File       string          `yaml:"file"`
+	MaxSizeMB  int             `yaml:"max_size_mb"`
+	MaxAgeDays int             `yaml:"max_age_days"`
+	Compress   bool            `yaml:"compress"`
+	Access     AccessLogConfig `yaml:"access"`
+	OTLP       OTLPLogsConfig  `yaml:"otlp"`
+}
+
+// AccessLogConfig controls the bounded set of request attributes emitted by
+// the access logger. Fields is an allowlist, never a free-form expression.
+type AccessLogConfig struct {
+	Fields        []string             `yaml:"fields"`
+	FieldPolicies map[string]string    `yaml:"field_policies"`
+	Headers       []AccessLogSelection `yaml:"headers"`
+	Query         []AccessLogSelection `yaml:"query"`
+	Hash          AccessLogHashConfig  `yaml:"hash"`
+}
+
+type AccessLogSelection struct {
+	Name   string `yaml:"name"`
+	Policy string `yaml:"policy"`
+}
+
+type AccessLogHashConfig struct {
+	Algorithm      string `yaml:"algorithm"`
+	SecretEnv      string `yaml:"secret_env"`
+	SecretFile     string `yaml:"secret_file"`
+	ResolvedSecret string `yaml:"-"`
+}
+
+// OTLPLogsConfig adds an asynchronous OTLP sink while preserving stdout/file.
+type OTLPLogsConfig struct {
+	Enabled         bool              `yaml:"enabled"`
+	Exporter        string            `yaml:"exporter"`
+	Endpoint        string            `yaml:"endpoint"`
+	Insecure        bool              `yaml:"insecure"`
+	Headers         map[string]string `yaml:"headers"`
+	HeadersEnv      string            `yaml:"headers_env"`
+	HeadersFile     string            `yaml:"headers_file"`
+	ResolvedHeaders string            `yaml:"-"`
+	QueueSize       int               `yaml:"queue_size"`
+	BatchSize       int               `yaml:"batch_size"`
+	BatchTimeout    time.Duration     `yaml:"batch_timeout"`
+	ExportTimeout   time.Duration     `yaml:"export_timeout"`
+	ServiceName     string            `yaml:"service_name"`
 }
 
 type ReloadConfig struct {

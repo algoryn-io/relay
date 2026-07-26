@@ -726,13 +726,15 @@ func buildStateShared(
 		routeHandler := middleware.Chain(final, routeMiddlewares...)
 		recoveryMW := middleware.Recovery(logger)
 		requestIDMW := middleware.RequestID()
-		loggingMW := observability.NewLoggingMiddleware(logger, routeRef.Name, routeRef.BackendName)
+		loggingMW := observability.NewLoggingMiddlewareWithConfig(
+			logger, routeRef.Name, routeRef.BackendName, cfg.Observability.Logs.Access,
+		)
 		metricsMW := observability.NewMetricsMiddlewareFabric(metrics, promCollector, fabricDispatch, relaySvc, routeRef.Name)
 		tracingMW := observability.NewTracingMiddlewareWithHandle(tracing, routeRef.Name, routeRef.BackendName)
 
 		compiledRoutes[routeName] = &compiledRoute{
 			route:   routeRef,
-			handler: middleware.Chain(routeHandler, recoveryMW, requestIDMW, loggingMW, metricsMW, tracingMW),
+			handler: middleware.Chain(routeHandler, recoveryMW, requestIDMW, tracingMW, loggingMW, metricsMW),
 		}
 	}
 

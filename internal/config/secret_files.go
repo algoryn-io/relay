@@ -73,6 +73,22 @@ func (c *Config) ResolveSecretFiles(readFile func(string) ([]byte, error)) error
 		return err
 	}
 
+	logs := &c.Observability.Logs
+	if path := strings.TrimSpace(logs.Access.Hash.SecretFile); path != "" && logs.Access.Hash.ResolvedSecret == "" {
+		v, err := read("observability.logs.access.hash.secret_file", path)
+		if err != nil {
+			return err
+		}
+		logs.Access.Hash.ResolvedSecret = v
+	}
+	if path := strings.TrimSpace(logs.OTLP.HeadersFile); path != "" && logs.OTLP.ResolvedHeaders == "" {
+		v, err := read("observability.logs.otlp.headers_file", path)
+		if err != nil {
+			return err
+		}
+		logs.OTLP.ResolvedHeaders = v
+	}
+
 	for i := range c.Middleware {
 		mw := &c.Middleware[i]
 		cfg := &mw.Config

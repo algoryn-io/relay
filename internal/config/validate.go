@@ -1333,10 +1333,139 @@ func validateObservability(observability ObservabilityConfig, errs *ValidationEr
 	if observability.Logs.MaxAgeDays < 0 {
 		errs.Addf("observability.logs.max_age_days: must be >= 0")
 	}
+	validateAccessLogs(observability.Logs.Access, errs)
+	validateOTLPLogs(observability.Logs.OTLP, errs)
 	validateIPFilterEntries("observability.prometheus.allowed_cidrs", observability.Prometheus.AllowedCIDRs, errs)
 	validateNoPublicCIDR("observability.prometheus.allowed_cidrs", observability.Prometheus.AllowedCIDRs, errs)
 	validateFabric(observability.Fabric, errs)
 	validateTracing(observability.Tracing, errs)
+}
+
+var accessLogFields = map[string]struct{}{
+	"method": {}, "path": {}, "route": {}, "backend": {}, "status": {},
+	"duration": {}, "bytes": {}, "client_ip": {}, "request_id": {},
+	"trace_id": {}, "span_id": {}, "host": {}, "user_agent": {},
+}
+
+func validateAccessLogs(a AccessLogConfig, errs *ValidationErrors) {
+	seen := make(map[string]struct{}, len(a.Fields))
+	for i, raw := range a.Fields {
+		field := strings.ToLower(strings.TrimSpace(raw))
+		if _, ok := accessLogFields[field]; !ok {
+			errs.Addf("observability.logs.access.fields[%d]: unsupported field %q", i, raw)
+		}
+		if _, duplicate := seen[field]; duplicate {
+			errs.Addf("observability.logs.access.fields[%d]: duplicate field %q", i, raw)
+		}
+		seen[field] = struct{}{}
+	}
+	hashUsed := false
+	for raw, rawPolicy := range a.FieldPolicies {
+		field := strings.ToLower(strings.TrimSpace(raw))
+		if _, ok := accessLogFields[field]; !ok {
+			errs.Addf("observability.logs.access.field_policies: unsupported field %q", raw)
+		}
+		policy := strings.ToLower(strings.TrimSpace(rawPolicy))
+		if !validAccessPolicy(policy) {
+			errs.Addf("observability.logs.access.field_policies.%s: must be one of omit, plain, hash", raw)
+		}
+		hashUsed = hashUsed || policy == "hash"
+	}
+	validateAccessSelections("observability.logs.access.headers", a.Headers, true, &hashUsed, errs)
+	validateAccessSelections("observability.logs.access.query", a.Query, false, &hashUsed, errs)
+	switch strings.ToLower(strings.TrimSpace(a.Hash.Algorithm)) {
+	case "", "hmac_sha256", "sha256":
+	default:
+		errs.Addf("observability.logs.access.hash.algorithm: must be one of hmac_sha256, sha256")
+	}
+	if hashUsed && strings.TrimSpace(a.Hash.ResolvedSecret) == "" {
+		errs.Addf("observability.logs.access.hash: secret_env or secret_file is required when a hash policy is used")
+	}
+}
+
+func validateAccessSelections(field string, selections []AccessLogSelection, header bool, hashUsed *bool, errs *ValidationErrors) {
+	seen := make(map[string]struct{}, len(selections))
+	for i, selection := range selections {
+		name := strings.TrimSpace(selection.Name)
+		normalized := strings.ToLower(name)
+		if name == "" || header && !httpguts.ValidHeaderFieldName(name) {
+			errs.Addf("%s[%d].name: invalid name %q", field, i, selection.Name)
+		}
+		if _, duplicate := seen[normalized]; duplicate {
+			errs.Addf("%s[%d].name: duplicate name %q", field, i, selection.Name)
+		}
+		seen[normalized] = struct{}{}
+		policy := strings.ToLower(strings.TrimSpace(selection.Policy))
+		if policy != "" && !validAccessPolicy(policy) {
+			errs.Addf("%s[%d].policy: must be one of omit, plain, hash", field, i)
+		}
+		if policy == "plain" && SensitiveAccessLogName(normalized) {
+			errs.Addf("%s[%d].policy: sensitive values cannot use plain", field, i)
+		}
+		*hashUsed = *hashUsed || policy == "hash"
+	}
+}
+
+func validAccessPolicy(policy string) bool {
+	return policy == "omit" || policy == "plain" || policy == "hash"
+}
+
+// SensitiveAccessLogName identifies credential-bearing header/query names.
+// It is shared by validation and runtime redaction so their behavior cannot drift.
+func SensitiveAccessLogName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie",
+		"x-api-key", "api_key", "apikey", "access_token", "token",
+		"id_token", "refresh_token", "password", "secret", "jwt", "session",
+		"session_id", "credential", "credentials", "code":
+		return true
+	default:
+		return strings.Contains(name, "token") || strings.Contains(name, "password") ||
+			strings.Contains(name, "secret") || strings.Contains(name, "cookie") ||
+			strings.Contains(name, "session") || strings.Contains(name, "credential") ||
+			strings.Contains(name, "auth") || strings.HasSuffix(name, "_key") ||
+			strings.HasSuffix(name, "-key")
+	}
+}
+
+func validateOTLPLogs(o OTLPLogsConfig, errs *ValidationErrors) {
+	if !o.Enabled {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(o.Exporter)) {
+	case "", "otlp_grpc", "otlp_http":
+	default:
+		errs.Addf("observability.logs.otlp.exporter: must be one of otlp_grpc, otlp_http")
+	}
+	if o.QueueSize < 0 || o.BatchSize < 0 {
+		errs.Addf("observability.logs.otlp: queue_size and batch_size must be >= 0")
+	}
+	if o.QueueSize > 0 && o.BatchSize > o.QueueSize {
+		errs.Addf("observability.logs.otlp.batch_size: must not exceed queue_size")
+	}
+	if o.BatchTimeout < 0 || o.ExportTimeout < 0 {
+		errs.Addf("observability.logs.otlp: batch_timeout and export_timeout must be >= 0")
+	}
+	if endpoint := strings.TrimSpace(o.Endpoint); endpoint != "" && strings.Contains(endpoint, "://") {
+		parsed, err := url.Parse(endpoint)
+		if err != nil || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") {
+			errs.Addf("observability.logs.otlp.endpoint: must be a valid http or https endpoint without query or fragment")
+		} else if parsed.Scheme == "http" && !o.Insecure {
+			errs.Addf("observability.logs.otlp.insecure: must be true for an http endpoint")
+		} else if parsed.Scheme == "https" && o.Insecure {
+			errs.Addf("observability.logs.otlp.insecure: cannot be true for an https endpoint")
+		}
+	}
+	for name, value := range o.Headers {
+		if !httpguts.ValidHeaderFieldName(name) {
+			errs.Addf("observability.logs.otlp.headers: invalid header name %q", name)
+		}
+		if hasUnsafeHeaderValue(value) {
+			errs.Addf("observability.logs.otlp.headers.%s: must not contain control characters", name)
+		}
+	}
 }
 
 // validateNoPublicCIDR prevents a configuration typo from trusting every

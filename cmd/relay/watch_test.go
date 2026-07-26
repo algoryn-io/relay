@@ -41,18 +41,27 @@ func TestConfigWatchSupervisorWatchesTransitiveFileAndAtomicSave(t *testing.T) {
 
 func TestAppendTLSWatchFilesIncludesAllRuntimeTLSAssets(t *testing.T) {
 	t.Parallel()
-	cfg := &config.Config{Listener: config.ListenerConfig{
-		HTTPS: config.HTTPSConfig{Port: 8443, TLS: config.TLSConfig{
-			CertFile:     "default.crt",
-			KeyFile:      "default.key",
-			ClientCAFile: "clients.pem",
-			Certificates: []config.TLSCertificateConfig{{
-				Hosts: []string{"api.example.com"}, CertFile: "api.crt", KeyFile: "api.key",
+	cfg := &config.Config{
+		Listener: config.ListenerConfig{
+			HTTPS: config.HTTPSConfig{Port: 8443, TLS: config.TLSConfig{
+				CertFile:     "default.crt",
+				KeyFile:      "default.key",
+				ClientCAFile: "clients.pem",
+				Certificates: []config.TLSCertificateConfig{{
+					Hosts: []string{"api.example.com"}, CertFile: "api.crt", KeyFile: "api.key",
+				}},
 			}},
+		},
+		Observability: config.ObservabilityConfig{Logs: config.LogsConfig{
+			Access: config.AccessLogConfig{Hash: config.AccessLogHashConfig{SecretFile: "access-hash.secret"}},
+			OTLP:   config.OTLPLogsConfig{HeadersFile: "otlp-headers.secret"},
 		}},
-	}}
+	}
 	got := fileSet(appendTLSWatchFiles([]string{"relay.yaml"}, cfg))
-	for _, name := range []string{"relay.yaml", "default.crt", "default.key", "clients.pem", "api.crt", "api.key"} {
+	for _, name := range []string{
+		"relay.yaml", "default.crt", "default.key", "clients.pem", "api.crt", "api.key",
+		"access-hash.secret", "otlp-headers.secret",
+	} {
 		absolute, err := filepath.Abs(name)
 		if err != nil {
 			t.Fatal(err)
