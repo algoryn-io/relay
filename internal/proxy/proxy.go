@@ -61,6 +61,7 @@ func (nopMetrics) RecordBulkheadRejected(string)                {}
 type Proxy struct {
 	cancel            context.CancelFunc
 	ctx               context.Context
+	closeOnce         sync.Once
 	mu                sync.RWMutex
 	logger            *slog.Logger
 	healthNotifier    HealthNotifier
@@ -130,7 +131,7 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		// pooling is never left to http.DefaultTransport.
 		tr, trErr := buildBackendTransport(backend.Protocol, backend.TLS)
 		if trErr != nil {
-			cancel()
+			p.Close()
 			return nil, fmt.Errorf("backend %q: build transport: %w", name, trErr)
 		}
 		p.backendTransports[name] = tr
@@ -190,12 +191,23 @@ func (p *Proxy) Close() {
 	if p == nil {
 		return
 	}
-	if p.cancel != nil {
-		p.cancel()
-	}
-	// Wait for health-check goroutines to observe the cancellation and exit, so
-	// no background checks outlive the proxy after a reload or shutdown.
-	p.healthWG.Wait()
+	p.closeOnce.Do(func() {
+		if p.cancel != nil {
+			p.cancel()
+		}
+		// Wait for health-check goroutines to observe the cancellation and exit, so
+		// no background checks outlive the proxy after a reload or shutdown.
+		p.healthWG.Wait()
+		closeTransport := func(rt http.RoundTripper) {
+			if tr, ok := rt.(interface{ CloseIdleConnections() }); ok {
+				tr.CloseIdleConnections()
+			}
+		}
+		for _, tr := range p.backendTransports {
+			closeTransport(tr)
+		}
+		closeTransport(p.defaultTransport)
+	})
 }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.RouteRuntime) {
