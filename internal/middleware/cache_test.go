@@ -225,15 +225,15 @@ func TestCacheLRUEviction(t *testing.T) {
 	mk := func(id string) *cachedResponse {
 		return &cachedResponse{status: 200, body: []byte(id), storedAt: time.Now(), expiresAt: time.Now().Add(time.Hour)}
 	}
-	store.Set("a", mk("a"))
-	store.Set("b", mk("b"))
-	_, _ = store.Get("a")   // make "a" most-recently-used
-	store.Set("c", mk("c")) // should evict "b"
+	_ = store.Set("a", mk("a"))
+	_ = store.Set("b", mk("b"))
+	_, _ = store.Get("a")       // make "a" most-recently-used
+	_ = store.Set("c", mk("c")) // should evict "b"
 
-	if _, ok := store.Get("b"); ok {
+	if got, err := store.Get("b"); err != nil || got != nil {
 		t.Fatal("expected b to be evicted")
 	}
-	if _, ok := store.Get("a"); !ok {
+	if got, err := store.Get("a"); err != nil || got == nil {
 		t.Fatal("expected a to survive")
 	}
 	if store.len() != 2 {

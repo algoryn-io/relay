@@ -156,7 +156,7 @@ coordination: run N replicas behind the Service (or an HPA).
 | Concern | Single instance | Multiple instances |
 | --- | --- | --- |
 | Rate limiting | in-memory (per instance) | set `store: redis` for a shared limit |
-| Response cache | in-memory (per instance) | per-instance is fine; each caches independently |
+| Response cache | in-memory (per instance) | set `store: redis` for a shared cache; keep memory for per-instance |
 | Config | one file / ConfigMap | same file/ConfigMap on every replica; rolling restart to change |
 | Backend discovery | static URLs | a Kubernetes `Service` DNS name load-balances pods |
 | TLS | ACME filesystem cache or manual | Redis ACME cache/lease, or terminate at the LB / Gateway |
@@ -180,4 +180,4 @@ container root. Redis unavailability fails certificate cache operations closed.
 - [ ] Secrets provided via env or `*_file` — never committed to the config.
 - [ ] TLS configured (ACME auto, manual, or terminated upstream) with a hardened `min_version`.
 - [ ] Admin API restricted (`listener.admin.allowed_cidrs` + `token_env`/`token_file`).
-- [ ] For multiple replicas: `store: redis` for shared rate limiting and Redis ACME coordination when Relay terminates automatic TLS.
+- [ ] For multiple replicas: `store: redis` for shared rate limiting / response cache and Redis ACME coordination when Relay terminates automatic TLS.

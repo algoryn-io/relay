@@ -1216,6 +1216,41 @@ func validateCacheMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *
 			errs.Addf("%s.cacheable_status[%d]: must be a valid HTTP status code", prefix, i)
 		}
 	}
+	store := strings.ToLower(strings.TrimSpace(cfg.RateLimitStore))
+	switch store {
+	case "", "memory", "redis":
+	default:
+		errs.Addf("%s.store: must be one of memory, redis", prefix)
+	}
+	if store == "redis" {
+		hasURL := strings.TrimSpace(cfg.RedisURL) != ""
+		hasURLEnv := strings.TrimSpace(cfg.RedisURLEnv) != ""
+		hasURLFile := strings.TrimSpace(cfg.RedisURLFile) != ""
+		if !hasURL && !hasURLEnv && !hasURLFile {
+			errs.Addf("%s: redis_url, redis_url_env or redis_url_file is required when store is redis", prefix)
+		}
+		if rawURL := strings.TrimSpace(cfg.RedisURL); rawURL != "" {
+			parsed, err := url.Parse(rawURL)
+			if err != nil || (parsed.Scheme != "redis" && parsed.Scheme != "rediss") || parsed.Host == "" {
+				errs.Addf("%s.redis_url: must be a valid redis:// or rediss:// URL", prefix)
+			}
+		}
+	}
+	if ns := strings.TrimSpace(cfg.CacheNamespace); ns != "" {
+		if len(ns) > 64 {
+			errs.Addf("%s.namespace: must be at most 64 characters", prefix)
+		}
+		for _, r := range ns {
+			if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
+				!(r >= '0' && r <= '9') && r != '.' && r != '_' && r != '-' && r != ':' {
+				errs.Addf("%s.namespace: must use only letters, digits, dot, underscore, hyphen, or colon", prefix)
+				break
+			}
+		}
+	}
+	if cfg.CacheOperationTimeout < 0 {
+		errs.Addf("%s.operation_timeout: must be greater than 0", prefix)
+	}
 }
 
 func validateOAuth2Middleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
