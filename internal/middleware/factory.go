@@ -108,12 +108,13 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, io.Cl
 		return mw, nil, err
 	case "ext_authz":
 		mw, err := NewExtAuthz(ExtAuthzConfig{
-			URL:            def.Config.AuthzURL,
-			ForwardHeaders: def.Config.AuthzForwardHeaders,
-			CopyHeaders:    def.Config.AuthzCopyHeaders,
-			Timeout:        def.Config.AuthzTimeout,
-			FailOpen:       def.Config.FailOpen,
-			Logger:         logger,
+			URL:               def.Config.AuthzURL,
+			ForwardHeaders:    def.Config.AuthzForwardHeaders,
+			CopyHeaders:       def.Config.AuthzCopyHeaders,
+			Timeout:           def.Config.AuthzTimeout,
+			FailOpen:          def.Config.FailOpen,
+			AllowInsecureHTTP: def.Config.AuthzAllowInsecureHTTP,
+			Logger:            logger,
 		})
 		return mw, nil, err
 	default:

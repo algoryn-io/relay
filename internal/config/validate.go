@@ -439,8 +439,8 @@ func validateExtAuthzMiddleware(prefix string, cfg MiddlewareSettingsConfig, err
 	u := strings.TrimSpace(cfg.AuthzURL)
 	if u == "" {
 		errs.Addf("%s.authz_url: required", prefix)
-	} else if parsed, err := url.Parse(u); err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		errs.Addf("%s.authz_url: must be an http or https URL", prefix)
+	} else if parsed, err := url.Parse(u); err != nil || !strings.EqualFold(parsed.Scheme, "https") && !(strings.EqualFold(parsed.Scheme, "http") && cfg.AuthzAllowInsecureHTTP) {
+		errs.Addf("%s.authz_url: must be https unless allow_insecure_http is set", prefix)
 	}
 	if cfg.AuthzTimeout < 0 {
 		errs.Addf("%s.authz_timeout: must be >= 0", prefix)

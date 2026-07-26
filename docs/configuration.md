@@ -268,7 +268,8 @@ Fails closed (`503`) when the endpoint is unreachable.
 
 | `config` field | Default | Description |
 | --- | --- | --- |
-| `authz_url` | — | External authorizer (`http`/`https`). |
+| `authz_url` | — | External authorizer (`https` required by default). |
+| `allow_insecure_http` | `false` | Explicitly permit plaintext HTTP only for a trusted internal network. |
 | `forward_headers` | — | Inbound headers to include on the probe (method/URI/host/client-IP are always sent). |
 | `copy_headers` | — | Headers from a 2xx response to inject into the upstream request. |
 | `authz_timeout` | `2s` | Per-call timeout. |
