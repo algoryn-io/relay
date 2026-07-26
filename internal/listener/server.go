@@ -33,10 +33,14 @@ const (
 	defaultReadHeaderTimeout = 10 * time.Second
 	// defaultMaxHeaderBytes caps request header size (matches Go's default).
 	defaultMaxHeaderBytes = 1 << 20
+	// defaultStateDrainTimeout bounds how long a retired configuration remains
+	// alive waiting for requests that acquired it before an atomic reload.
+	defaultStateDrainTimeout = 30 * time.Second
 )
 
 // serverState holds all hot-reloadable request-handling state.
-// It is swapped atomically on reload; the previous state is closed after the swap.
+// Requests acquire a lease before touching it. Retirement rejects new leases and
+// closes owned resources after existing leases drain (or the bounded timeout).
 type serverState struct {
 	proxy              *proxy.Proxy
 	router             *router.Router
@@ -51,21 +55,107 @@ type serverState struct {
 	fabricDispatch     *observability.EventDispatcher
 	relayServiceName   string
 	adminH             http.Handler
-	stripHeaders       []string    // extra inbound headers to remove at the edge
-	mwClosers          []io.Closer // middleware resources (redis pools, prune loops)
+	stripHeaders       []string // extra inbound headers to remove at the edge
+	owner              *resourceOwner
+
+	leaseMu     sync.Mutex
+	leases      int
+	retired     bool
+	drained     chan struct{}
+	drainedOnce sync.Once
+	retireOnce  sync.Once
+	closeOnce   sync.Once
+	done        chan struct{}
+	onClose     func()
+}
+
+type resourceOwner struct {
+	once    sync.Once
+	closers []io.Closer
+}
+
+func (o *resourceOwner) add(c io.Closer) {
+	if c != nil {
+		o.closers = append(o.closers, c)
+	}
+}
+
+func (o *resourceOwner) close() {
+	if o == nil {
+		return
+	}
+	o.once.Do(func() {
+		for i := len(o.closers) - 1; i >= 0; i-- {
+			_ = o.closers[i].Close()
+		}
+		o.closers = nil
+	})
+}
+
+type closerFunc func() error
+
+func (f closerFunc) Close() error { return f() }
+
+func (st *serverState) acquire() bool {
+	st.leaseMu.Lock()
+	defer st.leaseMu.Unlock()
+	if st.retired {
+		return false
+	}
+	st.leases++
+	return true
+}
+
+func (st *serverState) release() {
+	st.leaseMu.Lock()
+	if st.leases > 0 {
+		st.leases--
+	}
+	if st.retired && st.leases == 0 {
+		st.drainedOnce.Do(func() { close(st.drained) })
+	}
+	st.leaseMu.Unlock()
+}
+
+func (st *serverState) retire(timeout time.Duration) {
+	if st == nil {
+		return
+	}
+	st.retireOnce.Do(func() {
+		st.leaseMu.Lock()
+		st.retired = true
+		if st.leases == 0 {
+			st.drainedOnce.Do(func() { close(st.drained) })
+		}
+		st.leaseMu.Unlock()
+
+		go func() {
+			if timeout <= 0 {
+				<-st.drained
+			} else {
+				timer := time.NewTimer(timeout)
+				defer timer.Stop()
+				select {
+				case <-st.drained:
+				case <-timer.C:
+				}
+			}
+			st.close()
+		}()
+	})
 }
 
 func (st *serverState) close() {
 	if st == nil {
 		return
 	}
-	if st.fabricDispatch != nil {
-		st.fabricDispatch.Close()
-	}
-	if st.proxy != nil {
-		st.proxy.Close()
-	}
-	middleware.CloseAll(st.mwClosers)
+	st.closeOnce.Do(func() {
+		st.owner.close()
+		if st.onClose != nil {
+			st.onClose()
+		}
+		close(st.done)
+	})
 }
 
 type Server struct {
@@ -74,7 +164,11 @@ type Server struct {
 	certReloader *CertReloader // non-nil only in manual TLS mode
 	logger       *slog.Logger
 	state        atomic.Pointer[serverState]
-	reloadMu     sync.Mutex
+	lifecycleMu  sync.Mutex
+	shuttingDown bool
+	shutdownDone chan struct{}
+	states       map[*serverState]struct{}
+	drainTimeout time.Duration
 
 	inFlight            atomic.Int64 // currently in-flight proxied requests
 	maxInFlight         atomic.Int64 // global cap; 0 = unlimited (resizable on reload)
@@ -108,11 +202,22 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 	if err != nil {
 		return nil, err
 	}
+	keepState := false
+	defer func() {
+		if !keepState {
+			st.close()
+		}
+	}()
 
 	s := &Server{
 		logger:            logger,
 		connectionLimiter: newConnectionLimiter(cfg.Listener.MaxConnectionsPerIP),
+		shutdownDone:      make(chan struct{}),
+		states:            make(map[*serverState]struct{}),
+		drainTimeout:      defaultStateDrainTimeout,
 	}
+	st.onClose = func() { s.removeState(st) }
+	s.states[st] = struct{}{}
 	s.state.Store(st)
 	s.connectionLimiter.setMetrics(st.prometheus)
 	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
@@ -170,6 +275,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		// works because it only starts the servers that are non-nil.
 	}
 
+	keepState = true
 	return s, nil
 }
 
@@ -179,35 +285,26 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 // Returns an error if the new state cannot be built; the server keeps running
 // with the previous config in that case.
 func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
-	s.reloadMu.Lock()
-	defer s.reloadMu.Unlock()
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
+	if s.shuttingDown {
+		return fmt.Errorf("server is shutting down")
+	}
 
 	newState, err := buildState(cfg, rt, s.logger)
 	if err != nil {
 		return fmt.Errorf("build reloaded state: %w", err)
 	}
+	newState.onClose = func() { s.removeState(newState) }
+	s.states[newState] = struct{}{}
 
 	old := s.state.Swap(newState)
-	go old.close()
+	old.retire(s.drainTimeout)
 
 	s.connectionLimiter.setLimit(cfg.Listener.MaxConnectionsPerIP)
 	s.connectionLimiter.setMetrics(newState.prometheus)
 	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
 	s.maxRequestBodyBytes.Store(cfg.Listener.MaxRequestBodyBytes)
-
-	for _, srv := range []*http.Server{s.httpServer, s.httpsServer} {
-		if srv == nil {
-			continue
-		}
-		srv.ReadTimeout = cfg.Listener.Timeouts.Read
-		srv.WriteTimeout = cfg.Listener.Timeouts.Write
-		srv.IdleTimeout = cfg.Listener.Timeouts.Idle
-		readHeaderTimeout := cfg.Listener.Timeouts.ReadHeader
-		if readHeaderTimeout <= 0 {
-			readHeaderTimeout = defaultReadHeaderTimeout
-		}
-		srv.ReadHeaderTimeout = readHeaderTimeout
-	}
 
 	// Rotate the TLS certificate when running in manual mode. A failure here
 	// is non-fatal: the server keeps the previous certificate in service and
@@ -270,6 +367,20 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	if s.shuttingDown {
+		done := s.shutdownDone
+		s.lifecycleMu.Unlock()
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s.shuttingDown = true
+	s.lifecycleMu.Unlock()
+
 	// Drain the HTTP servers first so in-flight requests finish while the
 	// proxy/dispatcher are still alive; only then tear down the state.
 	var firstErr error
@@ -281,12 +392,45 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			firstErr = err
 		}
 	}
-	s.state.Load().close()
+
+	s.lifecycleMu.Lock()
+	states := make([]*serverState, 0, len(s.states))
+	for st := range s.states {
+		states = append(states, st)
+	}
+	s.lifecycleMu.Unlock()
+
+	for _, st := range states {
+		st.retire(s.drainTimeout)
+	}
+	for _, st := range states {
+		select {
+		case <-st.done:
+		case <-ctx.Done():
+			// The caller's shutdown bound takes precedence over the normal reload
+			// drain bound. Closing is idempotent and releases every owned resource.
+			for _, pending := range states {
+				pending.close()
+			}
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			goto finished
+		}
+	}
+
+finished:
+	close(s.shutdownDone)
 	return firstErr
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	st := s.state.Load()
+	st := s.acquireState()
+	if st == nil {
+		httpx.WriteError(w, http.StatusServiceUnavailable, "shutting_down")
+		return
+	}
+	defer st.release()
 
 	// Resolve the client IP (honoring trusted proxies) into the request context
 	// first, then strip spoofable inbound headers. Resolution happens before the
@@ -368,7 +512,35 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*serverState, error) {
+func (s *Server) acquireState() *serverState {
+	for {
+		st := s.state.Load()
+		if st == nil {
+			return nil
+		}
+		if st.acquire() {
+			return st
+		}
+		if s.state.Load() == st {
+			return nil
+		}
+	}
+}
+
+func (s *Server) removeState(st *serverState) {
+	s.lifecycleMu.Lock()
+	delete(s.states, st)
+	s.lifecycleMu.Unlock()
+}
+
+func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (st *serverState, err error) {
+	owner := &resourceOwner{}
+	defer func() {
+		if err != nil {
+			owner.close()
+		}
+	}()
+
 	rtRouter, err := router.New(rt)
 	if err != nil {
 		return nil, err
@@ -377,6 +549,10 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 	if err != nil {
 		return nil, err
 	}
+	owner.add(closerFunc(func() error {
+		rtProxy.Close()
+		return nil
+	}))
 	rtProxy.SetWebSocketIdleTimeout(cfg.Listener.Timeouts.WebSocketIdle)
 
 	metrics := observability.NewMetrics(100)
@@ -384,6 +560,9 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 	mwRegistry, mwClosers, err := middleware.BuildRegistry(rt.Middleware, logger, promCollector)
 	if err != nil {
 		return nil, err
+	}
+	for _, closer := range mwClosers {
+		owner.add(closer)
 	}
 
 	rtProxy.SetHealthNotifier(promCollector)
@@ -403,6 +582,10 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 			queueSize = 1024
 		}
 		fabricDispatch = observability.NewEventDispatcher(queueSize, logger, nil)
+		owner.add(closerFunc(func() error {
+			fabricDispatch.Close()
+			return nil
+		}))
 		if relaySvc == "" {
 			relaySvc = "relay"
 		}
@@ -437,8 +620,6 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 
 		routeMiddlewares, resolveErr := middleware.Resolve(routeRef.MiddlewareRefs, mwRegistry)
 		if resolveErr != nil {
-			rtProxy.Close()
-			middleware.CloseAll(mwClosers)
 			return nil, fmt.Errorf("resolve middleware for route %q: %w", routeRef.Name, resolveErr)
 		}
 		routeHandler := middleware.Chain(final, routeMiddlewares...)
@@ -463,7 +644,7 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 
 	adminH := admin.New(rtProxy, rt.Routes, cfg.Listener.Admin.AllowedCIDRs, cfg.Listener.Admin.ResolvedToken, logger)
 
-	st := &serverState{
+	st = &serverState{
 		proxy:              rtProxy,
 		router:             rtRouter,
 		metrics:            metrics,
@@ -478,7 +659,9 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		relayServiceName:   relaySvc,
 		adminH:             adminH,
 		stripHeaders:       cfg.Listener.StripRequestHeaders,
-		mwClosers:          mwClosers,
+		owner:              owner,
+		drained:            make(chan struct{}),
+		done:               make(chan struct{}),
 	}
 
 	if fabricDispatch != nil {

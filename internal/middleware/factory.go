@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"sync"
+	"time"
 
 	"algoryn.io/relay/internal/config"
 )
@@ -14,6 +17,11 @@ import (
 func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics ...RateLimitMetrics) (Middleware, io.Closer, error) {
 	switch def.Type {
 	case "jwt":
+		var client *http.Client
+		var closer io.Closer
+		if def.Config.JWKSUrl != "" || def.Config.OIDCIssuer != "" {
+			client, closer = newOwnedHTTPClient(10 * time.Second)
+		}
 		mw, err := NewJWT(JWTConfig{
 			Algorithm:        def.Config.Algorithm,
 			Secret:           def.Config.ResolvedSecret,
@@ -28,8 +36,13 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 			ExpectedAudience: def.Config.ExpectedAudience,
 			Logger:           logger,
 			LogFailures:      def.Config.JWTLogFailures,
+			JWKSClient:       client,
 		})
-		return mw, nil, err
+		if err != nil {
+			CloseAll([]io.Closer{closer})
+			return nil, nil, err
+		}
+		return mw, closer, nil
 	case "rate_limit":
 		redisURL := def.Config.RedisURL
 		var metrics RateLimitMetrics
@@ -38,7 +51,7 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 		}
 		// ResolveEnv writes the resolved env var into RedisURL when RedisURLEnv
 		// is set, so by this point RedisURL already holds the final value.
-		return NewRateLimit(RateLimitConfig{
+		mw, closer, err := NewRateLimit(RateLimitConfig{
 			Strategy:              Strategy(def.Config.Strategy),
 			Limit:                 def.Config.Limit,
 			Window:                def.Config.Window,
@@ -52,6 +65,7 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 			MemoryCleanupInterval: def.Config.MemoryCleanupInterval,
 			Metrics:               metrics,
 		})
+		return mw, makeOnceCloser(closer), err
 	case "body_limit":
 		mw, err := NewBodyLimit(BodyLimitConfig{
 			MaxBytes: def.Config.MaxBytes,
@@ -114,8 +128,9 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 		if err != nil {
 			return nil, nil, err
 		}
-		return mw, closer, nil
+		return mw, makeOnceCloser(closer), nil
 	case "oauth2":
+		client, closer := newOwnedHTTPClient(defaultIntrospectionTimeout)
 		mw, err := NewIntrospection(IntrospectionConfig{
 			URL:            def.Config.IntrospectionURL,
 			ClientID:       def.Config.ClientID,
@@ -124,9 +139,19 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 			Header:         def.Config.Header,
 			CacheTTL:       def.Config.IntrospectionCacheTTL,
 			Logger:         logger,
+			Client:         client,
 		})
-		return mw, nil, err
+		if err != nil {
+			_ = closer.Close()
+			return nil, nil, err
+		}
+		return mw, closer, nil
 	case "ext_authz":
+		timeout := def.Config.AuthzTimeout
+		if timeout <= 0 {
+			timeout = defaultExtAuthzTimeout
+		}
+		client, closer := newOwnedHTTPClient(timeout)
 		mw, err := NewExtAuthz(ExtAuthzConfig{
 			URL:               def.Config.AuthzURL,
 			ForwardHeaders:    def.Config.AuthzForwardHeaders,
@@ -135,11 +160,43 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 			FailOpen:          def.Config.FailOpen,
 			AllowInsecureHTTP: def.Config.AuthzAllowInsecureHTTP,
 			Logger:            logger,
+			Client:            client,
 		})
-		return mw, nil, err
+		if err != nil {
+			_ = closer.Close()
+			return nil, nil, err
+		}
+		return mw, closer, nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported middleware type %q", def.Type)
 	}
+}
+
+type onceCloser struct {
+	once sync.Once
+	fn   func() error
+}
+
+func (c *onceCloser) Close() error {
+	var err error
+	c.once.Do(func() { err = c.fn() })
+	return err
+}
+
+func makeOnceCloser(c io.Closer) io.Closer {
+	if c == nil {
+		return nil
+	}
+	return &onceCloser{fn: c.Close}
+}
+
+func newOwnedHTTPClient(timeout time.Duration) (*http.Client, io.Closer) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	client := &http.Client{Transport: transport, Timeout: timeout}
+	return client, &onceCloser{fn: func() error {
+		transport.CloseIdleConnections()
+		return nil
+	}}
 }
 
 // BuildRegistry builds all middlewares. The returned closers own resources that
