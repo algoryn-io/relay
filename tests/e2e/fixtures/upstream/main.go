@@ -5,10 +5,12 @@ import (
 	"crypto/x509"
 	"flag"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"os"
 	"sync/atomic"
+	"time"
 )
 
 func main() {
@@ -33,12 +35,13 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain")
-		_, _ = fmt.Fprintf(w, "%s:%s", *name, r.URL.Path)
+		_, _ = fmt.Fprintf(w, "%s:%s", *name, html.EscapeString(r.URL.Path))
 	})
 
 	server := &http.Server{
-		Addr:    *listen,
-		Handler: handler,
+		Addr:              *listen,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if *clientCA != "" {
 		pem, err := os.ReadFile(*clientCA)
