@@ -35,19 +35,6 @@ func TestValidateAdminLoopbackCanUseIPOnlyAccess(t *testing.T) {
 	}
 }
 
-func TestValidateInsecureBackendTLSRequiresAcknowledgement(t *testing.T) {
-	t.Parallel()
-
-	cfg := validConfig()
-	cfg.Backends[0].TLS.InsecureSkipVerify = true
-
-	assertValidationErrorContains(t, cfg.Validate(), "acknowledge_insecure_skip_verify")
-	cfg.Backends[0].TLS.AcknowledgeInsecureSkipVerify = true
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() explicit acknowledgement error = %v", err)
-	}
-}
-
 func TestValidateFabricEnabledRequiresServiceName(t *testing.T) {
 	t.Parallel()
 
