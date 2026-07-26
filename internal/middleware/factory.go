@@ -14,7 +14,7 @@ import (
 // Build constructs a middleware. The returned io.Closer (nil for stateless
 // middleware) owns any resources that must be released when the middleware is
 // discarded, e.g. on config reload.
-func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics ...RateLimitMetrics) (Middleware, io.Closer, error) {
+func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitObservers ...any) (Middleware, io.Closer, error) {
 	switch def.Type {
 	case "jwt":
 		var client *http.Client
@@ -46,8 +46,14 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 	case "rate_limit":
 		redisURL := def.Config.RedisURL
 		var metrics RateLimitMetrics
-		if len(rateLimitMetrics) > 0 {
-			metrics = rateLimitMetrics[0]
+		var events RateLimitOperationalEvents
+		for _, observer := range rateLimitObservers {
+			if candidate, ok := observer.(RateLimitMetrics); ok {
+				metrics = candidate
+			}
+			if candidate, ok := observer.(RateLimitOperationalEvents); ok {
+				events = candidate
+			}
 		}
 		// ResolveEnv writes the resolved env var into RedisURL when RedisURLEnv
 		// is set, so by this point RedisURL already holds the final value.
@@ -64,6 +70,8 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 			MemoryBucketTTL:       def.Config.MemoryBucketTTL,
 			MemoryCleanupInterval: def.Config.MemoryCleanupInterval,
 			Metrics:               metrics,
+			Events:                events,
+			ObserverKey:           def.Name,
 		})
 		return mw, makeOnceCloser(closer), err
 	case "body_limit":
@@ -206,11 +214,11 @@ func newOwnedHTTPClient(timeout time.Duration) (*http.Client, io.Closer) {
 // BuildRegistry builds all middlewares. The returned closers own resources that
 // must be released when this registry is replaced (config reload) or the server
 // shuts down; close them via CloseAll.
-func BuildRegistry(defs map[string]config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics ...RateLimitMetrics) (map[string]Middleware, []io.Closer, error) {
+func BuildRegistry(defs map[string]config.MiddlewareRuntime, logger *slog.Logger, rateLimitObservers ...any) (map[string]Middleware, []io.Closer, error) {
 	registry := make(map[string]Middleware, len(defs))
 	var closers []io.Closer
 	for name, def := range defs {
-		mw, closer, err := Build(def, logger, rateLimitMetrics...)
+		mw, closer, err := Build(def, logger, rateLimitObservers...)
 		if err != nil {
 			CloseAll(closers) // don't leak resources already built this pass
 			return nil, nil, fmt.Errorf("build middleware %q: %w", name, err)

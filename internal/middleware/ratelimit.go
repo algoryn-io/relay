@@ -40,6 +40,8 @@ type RateLimitConfig struct {
 	// MemoryCleanupInterval controls the single store-wide cleanup loop.
 	MemoryCleanupInterval time.Duration
 	Metrics               RateLimitMetrics
+	Events                RateLimitOperationalEvents
+	ObserverKey           string
 }
 
 // RateLimitMetrics intentionally exposes only aggregate values: bucket keys
@@ -49,13 +51,23 @@ type RateLimitMetrics interface {
 	RecordRateLimitMemoryEviction()
 }
 
+// RateLimitOperationalEvents is implemented outside this package to avoid an
+// observability dependency cycle.
+type RateLimitOperationalEvents interface {
+	RecordRateLimitRedisResult(source string, success, failOpen bool)
+	RecordRateLimitFailOpenBypass()
+}
+
 type rateLimiter struct {
-	limit    int
-	window   time.Duration
-	by       string
-	header   string
-	store    rateLimitStore
-	failOpen bool
+	limit       int
+	window      time.Duration
+	by          string
+	header      string
+	store       rateLimitStore
+	failOpen    bool
+	redis       bool
+	events      RateLimitOperationalEvents
+	observerKey string
 }
 
 // NewRateLimit returns a sliding-window rate limit middleware. The returned
@@ -146,12 +158,15 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, io.Closer, error) {
 // store. Used internally and in tests to inject stores (e.g. miniredis).
 func newRateLimitWithStore(cfg RateLimitConfig, store rateLimitStore) (Middleware, error) {
 	rl := &rateLimiter{
-		limit:    cfg.Limit,
-		window:   cfg.Window,
-		by:       cfg.By,
-		header:   cfg.Header,
-		store:    store,
-		failOpen: cfg.FailOpen,
+		limit:       cfg.Limit,
+		window:      cfg.Window,
+		by:          cfg.By,
+		header:      cfg.Header,
+		store:       store,
+		failOpen:    cfg.FailOpen,
+		redis:       strings.EqualFold(strings.TrimSpace(cfg.Store), "redis") || isRedisStore(store),
+		events:      cfg.Events,
+		observerKey: cfg.ObserverKey,
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -163,9 +178,15 @@ func newRateLimitWithStore(cfg RateLimitConfig, store rateLimitStore) (Middlewar
 
 			now := time.Now()
 			allowed, remaining, reset, err := rl.store.Check(r.Context(), key, rl.limit, rl.window, now)
+			if rl.redis && rl.events != nil {
+				rl.events.RecordRateLimitRedisResult(rl.observerKey, err == nil, rl.failOpen)
+			}
 			if err != nil && !rl.failOpen {
 				httpx.WriteError(w, http.StatusServiceUnavailable, "rate_limit_unavailable")
 				return
+			}
+			if err != nil && rl.failOpen && rl.events != nil {
+				rl.events.RecordRateLimitFailOpenBypass()
 			}
 
 			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rl.limit))
@@ -185,6 +206,11 @@ func newRateLimitWithStore(cfg RateLimitConfig, store rateLimitStore) (Middlewar
 			next.ServeHTTP(w, r)
 		})
 	}, nil
+}
+
+func isRedisStore(store rateLimitStore) bool {
+	_, ok := store.(*redisStore)
+	return ok
 }
 
 func (l *rateLimiter) keyFromRequest(r *http.Request) string {

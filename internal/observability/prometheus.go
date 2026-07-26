@@ -31,8 +31,13 @@ type PrometheusCollector struct {
 	listenerRejected    prometheus.Counter
 	rateLimitBuckets    prometheus.Gauge
 	rateLimitEvictions  prometheus.Counter
+	rateLimitRedis      *prometheus.CounterVec
+	rateLimitRedisUp    prometheus.Gauge
+	rateLimitRedisState prometheus.Gauge
+	rateLimitBypass     prometheus.Counter
 	configReloadTotal   *prometheus.CounterVec
 	configReloadSuccess prometheus.Gauge
+	operationalEvents   *prometheus.CounterVec
 	otlpLogDropped      prometheus.CounterFunc
 	registry            *prometheus.Registry
 }
@@ -129,6 +134,23 @@ func NewPrometheusCollector() *PrometheusCollector {
 		Name: "relay_rate_limit_memory_evictions_total",
 		Help: "Total in-process rate limit buckets evicted to enforce configured capacity.",
 	})
+	rateLimitRedis := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "relay_rate_limit_redis_checks_total",
+		Help: "Total Redis rate-limit checks by bounded result.",
+	}, []string{"result"})
+	rateLimitRedisUp := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "relay_rate_limit_redis_available",
+		Help: "Whether the Redis rate-limit backend was available on its latest check.",
+	})
+	rateLimitRedisUp.Set(1)
+	rateLimitRedisState := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "relay_rate_limit_redis_state",
+		Help: "Aggregate Redis rate-limit state: 0 = healthy, 1 = degraded fail-open, 2 = unavailable fail-closed.",
+	})
+	rateLimitBypass := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "relay_rate_limit_fail_open_bypass_total",
+		Help: "Total requests allowed because Redis rate limiting failed open.",
+	})
 
 	configReloadTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "relay_config_reload_total",
@@ -139,6 +161,10 @@ func NewPrometheusCollector() *PrometheusCollector {
 		Name: "relay_config_last_successful_reload_timestamp_seconds",
 		Help: "Unix timestamp of the last successfully applied configuration reload.",
 	})
+	operationalEvents := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "relay_operational_events_total",
+		Help: "Total transition-only operational events by stable bounded code.",
+	}, []string{"code"})
 	otlpLogDropped := prometheus.NewCounterFunc(prometheus.CounterOpts{
 		Name: "relay_otlp_log_dropped_total",
 		Help: "Total OTLP log records dropped because the non-blocking export queue was full.",
@@ -149,7 +175,8 @@ func NewPrometheusCollector() *PrometheusCollector {
 		upstreamDuration, retryTotal, retryBudgetExceeded, circuitState, bulkheadInFlight, bulkheadRejected,
 		outlierEjections, outlierRecoveries, outlierEjected,
 		listenerConnections, listenerPeerIPs, listenerRejected, rateLimitBuckets, rateLimitEvictions,
-		configReloadTotal, configReloadSuccess, otlpLogDropped,
+		rateLimitRedis, rateLimitRedisUp, rateLimitRedisState, rateLimitBypass,
+		configReloadTotal, configReloadSuccess, operationalEvents, otlpLogDropped,
 	)
 
 	return &PrometheusCollector{
@@ -171,8 +198,13 @@ func NewPrometheusCollector() *PrometheusCollector {
 		listenerRejected:    listenerRejected,
 		rateLimitBuckets:    rateLimitBuckets,
 		rateLimitEvictions:  rateLimitEvictions,
+		rateLimitRedis:      rateLimitRedis,
+		rateLimitRedisUp:    rateLimitRedisUp,
+		rateLimitRedisState: rateLimitRedisState,
+		rateLimitBypass:     rateLimitBypass,
 		configReloadTotal:   configReloadTotal,
 		configReloadSuccess: configReloadSuccess,
+		operationalEvents:   operationalEvents,
 		otlpLogDropped:      otlpLogDropped,
 		registry:            reg,
 	}
@@ -304,6 +336,62 @@ func (c *PrometheusCollector) RecordRateLimitMemoryEviction() {
 		return
 	}
 	c.rateLimitEvictions.Inc()
+}
+
+func (c *PrometheusCollector) RecordRateLimitRedisCheck(success bool) {
+	if c == nil {
+		return
+	}
+	result := "error"
+	if success {
+		result = "success"
+	}
+	c.rateLimitRedis.WithLabelValues(result).Inc()
+}
+
+func (c *PrometheusCollector) SetRateLimitRedisAvailable(available bool) {
+	if c == nil {
+		return
+	}
+	value := 0.0
+	if available {
+		value = 1
+	}
+	c.rateLimitRedisUp.Set(value)
+}
+
+func (c *PrometheusCollector) SetRateLimitRedisState(state string) {
+	if c == nil {
+		return
+	}
+	value := 0.0
+	switch state {
+	case "degraded":
+		value = 1
+	case "unavailable":
+		value = 2
+	}
+	c.rateLimitRedisState.Set(value)
+}
+
+func (c *PrometheusCollector) RecordRateLimitFailOpenBypass() {
+	if c != nil {
+		c.rateLimitBypass.Inc()
+	}
+}
+
+func (c *PrometheusCollector) RecordOperationalEvent(code string) {
+	if c == nil {
+		return
+	}
+	switch code {
+	case EventCodeConfigReloadFailed, EventCodeConfigReloadSucceeded,
+		EventCodeRedisDegraded, EventCodeRedisUnavailable, EventCodeRedisRecovered,
+		EventCodeFailOpenBypass, EventCodeMemoryEvictionPressure:
+	default:
+		code = "relay.unknown"
+	}
+	c.operationalEvents.WithLabelValues(code).Inc()
 }
 
 // RecordConfigReload records only bounded result/stage values; error text is

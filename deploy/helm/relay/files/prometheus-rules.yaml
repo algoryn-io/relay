@@ -74,6 +74,51 @@ groups:
           summary: "Relay retry budget exhausted for {{ $labels.backend }}"
           description: "Retries to backend {{ $labels.backend }} are being suppressed by the retry budget (sustained failures) for 10m."
 
+      - alert: RelayConfigReloadFailing
+        expr: increase(relay_config_reload_total{result="failure"}[10m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay configuration reload is failing"
+          description: "At least one configuration reload failed in the last 10m. The prior configuration remains active."
+
+      - alert: RelayRateLimitRedisUnavailable
+        expr: relay_rate_limit_redis_state == 2
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Relay Redis rate-limit backend is unavailable"
+          description: "Redis rate-limit checks have failed continuously for 2m; fail-closed routes may return 503."
+
+      - alert: RelayRateLimitRedisDegraded
+        expr: relay_rate_limit_redis_state == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay Redis rate limiting is degraded"
+          description: "At least one Redis rate limiter has remained in fail-open degraded mode for 5m."
+
+      - alert: RelayRateLimitFailOpenBypass
+        expr: increase(relay_rate_limit_fail_open_bypass_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay rate limiting is bypassed"
+          description: "Requests have bypassed Redis rate limiting in fail-open mode for at least 2m."
+
+      - alert: RelayRateLimitMemoryEvictionPressure
+        expr: rate(relay_rate_limit_memory_evictions_total[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay in-memory rate limiter is under eviction pressure"
+          description: "Rate-limit buckets have been evicted at more than 0.1/s for 10m; increase capacity or use Redis."
+
       # Requires the `up` series from your scrape config. Adjust the job matcher to
       # match how you scrape Relay.
       - alert: RelayTargetDown
