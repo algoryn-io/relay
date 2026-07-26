@@ -55,6 +55,7 @@ listener:
     tls:
       mode: auto
       domains: [api.example.com]
+      acme_cache_dir: /etc/relay/tls/acme
 ```
 
 Or terminate TLS with `mode: manual` and your own cert/key (hot-rotated on reload).

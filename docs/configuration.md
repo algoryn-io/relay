@@ -16,7 +16,7 @@ backend.
 - [`backends`](#backends)
 - [`middleware`](#middleware)
 - [`observability`](#observability)
-- [`storage`, `reload`, `include`](#storage-reload-include)
+- [`reload`, `include`](#reload-and-include)
 
 ---
 
@@ -28,8 +28,7 @@ listener: {}         # ports, TLS, timeouts, admin, edge hardening
 routes: []           # request matching → backend + middleware
 backends: []         # upstream pools, load balancing, resilience
 middleware: []       # named, reusable middleware referenced by routes
-observability: {}    # logs, metrics, tracing, dashboard
-storage: {}          # optional local storage / retention
+observability: {}    # logs, metrics, tracing
 reload: {}           # config hot-reload
 ```
 
@@ -73,6 +72,7 @@ When both are set for the same secret, the `*_env` source wins.
 | `mode` | string | `manual` | `manual` (cert/key files) or `auto` (ACME/Let's Encrypt). |
 | `cert_file`, `key_file` | path | — | PEM cert/key for `mode: manual` (hot-rotated on reload). |
 | `domains` | []string | — | Domains for `mode: auto`. |
+| `acme_cache_dir` | path | — | Required writable, persistent cache for `mode: auto` (mount a volume in containers). |
 | `min_version` | string | `1.2` | `1.2` (hardened cipher list) or `1.3`. |
 | `client_ca_file` | path | — | Enables inbound mTLS: clients must present a cert signed by this CA. |
 | `client_auth` | string | `require` | `require`, `verify_if_given`, or `request` (requires `client_ca_file`). |
@@ -188,6 +188,7 @@ Common fields: `name` (unique), `type` (one of the types below), `config`
 | `by` | — | Key: `ip`, `route`, or `api_key`. |
 | `store` | `memory` | `memory` (per-instance, sharded) or `redis` (distributed). |
 | `redis_url` / `redis_url_env` / `redis_url_file` | — | Redis connection URL (`redis://`, `rediss://`) when `store: redis`. |
+| `fail_open` | `false` | When `store: redis`, allow requests if Redis is unavailable. Keep `false` for protected routes. |
 
 ### `body_limit`
 
@@ -293,7 +294,6 @@ Fails closed (`503`) when the endpoint is unreachable.
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `metrics.flush_interval` | — | In-process metrics flush interval. |
 | `prometheus.path` | `/_relay/metrics/prometheus` | Prometheus scrape path. |
 | `prometheus.allowed_cidrs` | loopback | Extra source ranges (real TCP peer) allowed to scrape metrics. |
 
@@ -312,18 +312,10 @@ Fails closed (`503`) when the endpoint is unreachable.
 | Field | Description |
 | --- | --- |
 | `fabric.enabled`, `fabric.service_name`, `fabric.queue_size` | Algoryn Fabric protobuf telemetry. |
-| `dashboard.enabled`, `dashboard.port`, `dashboard.path` | Built-in dashboard. |
 
 ---
 
-## storage, reload, include
-
-### `storage`
-
-| Field | Description |
-| --- | --- |
-| `path` | Local storage path (empty disables it). |
-| `retention.requests_days` / `metrics_days` / `logs_days` | Retention windows. |
+## reload and include
 
 ### `reload`
 

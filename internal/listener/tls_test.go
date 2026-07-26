@@ -135,8 +135,9 @@ func TestBuildTLSConfigAutoReturnsTLSConfig(t *testing.T) {
 	t.Parallel()
 
 	tlsCfg, _, err := buildTLSConfig(config.TLSConfig{
-		Mode:    "auto",
-		Domains: []string{"example.com"},
+		Mode:         "auto",
+		Domains:      []string{"example.com"},
+		ACMECacheDir: t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("buildTLSConfig(auto) error = %v", err)

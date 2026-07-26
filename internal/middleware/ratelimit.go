@@ -29,14 +29,18 @@ type RateLimitConfig struct {
 	// RedisURL is the Redis connection URL when Store == "redis".
 	// Accepts the redis:// and rediss:// schemes.
 	RedisURL string
+	// FailOpen permits a request when the backing store fails. It defaults to
+	// false: rate limiting must not silently vanish during a Redis outage.
+	FailOpen bool
 }
 
 type rateLimiter struct {
-	limit  int
-	window time.Duration
-	by     string
-	header string
-	store  rateLimitStore
+	limit    int
+	window   time.Duration
+	by       string
+	header   string
+	store    rateLimitStore
+	failOpen bool
 }
 
 // NewRateLimit returns a sliding-window rate limit middleware. The returned
@@ -102,11 +106,12 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, io.Closer, error) {
 // store. Used internally and in tests to inject stores (e.g. miniredis).
 func newRateLimitWithStore(cfg RateLimitConfig, store rateLimitStore) (Middleware, error) {
 	rl := &rateLimiter{
-		limit:  cfg.Limit,
-		window: cfg.Window,
-		by:     cfg.By,
-		header: cfg.Header,
-		store:  store,
+		limit:    cfg.Limit,
+		window:   cfg.Window,
+		by:       cfg.By,
+		header:   cfg.Header,
+		store:    store,
+		failOpen: cfg.FailOpen,
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -117,7 +122,11 @@ func newRateLimitWithStore(cfg RateLimitConfig, store rateLimitStore) (Middlewar
 			}
 
 			now := time.Now()
-			allowed, remaining, reset, _ := rl.store.Check(r.Context(), key, rl.limit, rl.window, now)
+			allowed, remaining, reset, err := rl.store.Check(r.Context(), key, rl.limit, rl.window, now)
+			if err != nil && !rl.failOpen {
+				httpx.WriteError(w, http.StatusServiceUnavailable, "rate_limit_unavailable")
+				return
+			}
 
 			w.Header().Set("X-RateLimit-Limit", strconv.Itoa(rl.limit))
 			w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(remaining))

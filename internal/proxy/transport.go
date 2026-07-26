@@ -21,7 +21,10 @@ import (
 // keep a healthy pool of reusable keep-alive connections per backend instead.
 func newBaseTransport() *http.Transport {
 	return &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
+		// Backends are reached directly by default. Honoring HTTP_PROXY from the
+		// process environment can accidentally route internal traffic (including
+		// credentials) through an unintended proxy.
+		Proxy: nil,
 		DialContext: (&net.Dialer{
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,

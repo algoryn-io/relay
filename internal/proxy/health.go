@@ -11,7 +11,15 @@ import (
 
 func (p *Proxy) healthLoop(backendName string, health config.HealthCheckConfig) {
 	defer p.healthWG.Done()
-	client := &http.Client{Timeout: health.Timeout}
+	// Health probes must use the same base transport as normal upstream traffic.
+	// In particular, this preserves custom roots and client certificates for
+	// backends protected with TLS or mTLS. Do not use transportFor here: health
+	// checks must still run while a circuit is open so a recovered backend can
+	// become selectable again.
+	client := &http.Client{
+		Timeout:   health.Timeout,
+		Transport: p.backendTransports[backendName],
+	}
 	p.checkBackendHealth(client, backendName, health)
 
 	ticker := time.NewTicker(health.Interval)

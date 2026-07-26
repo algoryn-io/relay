@@ -189,6 +189,11 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 		srv.ReadTimeout = cfg.Listener.Timeouts.Read
 		srv.WriteTimeout = cfg.Listener.Timeouts.Write
 		srv.IdleTimeout = cfg.Listener.Timeouts.Idle
+		readHeaderTimeout := cfg.Listener.Timeouts.ReadHeader
+		if readHeaderTimeout <= 0 {
+			readHeaderTimeout = defaultReadHeaderTimeout
+		}
+		srv.ReadHeaderTimeout = readHeaderTimeout
 	}
 
 	// Rotate the TLS certificate when running in manual mode. A failure here
@@ -500,10 +505,14 @@ func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertReloader, error) {
 		return tlsCfg, reloader, nil
 
 	case "auto":
+		cacheDir := strings.TrimSpace(cfg.ACMECacheDir)
+		if cacheDir == "" {
+			return nil, nil, fmt.Errorf("acme_cache_dir is required when tls.mode is auto")
+		}
 		m := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
 			HostPolicy: autocert.HostWhitelist(cfg.Domains...),
-			Cache:      autocert.DirCache(".autocert-cache"),
+			Cache:      autocert.DirCache(cacheDir),
 		}
 		tlsCfg := m.TLSConfig()
 		if err := applyTLSHardening(tlsCfg, cfg); err != nil {

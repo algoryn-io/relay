@@ -136,9 +136,6 @@ func (c *MiddlewareConfig) normalizeAliases() {
 }
 
 func (c *ObservabilityConfig) normalizeAliases() {
-	if c.Dashboard.Path == "" && c.Dashboard.Enabled {
-		c.Dashboard.Path = "/dashboard"
-	}
 	if c.Logs.Level == "" {
 		c.Logs.Level = "info"
 	}

@@ -14,8 +14,10 @@ type Config struct {
 	Backends      []BackendConfig     `yaml:"backends"`
 	Middleware    []MiddlewareConfig  `yaml:"middleware"`
 	Observability ObservabilityConfig `yaml:"observability"`
-	Storage       StorageConfig       `yaml:"storage"`
-	Reload        ReloadConfig        `yaml:"reload"`
+	// Storage is retained only for backwards-compatible parsing. Relay does not
+	// persist request, metrics, or log data; use external storage instead.
+	Storage StorageConfig `yaml:"storage"`
+	Reload  ReloadConfig  `yaml:"reload"`
 }
 
 type ListenerConfig struct {
@@ -65,6 +67,9 @@ type TLSConfig struct {
 	Domains  []string `yaml:"domains"`
 	CertFile string   `yaml:"cert_file"`
 	KeyFile  string   `yaml:"key_file"`
+	// ACMECacheDir is the writable, persistent cache directory used by TLS
+	// mode "auto". It must be mounted in container deployments.
+	ACMECacheDir string `yaml:"acme_cache_dir"`
 	// MinVersion is the minimum accepted TLS version: "1.2" (default) or "1.3".
 	MinVersion string `yaml:"min_version"`
 	// ClientCAFile, when set, enables inbound mTLS: clients must present a
@@ -308,9 +313,9 @@ type MiddlewareSettingsConfig struct {
 	// well-known document instead of configuring jwks_url directly.
 	OIDCIssuer string `yaml:"oidc_issuer"`
 	// OAuth2 token introspection middleware (RFC 7662) fields.
-	IntrospectionURL      string        `yaml:"introspection_url"`
-	ClientID              string        `yaml:"client_id"`
-	ClientSecretEnv string `yaml:"client_secret_env"`
+	IntrospectionURL string `yaml:"introspection_url"`
+	ClientID         string `yaml:"client_id"`
+	ClientSecretEnv  string `yaml:"client_secret_env"`
 	// ClientSecretFile reads the introspection client secret from a mounted file.
 	// Alternative to client_secret_env.
 	ClientSecretFile      string        `yaml:"client_secret_file"`
@@ -326,8 +331,12 @@ type MiddlewareSettingsConfig struct {
 }
 
 type ObservabilityConfig struct {
-	Dashboard  DashboardConfig  `yaml:"dashboard"`
-	Logs       LogsConfig       `yaml:"logs"`
+	// Dashboard is retained only for backwards-compatible parsing. Use the
+	// shipped Grafana dashboard; Relay does not host a dashboard server.
+	Dashboard DashboardConfig `yaml:"dashboard"`
+	Logs      LogsConfig      `yaml:"logs"`
+	// Metrics is retained for backwards-compatible parsing. Metrics are exposed
+	// immediately; no in-process flush interval exists.
 	Metrics    MetricsConfig    `yaml:"metrics"`
 	Fabric     FabricConfig     `yaml:"fabric"`
 	Prometheus PrometheusConfig `yaml:"prometheus"`
