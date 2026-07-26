@@ -69,6 +69,7 @@ func main() {
 		bootstrapLogger.Error("invalid config", "error", err)
 		os.Exit(1)
 	}
+	configFiles = appendTLSWatchFiles(configFiles, cfg)
 
 	if validateFlag {
 		bootstrapLogger.Info("config valid", "path", configPath)
@@ -122,7 +123,7 @@ func main() {
 		defer reloadMu.Unlock()
 
 		newCfg, files, loadErr := config.LoadWithFiles(configPath)
-		result := watchReloadResult{files: files, debounce: currentDebounce()}
+		result := watchReloadResult{files: appendTLSWatchFiles(files, newCfg), debounce: currentDebounce()}
 		fail := func(stage string, reloadErr error) watchReloadResult {
 			server.RecordConfigReload("failure", stage)
 			logger.Error("config reload failed", "stage", stage, "error", reloadErr)

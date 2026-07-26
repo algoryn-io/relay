@@ -79,11 +79,18 @@ type TLSConfig struct {
 	Domains  []string `yaml:"domains"`
 	CertFile string   `yaml:"cert_file"`
 	KeyFile  string   `yaml:"key_file"`
+	// Certificates adds SNI-specific certificate/key pairs in manual mode.
+	// Hosts may be exact DNS names or a single left-most wildcard
+	// (for example, "*.example.com"). CertFile/KeyFile remain the default pair.
+	Certificates []TLSCertificateConfig `yaml:"certificates"`
 	// ACMECacheDir is the writable, persistent cache directory used by TLS
 	// mode "auto". It must be mounted in container deployments.
 	ACMECacheDir string `yaml:"acme_cache_dir"`
 	// MinVersion is the minimum accepted TLS version: "1.2" (default) or "1.3".
 	MinVersion string `yaml:"min_version"`
+	// CipherSuites optionally selects supported TLS 1.2 cipher suites by IANA
+	// name. TLS 1.3 cipher suites are not configurable in Go.
+	CipherSuites []string `yaml:"cipher_suites"`
 	// ClientCAFile, when set, enables inbound mTLS: clients must present a
 	// certificate signed by a CA in this PEM bundle.
 	ClientCAFile string `yaml:"client_ca_file"`
@@ -91,6 +98,12 @@ type TLSConfig struct {
 	// "require" (default) verifies a cert is presented and valid; "verify_if_given"
 	// verifies only when one is presented; "request" asks but does not enforce.
 	ClientAuth string `yaml:"client_auth"`
+}
+
+type TLSCertificateConfig struct {
+	Hosts    []string `yaml:"hosts"`
+	CertFile string   `yaml:"cert_file"`
+	KeyFile  string   `yaml:"key_file"`
 }
 
 type TimeoutsConfig struct {

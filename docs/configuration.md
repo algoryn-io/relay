@@ -106,12 +106,50 @@ port is taken from `https.port` (omitted for 443), including bracket-safe IPv6.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `mode` | string | `manual` | `manual` (cert/key files) or `auto` (ACME/Let's Encrypt). |
-| `cert_file`, `key_file` | path | — | PEM cert/key for `mode: manual` (hot-rotated on reload). |
+| `cert_file`, `key_file` | path | — | Default PEM cert/key for `mode: manual`; used for clients without SNI and for SNI names covered by its SAN (hot-reloaded). |
+| `certificates` | []object | `[]` | Additional manual-mode SNI certificates. Each entry has `hosts`, `cert_file`, and `key_file`. |
 | `domains` | []string | — | Domains for `mode: auto`. |
 | `acme_cache_dir` | path | — | Required writable, persistent cache for `mode: auto` (mount a volume in containers). |
 | `min_version` | string | `1.2` | `1.2` (hardened cipher list) or `1.3`. |
+| `cipher_suites` | []string | hardened TLS 1.2 set | Optional IANA names from Relay's supported AEAD/PFS TLS 1.2 suites. Not valid with `min_version: "1.3"`. |
 | `client_ca_file` | path | — | Enables inbound mTLS: clients must present a cert signed by this CA. |
 | `client_auth` | string | `require` | `require`, `verify_if_given`, or `request` (requires `client_ca_file`). |
+
+Manual SNI entries accept exact DNS names and one-label wildcards such as
+`*.tenant.example.com`. Wildcards must be the complete left-most label and
+cannot target a public suffix. Duplicate names are rejected case-insensitively.
+Every configured name must be covered by the leaf certificate SAN; malformed
+or mismatched cert/key pairs fail startup or reload. Exact matches win over
+wildcards, and a wildcard matches exactly one label. For an unknown SNI, Relay
+uses the default certificate only when that certificate's SAN covers the name;
+otherwise the handshake fails without exposing another host's certificate.
+
+```yaml
+listener:
+  https:
+    port: 8443
+    tls:
+      mode: manual
+      cert_file: /etc/relay/tls/default.crt
+      key_file: /etc/relay/tls/default.key
+      certificates:
+        - hosts: [api.example.com]
+          cert_file: /etc/relay/tls/api.crt
+          key_file: /etc/relay/tls/api.key
+        - hosts: ["*.tenant.example.com"]
+          cert_file: /etc/relay/tls/tenants.crt
+          key_file: /etc/relay/tls/tenants.key
+      min_version: "1.2"
+      cipher_suites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+```
+
+Hot reload prepares certificates, SNI routing, client CA/client authentication,
+minimum version, and cipher suites as one TLS configuration. New handshakes see
+the new configuration only after every file and parameter validates; on failure
+the previous TLS and request-routing state remains active. Listener HTTP/HTTPS
+ports and switching between `manual` and `auto` are restart-only changes and a
+reload that attempts either is rejected explicitly.
 
 ### `listener.admin`
 

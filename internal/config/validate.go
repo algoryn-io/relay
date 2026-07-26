@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/url"
@@ -8,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 var (
@@ -28,6 +31,14 @@ var (
 		"cache":            {},
 		"oauth2":           {},
 		"ext_authz":        {},
+	}
+	validInboundTLS12CipherSuites = map[string]struct{}{
+		tls.CipherSuiteName(tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256):       {},
+		tls.CipherSuiteName(tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256):         {},
+		tls.CipherSuiteName(tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384):       {},
+		tls.CipherSuiteName(tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384):         {},
+		tls.CipherSuiteName(tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256): {},
+		tls.CipherSuiteName(tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256):   {},
 	}
 )
 
@@ -140,7 +151,11 @@ func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {
 		if strings.TrimSpace(tls.KeyFile) == "" {
 			errs.Addf("%s.key_file: required for mode manual", prefix)
 		}
+		validateTLSCertificates(prefix, tls.Certificates, errs)
 	case "auto":
+		if len(tls.Certificates) != 0 {
+			errs.Addf("%s.certificates: supported only for mode manual", prefix)
+		}
 		if len(tls.Domains) == 0 {
 			errs.Addf("%s.domains: at least one domain is required for mode auto", prefix)
 		}
@@ -169,6 +184,87 @@ func validateTLS(prefix string, tls TLSConfig, errs *ValidationErrors) {
 	if strings.TrimSpace(tls.ClientAuth) != "" && strings.TrimSpace(tls.ClientCAFile) == "" {
 		errs.Addf("%s.client_auth: requires client_ca_file to be set", prefix)
 	}
+	seenCipher := make(map[string]struct{}, len(tls.CipherSuites))
+	for i, rawSuite := range tls.CipherSuites {
+		suite := strings.TrimSpace(rawSuite)
+		if _, ok := validInboundTLS12CipherSuites[suite]; !ok {
+			errs.Addf("%s.cipher_suites[%d]: unsupported or insecure TLS 1.2 cipher %q", prefix, i, rawSuite)
+		}
+		if _, duplicate := seenCipher[suite]; duplicate {
+			errs.Addf("%s.cipher_suites[%d]: duplicate cipher %q", prefix, i, rawSuite)
+		}
+		seenCipher[suite] = struct{}{}
+	}
+	if strings.TrimSpace(tls.MinVersion) == "1.3" && len(tls.CipherSuites) != 0 {
+		errs.Addf("%s.cipher_suites: cannot be configured when min_version is 1.3", prefix)
+	}
+}
+
+func validateTLSCertificates(prefix string, certificates []TLSCertificateConfig, errs *ValidationErrors) {
+	seen := make(map[string]int)
+	for i, cert := range certificates {
+		field := fmt.Sprintf("%s.certificates[%d]", prefix, i)
+		if strings.TrimSpace(cert.CertFile) == "" {
+			errs.Addf("%s.cert_file: required", field)
+		}
+		if strings.TrimSpace(cert.KeyFile) == "" {
+			errs.Addf("%s.key_file: required", field)
+		}
+		if len(cert.Hosts) == 0 {
+			errs.Addf("%s.hosts: at least one host is required", field)
+		}
+		for j, rawHost := range cert.Hosts {
+			hostField := fmt.Sprintf("%s.hosts[%d]", field, j)
+			host := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(rawHost), "."))
+			if err := validateTLSServerName(host); err != nil {
+				errs.Addf("%s: %v", hostField, err)
+				continue
+			}
+			if previous, ok := seen[host]; ok {
+				errs.Addf("%s: duplicate host %q (already configured by certificates[%d])", hostField, rawHost, previous)
+				continue
+			}
+			seen[host] = i
+		}
+	}
+}
+
+func validateTLSServerName(host string) error {
+	if host == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if strings.ContainsAny(host, "/\\@?#: \t\r\n") {
+		return fmt.Errorf("must be a DNS hostname without scheme, path, or port")
+	}
+	if strings.Contains(host, "*") {
+		if !strings.HasPrefix(host, "*.") || strings.Count(host, "*") != 1 {
+			return fmt.Errorf("wildcard must be the complete left-most label")
+		}
+		// Requiring at least two labels after the wildcard rejects broad values
+		// such as *.com while preserving the common *.example.com form.
+		suffix := strings.TrimPrefix(host, "*.")
+		if len(strings.Split(suffix, ".")) < 2 {
+			return fmt.Errorf("wildcard must be below a registrable-style domain")
+		}
+		if public, _ := publicsuffix.PublicSuffix(suffix); public == suffix {
+			return fmt.Errorf("wildcard must not target a public suffix")
+		}
+		host = suffix
+	}
+	if len(host) > 253 {
+		return fmt.Errorf("must be a valid DNS hostname")
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("must be a valid DNS hostname")
+		}
+		for _, r := range label {
+			if r != '-' && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+				return fmt.Errorf("must be a valid DNS hostname")
+			}
+		}
+	}
+	return nil
 }
 
 func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[string]struct{}, errs *ValidationErrors) {

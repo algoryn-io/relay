@@ -87,6 +87,18 @@ security context (non-root uid 10001, read-only root filesystem, dropped caps).
 - **File secrets (recommended)**: mount a Secret as files with `extraVolumes` /
   `extraVolumeMounts` and reference them from the config with `secret_file`,
   `client_secret_file`, `redis_url_file`, or `listener.admin.token_file`.
+- **Inbound TLS**: set `tls.existingSecret` to mount a Secret containing all
+  default/SNI certs, keys, and client CA files at `tls.mountPath` (default
+  `/etc/relay/tls`). With `reload.watch: true`, projected Secret rotations are
+  validated and published transactionally for new handshakes.
+
+```yaml
+service:
+  httpsEnabled: true
+tls:
+  existingSecret: relay-tls
+  mountPath: /etc/relay/tls
+```
 
 ### Metrics / Prometheus
 

@@ -39,6 +39,30 @@ func TestConfigWatchSupervisorWatchesTransitiveFileAndAtomicSave(t *testing.T) {
 	stopTestSupervisor(t, s)
 }
 
+func TestAppendTLSWatchFilesIncludesAllRuntimeTLSAssets(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Listener: config.ListenerConfig{
+		HTTPS: config.HTTPSConfig{Port: 8443, TLS: config.TLSConfig{
+			CertFile:     "default.crt",
+			KeyFile:      "default.key",
+			ClientCAFile: "clients.pem",
+			Certificates: []config.TLSCertificateConfig{{
+				Hosts: []string{"api.example.com"}, CertFile: "api.crt", KeyFile: "api.key",
+			}},
+		}},
+	}}
+	got := fileSet(appendTLSWatchFiles([]string{"relay.yaml"}, cfg))
+	for _, name := range []string{"relay.yaml", "default.crt", "default.key", "clients.pem", "api.crt", "api.key"} {
+		absolute, err := filepath.Abs(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := got[absolute]; !ok {
+			t.Errorf("TLS watch file %q missing from %v", name, got)
+		}
+	}
+}
+
 func TestConfigWatchSupervisorUpdatesFilesAndDebounce(t *testing.T) {
 	t.Parallel()
 
