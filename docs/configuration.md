@@ -710,6 +710,15 @@ upstream unless separately listed in `copy_headers`.
     forward_headers: [X-Tenant-ID]
 ```
 
+```yaml
+- name: availability-first-authz
+  type: ext_authz
+  config:
+    authz_url: https://authz.internal.example/check
+    fail_open: true
+    acknowledge_ext_authz_fail_open: true
+```
+
 ---
 
 ## `observability`
