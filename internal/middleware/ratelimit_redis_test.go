@@ -90,7 +90,9 @@ func TestRedisRateLimitWindowExpirationAllowsAgain(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
-	window := 50 * time.Millisecond
+	// Use a long wall-clock window so race/scheduling pauses cannot expire the
+	// bucket between the first and second request; advance miniredis instead.
+	window := time.Minute
 	mw := newTestRateLimitRedis(t, RateLimitConfig{
 		Strategy: SlidingWindow,
 		Limit:    1,
@@ -115,7 +117,7 @@ func TestRedisRateLimitWindowExpirationAllowsAgain(t *testing.T) {
 	assertRateLimitedBody(t, second)
 
 	// Fast-forward miniredis clock past the window.
-	mr.FastForward(window + 10*time.Millisecond)
+	mr.FastForward(window + time.Second)
 
 	third := httptest.NewRecorder()
 	handler.ServeHTTP(third, req)
