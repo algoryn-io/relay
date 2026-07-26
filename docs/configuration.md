@@ -612,6 +612,59 @@ credentials are not included unless explicitly allowlisted.
 | `max_size_mb` | — | Size-based rotation threshold. |
 | `max_age_days`, `compress` | — | Rotation retention / compression. |
 
+Access-log attributes are selected from the fixed allowlist `method`, `path`,
+`route`, `backend`, `status`, `duration`, `bytes`, `client_ip`, `request_id`,
+`trace_id`, `span_id`, `host`, and `user_agent`. An empty `access.fields` keeps
+the backward-compatible default (`method`, `path`, `status`, `duration`,
+`route`, `backend`, `client_ip`, `request_id`). `duration` is emitted as
+`duration_ms`. Request headers and query parameters are never collected unless
+explicitly selected.
+
+```yaml
+observability:
+  logs:
+    level: info
+    format: json
+    access:
+      fields: [method, path, route, backend, status, duration, bytes,
+               client_ip, request_id, trace_id, span_id, host, user_agent]
+      field_policies:
+        client_ip: hash       # omit, plain, or hash
+      headers:
+        - name: X-Tenant-ID
+          policy: plain
+        - name: Authorization # policy omitted: always [REDACTED]
+      query:
+        - name: account
+          policy: hash
+        - name: access_token  # policy omitted: always [REDACTED]
+      hash:
+        algorithm: hmac_sha256 # hmac_sha256 (default) or salted sha256
+        secret_env: RELAY_ACCESS_LOG_HASH_SECRET
+        # secret_file: /run/secrets/access-log-hash
+    otlp:
+      enabled: true
+      exporter: otlp_grpc     # otlp_grpc or otlp_http
+      endpoint: https://otel-collector:4317
+      headers_env: RELAY_OTLP_LOG_HEADERS # comma-separated key=value
+      # headers_file: /run/secrets/otlp-log-headers
+      queue_size: 2048
+      batch_size: 512
+      batch_timeout: 1s
+      export_timeout: 10s
+      service_name: relay
+```
+
+Policies apply independently to every built-in or selected field. Hashes are
+stable for correlation and use a secret loaded from env/file; raw secrets are
+not retained in YAML. Sensitive names (authorization, cookies, API keys,
+tokens, passwords, and secrets) default to the literal `[REDACTED]`, and
+validation rejects `plain` for them. Full token/cookie values are therefore
+never emitted. OTLP is additive: stdout/file remains active. Its request path
+never blocks on the collector; a full bounded queue drops records and increments
+`relay_otlp_log_dropped_total`. Reload prepares the new exporter before publish,
+then drains and shuts down the retired batch pipeline.
+
 ### `prometheus`
 
 | Field | Default | Description |
@@ -629,8 +682,9 @@ credentials are not included unless explicitly allowlisted.
 | `sample_rate` | `1.0` | Fraction of traces sampled (0.0–1.0). |
 | `service_name` | `relay` | Service name reported to the collector. |
 
-Logging and tracing are hot-reloadable. Relay initializes the complete new log
-handler/writer and tracing provider/exporter before changing live state. A
+Logging (including OTLP logs) and tracing are hot-reloadable. Relay initializes
+the complete new log handler/writer and telemetry providers/exporters before
+changing live state. A
 failure keeps the previous observability configuration and request-handling
 state intact. After a successful atomic swap, the old writer is flushed and the
 old exporter is shut down only after requests/spans already using them drain.

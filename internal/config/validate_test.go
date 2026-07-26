@@ -15,6 +15,42 @@ func TestValidateValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateAccessLogPolicyRejectsLeaksAndUnknownFields(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Observability.Logs.Access = AccessLogConfig{
+		Fields:  []string{"method", "body"},
+		Headers: []AccessLogSelection{{Name: "Authorization", Policy: "plain"}},
+	}
+	err := cfg.Validate()
+	assertValidationErrorContains(t, err, `unsupported field "body"`)
+	assertValidationErrorContains(t, err, "sensitive values cannot use plain")
+}
+
+func TestValidateAccessLogHashRequiresSecret(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Observability.Logs.Access = AccessLogConfig{
+		Fields:        []string{"client_ip"},
+		FieldPolicies: map[string]string{"client_ip": "hash"},
+	}
+	assertValidationErrorContains(t, cfg.Validate(), "secret_env or secret_file is required")
+
+	cfg.Observability.Logs.Access.Hash.ResolvedSecret = "resolved"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() with resolved hash secret error = %v", err)
+	}
+}
+
+func TestValidateOTLPLogQueueBounds(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Observability.Logs.OTLP = OTLPLogsConfig{
+		Enabled: true, Exporter: "otlp_http", QueueSize: 10, BatchSize: 11,
+	}
+	assertValidationErrorContains(t, cfg.Validate(), "batch_size: must not exceed queue_size")
+}
+
 func TestValidateAdminOutsideLoopbackRequiresToken(t *testing.T) {
 	t.Parallel()
 

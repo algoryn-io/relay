@@ -103,6 +103,30 @@ middleware:
 observability:
   logs:
     level: info
+    format: json
+    # Access fields come from a fixed allowlist. Headers/query are opt-in;
+    # sensitive names default to [REDACTED] and cannot use policy: plain.
+    access:
+      fields: [method, path, route, backend, status, duration, bytes, client_ip, request_id, trace_id, span_id]
+      field_policies:
+        client_ip: omit
+      headers:
+        - name: X-Tenant-ID
+          policy: plain
+      # For correlation hashes, set hash.secret_env or hash.secret_file.
+      # hash:
+      #   algorithm: hmac_sha256
+      #   secret_env: RELAY_ACCESS_LOG_HASH_SECRET
+    # OTLP is additive to stdout/file and uses a bounded, non-blocking queue.
+    # otlp:
+    #   enabled: true
+    #   exporter: otlp_grpc
+    #   endpoint: https://otel-collector:4317
+    #   headers_env: RELAY_OTLP_LOG_HEADERS
+    #   queue_size: 2048
+    #   batch_size: 512
+    #   batch_timeout: 1s
+    #   export_timeout: 10s
   fabric:
     enabled: false
     service_name: relay-edge

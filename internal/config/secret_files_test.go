@@ -23,6 +23,8 @@ func TestResolveSecretFilesPopulatesTargets(t *testing.T) {
 	redisURL := writeSecret(t, "redis", "rediss://cache:6379\n")
 	adminToken := writeSecret(t, "admin", "admin-token\n")
 	healthToken := writeSecret(t, "health", "health-token\n")
+	hashSecret := writeSecret(t, "access-hash", "hash-secret\n")
+	otlpHeaders := writeSecret(t, "otlp-headers", "Authorization=Bearer%20collector-token\n")
 
 	cfg := &Config{
 		Listener: ListenerConfig{
@@ -36,6 +38,10 @@ func TestResolveSecretFilesPopulatesTargets(t *testing.T) {
 			{Name: "oauth2", Type: "oauth2", Config: MiddlewareSettingsConfig{ClientSecretFile: clientSecret}},
 			{Name: "rl", Type: "rate_limit", Config: MiddlewareSettingsConfig{RedisURLFile: redisURL}},
 		},
+		Observability: ObservabilityConfig{Logs: LogsConfig{
+			Access: AccessLogConfig{Hash: AccessLogHashConfig{SecretFile: hashSecret}},
+			OTLP:   OTLPLogsConfig{HeadersFile: otlpHeaders},
+		}},
 	}
 
 	if err := cfg.ResolveSecretFiles(nil); err != nil {
@@ -56,6 +62,12 @@ func TestResolveSecretFilesPopulatesTargets(t *testing.T) {
 	}
 	if got := cfg.Middleware[2].Config.RedisURL; got != "rediss://cache:6379" {
 		t.Errorf("redis url = %q, want rediss://cache:6379", got)
+	}
+	if got := cfg.Observability.Logs.Access.Hash.ResolvedSecret; got != "hash-secret" {
+		t.Errorf("access hash secret = %q", got)
+	}
+	if got := cfg.Observability.Logs.OTLP.ResolvedHeaders; got != "Authorization=Bearer%20collector-token" {
+		t.Errorf("OTLP headers = %q", got)
 	}
 }
 

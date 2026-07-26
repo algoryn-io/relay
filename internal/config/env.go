@@ -14,7 +14,18 @@ func (c *Config) ResolveEnv(getenv func(string) string) error {
 		return fmt.Errorf("getenv: nil function")
 	}
 
-	return resolveEnvValue(reflect.ValueOf(c).Elem(), "config", getenv)
+	if err := resolveEnvValue(reflect.ValueOf(c).Elem(), "config", getenv); err != nil {
+		return err
+	}
+	otlp := &c.Observability.Logs.OTLP
+	if name := strings.TrimSpace(otlp.HeadersEnv); name != "" {
+		value := getenv(name)
+		if value == "" {
+			return fmt.Errorf("config.observability.logs.otlp.headers_env: environment variable %q is not set", name)
+		}
+		otlp.ResolvedHeaders = value
+	}
+	return nil
 }
 
 func resolveEnvValue(v reflect.Value, path string, getenv func(string) string) error {

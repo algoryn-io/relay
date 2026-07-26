@@ -1,6 +1,7 @@
 package listener
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -69,6 +70,40 @@ func TestReloadDrainsInFlightRequestBeforeClosingOldState(t *testing.T) {
 	case <-old.done:
 	case <-time.After(time.Second):
 		t.Fatal("old state was not closed after its request drained")
+	}
+}
+
+func TestReloadReplacesAccessLogPolicy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+
+	cfg := lifecycleConfig()
+	cfg.Observability.Logs.Access.Fields = []string{"method"}
+	server, err := New(cfg, lifecycleRuntime(upstream.URL), logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	server.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/svc", nil))
+	if !strings.Contains(output.String(), `"method":"GET"`) {
+		t.Fatalf("initial policy not applied: %s", output.String())
+	}
+
+	output.Reset()
+	next := lifecycleConfig()
+	next.Observability.Logs.Access.Fields = []string{"host"}
+	if err := server.Reload(next, lifecycleRuntime(upstream.URL)); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/svc", nil)
+	req.Host = "edge.example"
+	server.ServeHTTP(httptest.NewRecorder(), req)
+	if !strings.Contains(output.String(), `"host":"edge.example"`) || strings.Contains(output.String(), `"method"`) {
+		t.Fatalf("reloaded policy not applied: %s", output.String())
 	}
 }
 

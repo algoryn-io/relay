@@ -38,3 +38,30 @@ func TestResolveEnvMissingVariable(t *testing.T) {
 		t.Fatalf("ResolveEnv() error = %q", err.Error())
 	}
 }
+
+func TestResolveEnvAccessHashAndOTLPHeaders(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{Observability: ObservabilityConfig{Logs: LogsConfig{
+		Access: AccessLogConfig{Hash: AccessLogHashConfig{SecretEnv: "HASH_SECRET"}},
+		OTLP:   OTLPLogsConfig{HeadersEnv: "OTLP_HEADERS"},
+	}}}
+	err := cfg.ResolveEnv(func(key string) string {
+		switch key {
+		case "HASH_SECRET":
+			return "correlation-secret"
+		case "OTLP_HEADERS":
+			return "Authorization=Bearer%20collector"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Observability.Logs.Access.Hash.ResolvedSecret != "correlation-secret" {
+		t.Fatal("hash secret was not resolved")
+	}
+	if cfg.Observability.Logs.OTLP.ResolvedHeaders != "Authorization=Bearer%20collector" {
+		t.Fatal("OTLP headers were not resolved")
+	}
+}

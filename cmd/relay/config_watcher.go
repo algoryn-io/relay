@@ -219,22 +219,26 @@ func fileSet(files []string) map[string]struct{} {
 // appendTLSWatchFiles makes file-watch reload react to atomic Secret rotations
 // and direct certificate/CA updates, not only edits to relay.yaml.
 func appendTLSWatchFiles(files []string, cfg *config.Config) []string {
-	if cfg == nil || cfg.Listener.HTTPS.Port <= 0 {
+	if cfg == nil {
 		return files
 	}
-	tlsCfg := cfg.Listener.HTTPS.TLS
 	add := func(path string) {
 		if path = strings.TrimSpace(path); path != "" {
 			files = append(files, path)
 		}
 	}
-	add(tlsCfg.CertFile)
-	add(tlsCfg.KeyFile)
-	add(tlsCfg.ClientCAFile)
-	for _, cert := range tlsCfg.Certificates {
-		add(cert.CertFile)
-		add(cert.KeyFile)
+	if cfg.Listener.HTTPS.Port > 0 {
+		tlsCfg := cfg.Listener.HTTPS.TLS
+		add(tlsCfg.CertFile)
+		add(tlsCfg.KeyFile)
+		add(tlsCfg.ClientCAFile)
+		for _, cert := range tlsCfg.Certificates {
+			add(cert.CertFile)
+			add(cert.KeyFile)
+		}
 	}
+	add(cfg.Observability.Logs.Access.Hash.SecretFile)
+	add(cfg.Observability.Logs.OTLP.HeadersFile)
 	return files
 }
 

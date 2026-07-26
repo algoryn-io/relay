@@ -33,6 +33,7 @@ type PrometheusCollector struct {
 	rateLimitEvictions  prometheus.Counter
 	configReloadTotal   *prometheus.CounterVec
 	configReloadSuccess prometheus.Gauge
+	otlpLogDropped      prometheus.CounterFunc
 	registry            *prometheus.Registry
 }
 
@@ -138,13 +139,17 @@ func NewPrometheusCollector() *PrometheusCollector {
 		Name: "relay_config_last_successful_reload_timestamp_seconds",
 		Help: "Unix timestamp of the last successfully applied configuration reload.",
 	})
+	otlpLogDropped := prometheus.NewCounterFunc(prometheus.CounterOpts{
+		Name: "relay_otlp_log_dropped_total",
+		Help: "Total OTLP log records dropped because the non-blocking export queue was full.",
+	}, func() float64 { return float64(otlpLogDrops.Load()) })
 
 	reg.MustRegister(
 		requestsTotal, requestDuration, activeRequests, backendHealthy,
 		upstreamDuration, retryTotal, retryBudgetExceeded, circuitState, bulkheadInFlight, bulkheadRejected,
 		outlierEjections, outlierRecoveries, outlierEjected,
 		listenerConnections, listenerPeerIPs, listenerRejected, rateLimitBuckets, rateLimitEvictions,
-		configReloadTotal, configReloadSuccess,
+		configReloadTotal, configReloadSuccess, otlpLogDropped,
 	)
 
 	return &PrometheusCollector{
@@ -168,6 +173,7 @@ func NewPrometheusCollector() *PrometheusCollector {
 		rateLimitEvictions:  rateLimitEvictions,
 		configReloadTotal:   configReloadTotal,
 		configReloadSuccess: configReloadSuccess,
+		otlpLogDropped:      otlpLogDropped,
 		registry:            reg,
 	}
 }

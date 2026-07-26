@@ -10,6 +10,7 @@ import (
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
+	bytes  int64
 }
 
 func newStatusRecorder(w http.ResponseWriter) *statusRecorder {
@@ -34,8 +35,12 @@ func (r *statusRecorder) Write(p []byte) (int, error) {
 	if r.status == 0 {
 		r.status = http.StatusOK
 	}
-	return r.ResponseWriter.Write(p)
+	n, err := r.ResponseWriter.Write(p)
+	r.bytes += int64(n)
+	return n, err
 }
+
+func (r *statusRecorder) Bytes() int64 { return r.bytes }
 
 func (r *statusRecorder) Status() int {
 	if r.status == 0 {
