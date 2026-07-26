@@ -467,6 +467,9 @@ func validateExtAuthzMiddleware(prefix string, cfg MiddlewareSettingsConfig, err
 	if cfg.AuthzTimeout < 0 {
 		errs.Addf("%s.authz_timeout: must be >= 0", prefix)
 	}
+	if cfg.FailOpen && !cfg.AcknowledgeExtAuthzFailOpen {
+		errs.Addf("%s.acknowledge_ext_authz_fail_open: must be true when fail_open is enabled; fail_open bypasses authorization when the authorizer is unavailable", prefix)
+	}
 }
 
 // hasBackendTLS reports whether any outbound backend TLS field is set.
@@ -496,6 +499,9 @@ func validateAPIKeyMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs 
 	hasFile := strings.TrimSpace(cfg.KeysFile) != ""
 	if !hasEnv && !hasFile {
 		errs.Addf("%s: at least one of keys_env or keys_file is required", prefix)
+	}
+	if strings.TrimSpace(cfg.KeyQuery) != "" && !cfg.AcknowledgeAPIKeyInQuery {
+		errs.Addf("%s.acknowledge_api_key_in_query: must be true when key_query is set; query-string API keys can leak through logs, caches, and referrers", prefix)
 	}
 }
 
@@ -559,6 +565,14 @@ func validateJWTMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *Va
 			// key material cannot be substituted in transit.
 			if u, err := url.Parse(strings.TrimSpace(cfg.OIDCIssuer)); err != nil || !strings.EqualFold(u.Scheme, "https") {
 				errs.Addf("%s.oidc_issuer: must be an https URL", prefix)
+			}
+		}
+		if hasJWKS || hasOIDC {
+			if strings.TrimSpace(cfg.ExpectedIssuer) == "" {
+				errs.Addf("%s.issuer: required for rs256 with remote JWKS or OIDC discovery", prefix)
+			}
+			if strings.TrimSpace(cfg.ExpectedAudience) == "" {
+				errs.Addf("%s.audience: required for rs256 with remote JWKS or OIDC discovery", prefix)
 			}
 		}
 	default:

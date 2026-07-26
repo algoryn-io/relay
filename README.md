@@ -259,8 +259,9 @@ observability:
 - Supports `Bearer <token>`
 - HS256 (shared secret via `secret_env`) or RS256 (static `public_key_file` or a
   JWKS endpoint via `jwks_url`, which must be `https`)
-- Validates signature and expiration; optionally enforces `issuer` and `audience`
-  so tokens minted for another issuer/audience are rejected
+- Validates signature and expiration. Remote RS256 (`jwks_url` or
+  `oidc_issuer`) requires non-empty `issuer` and `audience`; these remain
+  optional for HS256 and a static PEM key
 
 ### Rate Limit (`type: rate_limit`)
 
@@ -289,10 +290,16 @@ observability:
 
 ### API key (`type: api_key`)
 
-- Reads the key from a header (`key_header`) or query parameter (`key_query`)
+- Reads the key from a header (`key_header`) by default. Query lookup is
+  disabled unless `key_query` and `acknowledge_api_key_in_query: true` are both
+  configured
 - Valid keys come from an env var (`keys_env`) or a file (`keys_file`); comparison
   is constant-time
 - Optionally maps the matched key to an outbound header (`key_to_header`)
+
+Query-string API keys can leak through access logs, intermediary/browser caches,
+and `Referer` headers. Prefer a header. The acknowledgement only allows the
+configuration; it does not change runtime lookup behavior.
 
 ```yaml
 - name: api-keys
@@ -321,7 +328,8 @@ observability:
 - Set `oidc_issuer: https://issuer.example.com` instead of `jwks_url`
 - Relay fetches `<issuer>/.well-known/openid-configuration` and derives the
   `jwks_uri` automatically (keys are cached like the direct JWKS path)
-- `iss` is enforced against the discovered issuer by default
+- Set both `issuer` and `audience`; Relay rejects remote-key configurations that
+  do not bind tokens to both claims
 
 ### OAuth2 token introspection (`type: oauth2`)
 
@@ -349,6 +357,9 @@ observability:
   `forward_headers`
 - `2xx` allows (optionally grafting `copy_headers` from the response onto the
   upstream request); `401`/`403` deny; other/errors follow `fail_open`
+- `fail_open: true` requires
+  `acknowledge_ext_authz_fail_open: true`; the acknowledgement only permits the
+  configuration and does not alter fail-open behavior
 
 ```yaml
 - name: opa

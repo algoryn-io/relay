@@ -197,15 +197,21 @@ Common fields: `name` (unique), `type` (one of the types below), `config`
 | `algorithm` | `hs256` | `hs256` or `rs256`. |
 | `secret_env` / `secret_file` | — | HS256 shared secret (≥ 32 bytes). |
 | `public_key_file` | — | RS256 static PEM public key. |
-| `jwks_url` | — | RS256 JWKS endpoint (`https` required). |
-| `oidc_issuer` | — | RS256 via OIDC discovery (`https`); resolves `jwks_uri` and defaults `issuer`. |
+| `jwks_url` | — | RS256 JWKS endpoint (`https` required); also requires non-empty `issuer` and `audience`. |
+| `oidc_issuer` | — | RS256 via OIDC discovery (`https`); resolves `jwks_uri` and requires non-empty `issuer` and `audience`. |
 | `jwks_cache_ttl` | `5m` | JWKS cache TTL. |
 | `header` | `Authorization` | Header carrying the token (`Bearer` scheme for `Authorization`). |
-| `issuer` / `audience` | — | Enforce the `iss` / `aud` claims when set. |
+| `issuer` / `audience` | — | Enforce the `iss` / `aud` claims. Both are mandatory with remote JWKS or OIDC discovery, but remain optional for HS256 and static PEM keys. |
 | `claims_to_headers` | — | Map of claim → outbound header to inject. |
 | `jwt_log_failures` | `false` | Log structured warnings on rejection (never the raw token). |
 
 `public_key_file`, `jwks_url` and `oidc_issuer` are mutually exclusive.
+
+Pre-1.0 migration: configurations using `jwks_url` or `oidc_issuer` must now
+declare both `issuer` and `audience`. Header-only API keys and fail-closed
+external authorization keep their previous behavior. Existing `key_query` and
+`ext_authz` `fail_open: true` configurations fail validation with the exact
+acknowledgement field that must be reviewed and added.
 
 ### `rate_limit`
 
@@ -260,9 +266,23 @@ At least one of the four is required.
 
 | `config` field | Description |
 | --- | --- |
-| `key_header` / `key_query` | Where to read the key from. |
+| `key_header` | Header carrying the key (`X-API-Key` by default). |
+| `key_query` | Query parameter carrying the key. Disabled when empty; setting it requires `acknowledge_api_key_in_query: true`. |
+| `acknowledge_api_key_in_query` | Explicitly acknowledge that query-string credentials can leak through access logs, intermediary/browser caches, and `Referer` headers. Validation-only; it does not change request handling. |
 | `keys_env` / `keys_file` | Source of valid keys (one required). |
 | `key_to_header` | Map the matched key to an outbound header. |
+
+Prefer `key_header`. If compatibility with a legacy client forces query-string
+keys, use a narrowly scoped configuration and explicitly acknowledge the risk:
+
+```yaml
+- name: legacy-query-api-key
+  type: api_key
+  config:
+    key_query: api_key
+    acknowledge_api_key_in_query: true
+    keys_env: RELAY_API_KEYS
+```
 
 ### `cache`
 
@@ -310,8 +330,18 @@ Fails closed (`503`) when the endpoint is unreachable.
 | `copy_headers` | — | Headers from a 2xx response to inject into the upstream request. |
 | `authz_timeout` | `2s` | Per-call timeout. |
 | `fail_open` | `false` | On error/unreachable: allow (`true`) or deny with `503` (`false`). |
+| `acknowledge_ext_authz_fail_open` | `false` | Required when `fail_open: true`; explicitly acknowledges that authorizer failures will bypass authorization. Validation-only. |
 
 `2xx` allows; `401`/`403` deny; other statuses follow `fail_open`.
+
+```yaml
+- name: availability-first-authz
+  type: ext_authz
+  config:
+    authz_url: https://authz.internal.example/check
+    fail_open: true
+    acknowledge_ext_authz_fail_open: true
+```
 
 ---
 
