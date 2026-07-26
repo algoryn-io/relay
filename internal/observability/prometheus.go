@@ -23,6 +23,9 @@ type PrometheusCollector struct {
 	circuitState        *prometheus.GaugeVec
 	bulkheadInFlight    *prometheus.GaugeVec
 	bulkheadRejected    *prometheus.CounterVec
+	outlierEjections    *prometheus.CounterVec
+	outlierRecoveries   *prometheus.CounterVec
+	outlierEjected      *prometheus.GaugeVec
 	listenerConnections prometheus.Gauge
 	listenerPeerIPs     prometheus.Gauge
 	listenerRejected    prometheus.Counter
@@ -88,6 +91,19 @@ func NewPrometheusCollector() *PrometheusCollector {
 		Help: "Total requests rejected because the backend bulkhead was full.",
 	}, []string{"backend"})
 
+	outlierEjections := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "relay_outlier_ejections_total",
+		Help: "Total passive upstream ejections by bounded reason.",
+	}, []string{"backend", "instance", "reason"})
+	outlierRecoveries := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "relay_outlier_recoveries_total",
+		Help: "Total upstream recoveries by bounded reason.",
+	}, []string{"backend", "instance", "reason"})
+	outlierEjected := prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "relay_outlier_ejected",
+		Help: "Whether an upstream instance is passively ejected.",
+	}, []string{"backend", "instance"})
+
 	listenerConnections := prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "relay_listener_connections_active",
 		Help: "TCP connections currently tracked by the listener per-IP limiter.",
@@ -126,6 +142,7 @@ func NewPrometheusCollector() *PrometheusCollector {
 	reg.MustRegister(
 		requestsTotal, requestDuration, activeRequests, backendHealthy,
 		upstreamDuration, retryTotal, retryBudgetExceeded, circuitState, bulkheadInFlight, bulkheadRejected,
+		outlierEjections, outlierRecoveries, outlierEjected,
 		listenerConnections, listenerPeerIPs, listenerRejected, rateLimitBuckets, rateLimitEvictions,
 		configReloadTotal, configReloadSuccess,
 	)
@@ -141,6 +158,9 @@ func NewPrometheusCollector() *PrometheusCollector {
 		circuitState:        circuitState,
 		bulkheadInFlight:    bulkheadInFlight,
 		bulkheadRejected:    bulkheadRejected,
+		outlierEjections:    outlierEjections,
+		outlierRecoveries:   outlierRecoveries,
+		outlierEjected:      outlierEjected,
 		listenerConnections: listenerConnections,
 		listenerPeerIPs:     listenerPeerIPs,
 		listenerRejected:    listenerRejected,
@@ -208,6 +228,41 @@ func (c *PrometheusCollector) RecordBulkheadRejected(backend string) {
 		return
 	}
 	c.bulkheadRejected.WithLabelValues(backend).Inc()
+}
+
+func (c *PrometheusCollector) RecordOutlierEjection(backend, instance, reason string) {
+	if c == nil {
+		return
+	}
+	switch reason {
+	case "consecutive_failures", "failure_rate":
+	default:
+		reason = "consecutive_failures"
+	}
+	c.outlierEjections.WithLabelValues(backend, instance, reason).Inc()
+}
+
+func (c *PrometheusCollector) RecordOutlierRecovery(backend, instance, reason string) {
+	if c == nil {
+		return
+	}
+	switch reason {
+	case "active_success", "duration_elapsed":
+	default:
+		reason = "duration_elapsed"
+	}
+	c.outlierRecoveries.WithLabelValues(backend, instance, reason).Inc()
+}
+
+func (c *PrometheusCollector) SetOutlierEjected(backend, instance string, ejected bool) {
+	if c == nil {
+		return
+	}
+	value := 0.0
+	if ejected {
+		value = 1
+	}
+	c.outlierEjected.WithLabelValues(backend, instance).Set(value)
 }
 
 // SetListenerConnections reports aggregate listener limiter occupancy. Peer IPs

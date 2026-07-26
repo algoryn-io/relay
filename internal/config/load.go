@@ -331,16 +331,17 @@ func (c *MatchConfig) UnmarshalYAML(node *yaml.Node) error {
 
 func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 	type rawBackend struct {
-		Name           string               `yaml:"name"`
-		Protocol       string               `yaml:"protocol"`
-		Strategy       string               `yaml:"strategy"`
-		HealthCheck    HealthCheckConfig    `yaml:"health_check"`
-		Healthcheck    HealthCheckConfig    `yaml:"healthcheck"`
-		CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
-		Retry          RetryConfig          `yaml:"retry"`
-		TLS            BackendTLSConfig     `yaml:"tls"`
-		Bulkhead       BulkheadConfig       `yaml:"bulkhead"`
-		Instances      []InstanceConfig     `yaml:"instances"`
+		Name             string                 `yaml:"name"`
+		Protocol         string                 `yaml:"protocol"`
+		Strategy         string                 `yaml:"strategy"`
+		HealthCheck      *HealthCheckConfig     `yaml:"health_check"`
+		Healthcheck      *HealthCheckConfig     `yaml:"healthcheck"`
+		OutlierDetection OutlierDetectionConfig `yaml:"outlier_detection"`
+		CircuitBreaker   CircuitBreakerConfig   `yaml:"circuit_breaker"`
+		Retry            RetryConfig            `yaml:"retry"`
+		TLS              BackendTLSConfig       `yaml:"tls"`
+		Bulkhead         BulkheadConfig         `yaml:"bulkhead"`
+		Instances        []InstanceConfig       `yaml:"instances"`
 	}
 
 	var raw rawBackend
@@ -351,10 +352,12 @@ func (c *BackendConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.Name = raw.Name
 	c.Protocol = raw.Protocol
 	c.Strategy = raw.Strategy
-	c.HealthCheck = raw.HealthCheck
-	if c.HealthCheck == (HealthCheckConfig{}) {
-		c.HealthCheck = raw.Healthcheck
+	if raw.HealthCheck != nil {
+		c.HealthCheck = *raw.HealthCheck
+	} else if raw.Healthcheck != nil {
+		c.HealthCheck = *raw.Healthcheck
 	}
+	c.OutlierDetection = raw.OutlierDetection
 	c.CircuitBreaker = raw.CircuitBreaker
 	c.Retry = raw.Retry
 	c.TLS = raw.TLS

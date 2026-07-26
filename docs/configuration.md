@@ -244,6 +244,19 @@ query-constrained) wins, with fallback to a catch-all.
 | `health_check.path` | path | — | Active health-check path (enables checks when set with `interval`). |
 | `health_check.interval` | duration | — | Time between checks. |
 | `health_check.timeout` | duration | — | Per-check timeout. |
+| `health_check.method` | string | `GET` | Safe probe method: `GET`, `HEAD`, or `OPTIONS`. |
+| `health_check.expected_status` | int/string/list/object | any `2xx` | Exact (`204`), inclusive range (`"200-399"`), list (`[200, 204]`), or explicit `exact`/`range`/`list` object. |
+| `health_check.headers` | map | — | Fixed request headers. Control characters and hop-by-hop headers are rejected. |
+| `health_check.body` | object | — | Optional bounded matcher: exactly one of `exact`, `contains`, or RE2 `regex`. |
+| `health_check.max_body_bytes` | int | `65536` | Maximum response bytes read by a body matcher; hard cap 1 MiB. |
+| `outlier_detection.window` | duration | `30s` | Rolling passive-failure window per instance. |
+| `outlier_detection.consecutive_failures` | int | `0` | Consecutive network/5xx/failed-active-check outcomes before ejection. |
+| `outlier_detection.failure_rate_percent` | float | `0` | Failure-rate threshold; requires `minimum_volume`. |
+| `outlier_detection.minimum_volume` | int | `0` | Minimum outcomes in the rolling window before rate ejection. |
+| `outlier_detection.base_ejection_duration` | duration | `30s` | Initial ejection duration. |
+| `outlier_detection.max_ejection_duration` | duration | `5m` | Cap for exponential ejection duration. |
+| `outlier_detection.max_ejection_percent` | int | `100` | Maximum percentage of instances ejected concurrently. |
+| `outlier_detection.success_recovery` | bool | `false` | Let a successful active probe recover an instance before duration expiry. |
 | `circuit_breaker.threshold` | int | `0` (off) | Consecutive failures that trip the circuit. |
 | `circuit_breaker.timeout` | duration | `30s` | How long the circuit stays open before a probe. |
 | `bulkhead.max_concurrent` | int | `0` (off) | Max simultaneous in-flight requests to this backend; excess gets a fast `503`. |
@@ -263,6 +276,36 @@ query-constrained) wins, with fallback to a catch-all.
 | `allow_unsafe` | bool | `false` | Permit retrying non-safe methods (POST/PUT/PATCH/DELETE). |
 | `budget_ratio` | float | `0` (unlimited) | Cap retries as a fraction of traffic (token bucket) to prevent retry storms. |
 | `budget_tokens` | int | `100` | Token-bucket capacity / initial burst when `budget_ratio > 0`. |
+
+Active checks use the backend's normal transport, including custom CA roots and
+client certificates. Passive detection observes every proxy/retry attempt and
+active-check result; client cancellation is not counted as an upstream failure.
+Ejection and recovery expose bounded-reason Prometheus metrics and appear in
+backend admin snapshots.
+
+```yaml
+health_check:
+  path: /ready
+  method: GET
+  interval: 10s
+  timeout: 2s
+  expected_status:
+    list: [200, 204]
+  headers:
+    X-Relay-Probe: readiness
+  body:
+    regex: '^ready'
+  max_body_bytes: 4096
+outlier_detection:
+  window: 30s
+  consecutive_failures: 5
+  failure_rate_percent: 50
+  minimum_volume: 20
+  base_ejection_duration: 30s
+  max_ejection_duration: 5m
+  max_ejection_percent: 50
+  success_recovery: true
+```
 
 ---
 

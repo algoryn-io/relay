@@ -30,6 +30,7 @@ type instanceState struct {
 	activeRequests atomic.Int64
 	weight         int             // effective weight >= 1
 	circuit        *CircuitBreaker // nil when circuit breaker is disabled
+	outlier        *outlierState   // nil when passive detection is disabled
 }
 
 // HealthNotifier receives backend health state changes from the health check loop.
@@ -46,6 +47,9 @@ type ProxyMetrics interface {
 	SetCircuitState(backend, instance, state string)
 	SetBulkheadInFlight(backend string, n int)
 	RecordBulkheadRejected(backend string)
+	RecordOutlierEjection(backend, instance, reason string)
+	RecordOutlierRecovery(backend, instance, reason string)
+	SetOutlierEjected(backend, instance string, ejected bool)
 }
 
 // nopMetrics is the default no-op ProxyMetrics so call sites never nil-check.
@@ -57,6 +61,24 @@ func (nopMetrics) RecordRetryBudgetExhausted(string)            {}
 func (nopMetrics) SetCircuitState(string, string, string)       {}
 func (nopMetrics) SetBulkheadInFlight(string, int)              {}
 func (nopMetrics) RecordBulkheadRejected(string)                {}
+func (nopMetrics) RecordOutlierEjection(string, string, string) {}
+func (nopMetrics) RecordOutlierRecovery(string, string, string) {}
+func (nopMetrics) SetOutlierEjected(string, string, bool)       {}
+
+type outcomeRoundTripper struct {
+	base   http.RoundTripper
+	status *int
+	err    *error
+}
+
+func (t outcomeRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	*t.err = err
+	if resp != nil {
+		*t.status = resp.StatusCode
+	}
+	return resp, err
+}
 
 type Proxy struct {
 	cancel            context.CancelFunc
@@ -73,7 +95,9 @@ type Proxy struct {
 	bulkheads         map[string]*bulkhead
 	retryBudgets      map[string]*retryBudget // per-backend; nil entry = unlimited
 	wsIdleTimeout     time.Duration           // 0 = no WebSocket idle timeout
+	metricsMu         sync.RWMutex
 	metrics           ProxyMetrics
+	clock             clock
 	healthWG          sync.WaitGroup // tracks health-check goroutines for clean shutdown
 }
 
@@ -94,7 +118,16 @@ func (p *Proxy) SetMetrics(m ProxyMetrics) {
 	if m == nil {
 		m = nopMetrics{}
 	}
+	p.metricsMu.Lock()
 	p.metrics = m
+	p.metricsMu.Unlock()
+}
+
+func (p *Proxy) metricsSink() ProxyMetrics {
+	p.metricsMu.RLock()
+	m := p.metrics
+	p.metricsMu.RUnlock()
+	return m
 }
 
 func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
@@ -116,6 +149,7 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 		bulkheads:         make(map[string]*bulkhead, len(rt.Backends)),
 		retryBudgets:      make(map[string]*retryBudget, len(rt.Backends)),
 		metrics:           nopMetrics{},
+		clock:             realClock{},
 	}
 
 	for name, backend := range rt.Backends {
@@ -172,6 +206,7 @@ func New(rt *config.RuntimeConfig, logger *slog.Logger) (*Proxy, error) {
 				LastChecked: time.Now(),
 				weight:      w,
 				circuit:     cb,
+				outlier:     newInstanceOutlier(backend.OutlierDetection),
 			})
 		}
 
@@ -238,7 +273,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	// Bulkhead: limit concurrent in-flight requests per backend.
 	if bh := p.bulkheads[backendName]; bh != nil {
 		if !bh.Acquire() {
-			p.metrics.RecordBulkheadRejected(backendName)
+			p.metricsSink().RecordBulkheadRejected(backendName)
 			if p.logger != nil {
 				p.logger.Warn("bulkhead full, request rejected",
 					"backend", backendName,
@@ -249,10 +284,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 			httpx.WriteError(w, http.StatusServiceUnavailable, "bulkhead_full")
 			return
 		}
-		p.metrics.SetBulkheadInFlight(backendName, bh.InFlight())
+		p.metricsSink().SetBulkheadInFlight(backendName, bh.InFlight())
 		defer func() {
 			bh.Release()
-			p.metrics.SetBulkheadInFlight(backendName, bh.InFlight())
+			p.metricsSink().SetBulkheadInFlight(backendName, bh.InFlight())
 		}()
 	}
 
@@ -377,6 +412,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 
 		target := selected.URL
 		transport := p.transportFor(backendName, selected.circuit)
+		var upstreamStatus int
+		var upstreamErr error
+		transport = outcomeRoundTripper{base: transport, status: &upstreamStatus, err: &upstreamErr}
 
 		// When the request is retry-eligible, capture the response in a bounded
 		// buffer so the status can be inspected before bytes reach the client.
@@ -455,9 +493,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		rp.ServeHTTP(dst, r)
 		p.releaseInstance(backend.Name, selected)
 
-		p.metrics.ObserveUpstreamLatency(backendName, time.Since(attemptStart))
+		p.metricsSink().ObserveUpstreamLatency(backendName, time.Since(attemptStart))
+		if failure, count := passiveOutlierOutcome(upstreamStatus, upstreamErr); count {
+			p.recordOutlierOutcome(backendName, selected, failure, false)
+		}
 		if selected.circuit != nil {
-			p.metrics.SetCircuitState(backendName, selected.URL.String(), selected.circuit.State())
+			p.metricsSink().SetCircuitState(backendName, selected.URL.String(), selected.circuit.State())
 		}
 
 		// Non-retryable request: the response has already streamed to the client.
@@ -481,7 +522,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		// Retry budget gate: suppress the retry when the bucket is empty so a
 		// failing backend cannot be flooded with retries during an outage.
 		if budget != nil && !budget.withdraw() {
-			p.metrics.RecordRetryBudgetExhausted(backendName)
+			p.metricsSink().RecordRetryBudgetExhausted(backendName)
 			if p.logger != nil {
 				p.logger.Warn("retry suppressed: budget exhausted", "backend", backendName)
 			}
@@ -493,7 +534,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		if isNetErr {
 			reason = "network_error"
 		}
-		p.metrics.RecordRetry(backendName, reason)
+		p.metricsSink().RecordRetry(backendName, reason)
 		trace.SpanFromContext(r.Context()).AddEvent("proxy.retry",
 			trace.WithAttributes(
 				attribute.Int("retry.attempt", attempt+1),
@@ -521,6 +562,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	if lastBuf != nil {
 		lastBuf.flushTo(w)
 	}
+}
+
+func passiveOutlierOutcome(status int, err error) (failure, count bool) {
+	if errors.Is(err, context.Canceled) {
+		return false, false
+	}
+	return err != nil || status >= 500, true
 }
 
 // flushIntervalFor returns the ReverseProxy flush interval. h2c (gRPC/streaming)

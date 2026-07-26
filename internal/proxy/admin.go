@@ -1,6 +1,9 @@
 package proxy
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // InstanceSnapshot is a point-in-time view of a single backend instance.
 type InstanceSnapshot struct {
@@ -9,7 +12,11 @@ type InstanceSnapshot struct {
 	ActiveRequests int    `json:"active_requests"`
 	// CircuitState is the circuit breaker state ("closed", "open", "half_open").
 	// Empty string when no circuit breaker is configured.
-	CircuitState string `json:"circuit_state,omitempty"`
+	CircuitState  string    `json:"circuit_state,omitempty"`
+	Ejected       bool      `json:"ejected"`
+	EjectedUntil  time.Time `json:"ejected_until,omitempty"`
+	EjectReason   string    `json:"eject_reason,omitempty"`
+	EjectionCount int       `json:"ejection_count,omitempty"`
 }
 
 // BackendSnapshot is a point-in-time view of a backend and its instances.
@@ -39,6 +46,7 @@ func (p *Proxy) BackendSnapshots() []BackendSnapshot {
 			if inst.circuit != nil {
 				s.CircuitState = inst.circuit.State()
 			}
+			s.Ejected, s.EjectedUntil, s.EjectReason, s.EjectionCount = inst.outlier.snapshot(p.clock.Now())
 			snaps = append(snaps, s)
 		}
 		result = append(result, BackendSnapshot{
@@ -73,6 +81,7 @@ func (p *Proxy) BackendSnapshot(name string) (BackendSnapshot, bool) {
 		if inst.circuit != nil {
 			s.CircuitState = inst.circuit.State()
 		}
+		s.Ejected, s.EjectedUntil, s.EjectReason, s.EjectionCount = inst.outlier.snapshot(p.clock.Now())
 		snaps = append(snaps, s)
 	}
 	return BackendSnapshot{
@@ -93,7 +102,8 @@ func (p *Proxy) Readiness() (healthy, total int) {
 	for name := range p.backends {
 		total++
 		for _, inst := range p.instances[name] {
-			if inst.Healthy {
+			ejected, _, _, _ := inst.outlier.snapshot(p.clock.Now())
+			if inst.Healthy && !ejected {
 				healthy++
 				break
 			}
