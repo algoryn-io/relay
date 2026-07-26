@@ -65,8 +65,43 @@ type RouteRuntime struct {
 	BackendName string
 	// FailoverBackends are secondary backends tried after BackendName.
 	FailoverBackends []string
-	Middleware       []MiddlewareRuntime
-	MiddlewareRefs   []string
+	// Traffic holds optional canary / sticky / mirror policies (nil when unused).
+	Traffic        *RouteTrafficRuntime
+	Middleware     []MiddlewareRuntime
+	MiddlewareRefs []string
+}
+
+// RouteTrafficRuntime is the normalized traffic policy attached to a route.
+type RouteTrafficRuntime struct {
+	Canary *RouteCanaryRuntime
+	Sticky *RouteStickyRuntime
+	Mirror *RouteMirrorRuntime
+}
+
+// RouteCanaryRuntime is a deterministic percentage split to a canary backend.
+type RouteCanaryRuntime struct {
+	Backend   string
+	Percent   int
+	KeyHeader string
+	KeyCookie string
+}
+
+// RouteStickyRuntime pins clients to one instance via cookie and/or header.
+type RouteStickyRuntime struct {
+	Cookie     string
+	Header     string
+	CookieTTL  time.Duration
+	CookiePath string
+}
+
+// RouteMirrorRuntime describes an async shadow request to another backend.
+type RouteMirrorRuntime struct {
+	Backend            string
+	Percent            int
+	MaxConcurrent      int
+	Timeout            time.Duration
+	ExcludeRequestBody bool
+	ExcludeHeaders     []string
 }
 
 type BackendRuntime struct {
@@ -229,6 +264,7 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 		}
 
 		failover := normalizeFailoverBackends(route.Failover)
+		traffic := normalizeRouteTraffic(route.Traffic)
 
 		rt.Routes[route.Name] = RouteRuntime{
 			Name:                    route.Name,
@@ -249,12 +285,88 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			Backend:                 rt.Backends[route.Backend],
 			BackendName:             route.Backend,
 			FailoverBackends:        failover,
+			Traffic:                 traffic,
 			Middleware:              middleware,
 			MiddlewareRefs:          append([]string(nil), route.Middleware...),
 		}
 	}
 
 	return rt, nil
+}
+
+// normalizeRouteTraffic returns nil when no traffic policy is configured.
+func normalizeRouteTraffic(cfg RouteTrafficConfig) *RouteTrafficRuntime {
+	var out RouteTrafficRuntime
+
+	if backend := strings.TrimSpace(cfg.Canary.Backend); backend != "" {
+		out.Canary = &RouteCanaryRuntime{
+			Backend:   backend,
+			Percent:   cfg.Canary.Percent,
+			KeyHeader: textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(cfg.Canary.Key.Header)),
+			KeyCookie: strings.TrimSpace(cfg.Canary.Key.Cookie),
+		}
+		if out.Canary.KeyHeader == "" {
+			out.Canary.KeyHeader = ""
+		}
+	}
+
+	cookie := strings.TrimSpace(cfg.Sticky.Cookie)
+	header := strings.TrimSpace(cfg.Sticky.Header)
+	if cookie != "" || header != "" {
+		path := strings.TrimSpace(cfg.Sticky.CookiePath)
+		if path == "" {
+			path = "/"
+		}
+		out.Sticky = &RouteStickyRuntime{
+			Cookie:     cookie,
+			Header:     textproto.CanonicalMIMEHeaderKey(header),
+			CookieTTL:  cfg.Sticky.CookieTTL,
+			CookiePath: path,
+		}
+		if header == "" {
+			out.Sticky.Header = ""
+		}
+	}
+
+	if backend := strings.TrimSpace(cfg.Mirror.Backend); backend != "" {
+		percent := cfg.Mirror.Percent
+		if percent == 0 {
+			percent = 100
+		}
+		maxConcurrent := cfg.Mirror.MaxConcurrent
+		if maxConcurrent <= 0 {
+			maxConcurrent = 32
+		}
+		timeout := cfg.Mirror.Timeout
+		if timeout <= 0 {
+			timeout = 2 * time.Second
+		}
+		excludeBody := true
+		if cfg.Mirror.excludeRequestBodySet {
+			excludeBody = cfg.Mirror.ExcludeRequestBody
+		}
+		excludeHeaders := make([]string, 0, len(cfg.Mirror.ExcludeHeaders))
+		for _, h := range cfg.Mirror.ExcludeHeaders {
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			excludeHeaders = append(excludeHeaders, textproto.CanonicalMIMEHeaderKey(h))
+		}
+		out.Mirror = &RouteMirrorRuntime{
+			Backend:            backend,
+			Percent:            percent,
+			MaxConcurrent:      maxConcurrent,
+			Timeout:            timeout,
+			ExcludeRequestBody: excludeBody,
+			ExcludeHeaders:     excludeHeaders,
+		}
+	}
+
+	if out.Canary == nil && out.Sticky == nil && out.Mirror == nil {
+		return nil
+	}
+	return &out
 }
 
 // normalizeHeaderMatch canonicalizes header names (so lookups match

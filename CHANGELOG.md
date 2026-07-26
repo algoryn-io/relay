@@ -44,6 +44,10 @@ All notable changes to Relay are documented here. The format is based on
   limit did nothing when set in a config file. They are now parsed correctly.
 
 ### Added
+- Per-route traffic splitting (`traffic`): deterministic percentage canary (stable
+  hash bucket per header/cookie/IP), sticky sessions by cookie and/or header, and
+  asynchronous request mirroring with concurrency limits, timeouts/cancellation,
+  and default exclusion of bodies plus sensitive headers.
 - DNS backend discovery (`discovery.dns`): resolve A/AAAA/SRV records with TTL-aware
   refresh and atomic instance-pool updates. Kubernetes Service DNS works through
   ordinary cluster DNS; there is no Kubernetes Endpoints or Consul API client.

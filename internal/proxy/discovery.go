@@ -195,15 +195,16 @@ func (p *Proxy) applyDiscoveredInstances(backendName string, endpoints []discove
 	}
 }
 
-// resolveRouteBackend picks the first usable backend in the primary→secondary
-// failover chain and acquires its bulkhead for the lifetime of the request.
-func (p *Proxy) resolveRouteBackend(route *config.RouteRuntime) (config.BackendRuntime, func(), error) {
-	if route == nil {
-		return config.BackendRuntime{}, func() {}, fmt.Errorf("route is nil")
+// resolveBackendChain tries preferred, then ordered failover backends.
+func (p *Proxy) resolveBackendChain(routeName, preferred string, failover []string) (config.BackendRuntime, func(), error) {
+	candidates := make([]string, 0, 1+len(failover))
+	candidates = append(candidates, preferred)
+	for _, name := range failover {
+		if name == preferred {
+			continue
+		}
+		candidates = append(candidates, name)
 	}
-	candidates := make([]string, 0, 1+len(route.FailoverBackends))
-	candidates = append(candidates, route.BackendName)
-	candidates = append(candidates, route.FailoverBackends...)
 
 	var firstErr error
 	for _, name := range candidates {
@@ -242,7 +243,7 @@ func (p *Proxy) resolveRouteBackend(route *config.RouteRuntime) (config.BackendR
 	}
 
 	if firstErr == nil {
-		firstErr = fmt.Errorf("no backends available for route %q", route.Name)
+		firstErr = fmt.Errorf("no backends available for route %q", routeName)
 	}
 	return config.BackendRuntime{}, func() {}, firstErr
 }

@@ -1095,6 +1095,154 @@ func TestValidateDNSDiscoveryAndFailover(t *testing.T) {
 	})
 }
 
+func TestValidateTrafficSplitting(t *testing.T) {
+	t.Parallel()
+
+	withExtraBackends := func() *Config {
+		cfg := validConfig()
+		cfg.Backends = append(cfg.Backends,
+			BackendConfig{Name: "canary", Strategy: "round_robin", Instances: []InstanceConfig{{URL: "http://localhost:8081"}}},
+			BackendConfig{Name: "shadow", Strategy: "round_robin", Instances: []InstanceConfig{{URL: "http://localhost:8082"}}},
+		)
+		return cfg
+	}
+
+	t.Run("valid traffic policy", func(t *testing.T) {
+		cfg := withExtraBackends()
+		cfg.Routes[0].Traffic = RouteTrafficConfig{
+			Canary: RouteCanaryConfig{
+				Backend: "canary",
+				Percent: 10,
+				Key:     RouteTrafficKeyConfig{Header: "X-User-Id"},
+			},
+			Sticky: RouteStickyConfig{Cookie: "relay_affinity", CookieTTL: time.Hour, CookiePath: "/"},
+			Mirror: RouteMirrorConfig{Backend: "shadow", Percent: 100, MaxConcurrent: 8, Timeout: 2 * time.Second},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("canary equals primary", func(t *testing.T) {
+		cfg := withExtraBackends()
+		cfg.Routes[0].Traffic = RouteTrafficConfig{
+			Canary: RouteCanaryConfig{Backend: "orders-backend", Percent: 5},
+		}
+		assertValidationErrorContains(t, cfg.Validate(), "must differ from the primary backend")
+	})
+
+	t.Run("canary percent out of range", func(t *testing.T) {
+		cfg := withExtraBackends()
+		cfg.Routes[0].Traffic = RouteTrafficConfig{
+			Canary: RouteCanaryConfig{Backend: "canary", Percent: 101},
+		}
+		assertValidationErrorContains(t, cfg.Validate(), "percent: must be between 0 and 100")
+	})
+
+	t.Run("sticky requires cookie or header", func(t *testing.T) {
+		cfg := withExtraBackends()
+		cfg.Routes[0].Traffic = RouteTrafficConfig{
+			Sticky: RouteStickyConfig{CookieTTL: time.Hour},
+		}
+		assertValidationErrorContains(t, cfg.Validate(), "cookie or header is required")
+	})
+
+	t.Run("mirror unknown backend", func(t *testing.T) {
+		cfg := withExtraBackends()
+		cfg.Routes[0].Traffic = RouteTrafficConfig{
+			Mirror: RouteMirrorConfig{Backend: "missing"},
+		}
+		assertValidationErrorContains(t, cfg.Validate(), `unknown backend "missing"`)
+	})
+}
+
+func TestLoadTrafficSplittingYAML(t *testing.T) {
+	t.Parallel()
+
+	path := writeTempConfig(t, `
+listener:
+  http:
+    port: 8080
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+      methods: [GET, POST]
+    backend: api-stable
+    traffic:
+      canary:
+        backend: api-canary
+        percent: 10
+        key:
+          header: X-User-Id
+          cookie: session
+      sticky:
+        cookie: relay_affinity
+        header: X-Session-Id
+        cookie_ttl: 24h
+        cookie_path: /
+      mirror:
+        backend: api-shadow
+        percent: 100
+        max_concurrent: 16
+        timeout: 2s
+        exclude_request_body: true
+        exclude_headers: [X-Api-Key]
+backends:
+  - name: api-stable
+    strategy: round_robin
+    instances:
+      - url: http://localhost:9001
+  - name: api-canary
+    strategy: round_robin
+    instances:
+      - url: http://localhost:9002
+  - name: api-shadow
+    strategy: round_robin
+    instances:
+      - url: http://localhost:9003
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	tr := cfg.Routes[0].Traffic
+	if tr.Canary.Backend != "api-canary" || tr.Canary.Percent != 10 {
+		t.Fatalf("canary = %+v", tr.Canary)
+	}
+	if tr.Canary.Key.Header != "X-User-Id" || tr.Canary.Key.Cookie != "session" {
+		t.Fatalf("canary.key = %+v", tr.Canary.Key)
+	}
+	if tr.Sticky.Cookie != "relay_affinity" || tr.Sticky.CookieTTL != 24*time.Hour {
+		t.Fatalf("sticky = %+v", tr.Sticky)
+	}
+	if tr.Mirror.Backend != "api-shadow" || !tr.Mirror.ExcludeRequestBody || !tr.Mirror.excludeRequestBodySet {
+		t.Fatalf("mirror = %+v", tr.Mirror)
+	}
+
+	rt, err := BuildRuntime(cfg)
+	if err != nil {
+		t.Fatalf("BuildRuntime() error = %v", err)
+	}
+	route := rt.Routes["api"]
+	if route.Traffic == nil || route.Traffic.Canary == nil || route.Traffic.Sticky == nil || route.Traffic.Mirror == nil {
+		t.Fatalf("runtime traffic incomplete: %+v", route.Traffic)
+	}
+	if route.Traffic.Canary.KeyHeader != "X-User-Id" {
+		t.Fatalf("KeyHeader = %q", route.Traffic.Canary.KeyHeader)
+	}
+	if route.Traffic.Mirror.MaxConcurrent != 16 || route.Traffic.Mirror.Timeout != 2*time.Second {
+		t.Fatalf("mirror runtime = %+v", route.Traffic.Mirror)
+	}
+	if !route.Traffic.Mirror.ExcludeRequestBody {
+		t.Fatal("expected ExcludeRequestBody true by config")
+	}
+}
+
 func TestLoadDNSDiscoveryAndFailoverYAML(t *testing.T) {
 	t.Parallel()
 

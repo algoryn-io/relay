@@ -257,6 +257,9 @@ query-constrained) wins, with fallback to a catch-all.
 | `backend` | string | Name of the primary target backend. |
 | `failover.secondary` | string | Single secondary backend used when the primary cannot serve. Mutually exclusive with `failover.backends`. |
 | `failover.backends` | []string | Ordered secondary backends tried after the primary. Mutually exclusive with `failover.secondary`. |
+| `traffic.canary` | object | Deterministic percentage split to a canary backend (see below). |
+| `traffic.sticky` | object | Cookie and/or header affinity to one backend instance (see below). |
+| `traffic.mirror` | object | Async shadow copy of the request to another backend (see below). |
 | `middleware` | []string | Names of middleware to apply, in order (`middlewares` is an alias). |
 | `match.path` | string | Exact path match. Mutually exclusive with `path_prefix`. |
 | `match.path_prefix` | string | Prefix match (`/v1` matches `/v1` and `/v1/x`, not `/v10`); longest match wins. |
@@ -328,6 +331,42 @@ Route failover keeps `backend` as the primary and tries `failover.secondary` /
 ejected, or all circuits open) or its bulkhead is full. Retries stay on the
 chosen backend for the request.
 
+### `routes[].traffic`
+
+Traffic policies are evaluated on the proxy hot path after routing:
+
+1. **Canary** picks `traffic.canary.backend` when the deterministic 0–99 bucket
+   for the request key is `< percent`; otherwise the route primary is used.
+   The same key always maps to the same bucket (and therefore the same side).
+   Key resolution order: `key.header`, then `key.cookie`, then client IP.
+   If the canary backend cannot serve, Relay falls back to the primary (+ failover).
+2. **Sticky** pins a client to one healthy instance of the chosen backend via
+   `sticky.cookie` and/or `sticky.header`. When a cookie is configured, Relay
+   sets `HttpOnly` / `Secure` / `SameSite=Lax` affinity on the response.
+3. **Mirror** fires an asynchronous shadow request to `traffic.mirror.backend`.
+   The client always receives the primary response. Mirror work is bounded by
+   `max_concurrent`, cancelled by `timeout` (and when the proxy shuts down), and
+   never blocks the client. By default the request **body is not forwarded**;
+   `Authorization`, `Cookie`, `Proxy-Authorization`, and mTLS identity headers
+   are always stripped. Add more names in `exclude_headers` as needed.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `canary.backend` | string | — | Canary backend name (must differ from the primary). |
+| `canary.percent` | int | — | 0–100; share of keys sent to the canary. |
+| `canary.key.header` | string | — | Optional header used as the hash key. |
+| `canary.key.cookie` | string | — | Optional cookie used when the header is absent. |
+| `sticky.cookie` | string | — | Affinity cookie name. |
+| `sticky.header` | string | — | Affinity header name (consistent hash over healthy instances). |
+| `sticky.cookie_ttl` | duration | session | `Max-Age` for the affinity cookie when set. |
+| `sticky.cookie_path` | string | `/` | Cookie path. |
+| `mirror.backend` | string | — | Shadow backend name (must differ from the primary). |
+| `mirror.percent` | int | `100` | Deterministic sample of requests to mirror (0–100). |
+| `mirror.max_concurrent` | int | `32` | Cap on in-flight mirror requests for this route. |
+| `mirror.timeout` | duration | `2s` | Per-mirror deadline (also cancelled on proxy shutdown). |
+| `mirror.exclude_request_body` | bool | `true` | When true, the mirror is sent without a body. |
+| `mirror.exclude_headers` | []string | — | Extra request headers to strip on the mirror path. |
+
 ```yaml
 routes:
   - name: orders
@@ -354,6 +393,31 @@ backends:
     strategy: round_robin
     instances:
       - url: http://orders-dr.internal:8080
+```
+
+```yaml
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+      methods: [GET, POST]
+    backend: api-stable
+    traffic:
+      canary:
+        backend: api-canary
+        percent: 10
+        key:
+          header: X-User-Id
+      sticky:
+        cookie: relay_affinity
+        cookie_ttl: 24h
+      mirror:
+        backend: api-shadow
+        percent: 100
+        max_concurrent: 32
+        timeout: 2s
+        exclude_request_body: true
+        exclude_headers: [X-Api-Key]
 ```
 
 Identity propagation fails validation unless every backend instance uses HTTPS

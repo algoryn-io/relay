@@ -1,0 +1,52 @@
+# Deterministic canary, sticky sessions, and async request mirroring.
+listener:
+  http:
+    port: 8088
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+
+routes:
+  - name: api-route
+    match:
+      path_prefix: /api
+      methods: [GET, POST]
+    backend: api-stable
+    traffic:
+      canary:
+        backend: api-canary
+        percent: 10
+        key:
+          header: X-User-Id
+          cookie: session
+      sticky:
+        cookie: relay_affinity
+        header: X-Session-Id
+        cookie_ttl: 24h
+        cookie_path: /
+      mirror:
+        backend: api-shadow
+        percent: 100
+        max_concurrent: 32
+        timeout: 2s
+        exclude_request_body: true
+        exclude_headers:
+          - X-Api-Key
+
+backends:
+  - name: api-stable
+    strategy: round_robin
+    instances:
+      - url: http://api-stable.internal:8080
+      - url: http://api-stable-b.internal:8080
+
+  - name: api-canary
+    strategy: round_robin
+    instances:
+      - url: http://api-canary.internal:8080
+
+  - name: api-shadow
+    strategy: round_robin
+    instances:
+      - url: http://api-shadow.internal:8080

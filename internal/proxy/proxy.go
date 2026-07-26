@@ -103,6 +103,9 @@ type Proxy struct {
 	discoveryTTL      map[string]time.Duration // last observed DNS TTL per backend
 	healthWG          sync.WaitGroup           // tracks health-check goroutines for clean shutdown
 	discoveryWG       sync.WaitGroup           // tracks DNS discovery goroutines for clean shutdown
+	mirrorMu          sync.Mutex
+	mirrorGates       map[string]*bulkhead // per-route mirror concurrency gates
+	mirrorWG          sync.WaitGroup       // tracks in-flight mirror requests for clean shutdown
 }
 
 func (p *Proxy) SetHealthNotifier(n HealthNotifier) {
@@ -254,11 +257,12 @@ func (p *Proxy) Close() {
 		if p.cancel != nil {
 			p.cancel()
 		}
-		// Wait for health-check and DNS discovery goroutines to observe the
-		// cancellation and exit, so no background work outlives the proxy after
-		// a reload or shutdown.
+		// Wait for health-check, DNS discovery, and in-flight mirror goroutines
+		// to observe the cancellation and exit, so no background work outlives
+		// the proxy after a reload or shutdown.
 		p.healthWG.Wait()
 		p.discoveryWG.Wait()
+		p.mirrorWG.Wait()
 		closeTransport := func(rt http.RoundTripper) {
 			if tr, ok := rt.(interface{ CloseIdleConnections() }); ok {
 				tr.CloseIdleConnections()
@@ -289,8 +293,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	}
 	originalHost := r.Host
 
-	// Pick primary or a secondary failover backend (and acquire its bulkhead).
-	backend, releaseBackend, err := p.resolveRouteBackend(route)
+	// Pick canary/primary (then failover) and acquire its bulkhead.
+	backend, releaseBackend, err := p.resolveTrafficBackend(route, r, clientIP)
 	if err != nil {
 		if errors.Is(err, errBulkheadFull) {
 			if p.logger != nil {
@@ -312,9 +316,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	defer releaseBackend()
 	backendName := backend.Name
 
+	var stickyCfg *config.RouteStickyRuntime
+	if route.Traffic != nil {
+		stickyCfg = route.Traffic.Sticky
+	}
+
 	// WebSocket (and other protocol upgrades) bypass the retry loop and
 	// responseBuffer: the real ResponseWriter must remain accessible for
 	// http.Hijacker, and replaying a half-established connection is not possible.
+	// Mirroring is also skipped for upgrades.
 	if isWebSocketUpgrade(r) {
 		p.serveWebSocket(w, r, route, backend, clientIP, proto, originalHost)
 		return
@@ -397,7 +407,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		}
 	}
 
+	// Fire-and-forget mirror after the body is available for optional replay.
+	// Uses proxy lifetime + mirror timeout for cancellation; never blocks the client.
+	p.maybeMirrorRequest(route, r, clientIP, bodyBytes, bodyBuffered)
+
 	var lastBuf *responseBuffer
+	var stickyCookieValue string
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if bodyBuffered && attempt > 0 {
@@ -405,7 +420,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		}
 
-		selected, selErr := p.selectInstance(backend.Name, backend.Strategy)
+		selected, setCookie, selErr := p.selectInstanceForRequest(backend.Name, backend.Strategy, r, stickyCfg)
 		if selErr != nil {
 			if errors.Is(selErr, errAllCircuitsOpen) {
 				if p.logger != nil {
@@ -416,6 +431,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 				httpx.WriteError(w, http.StatusBadGateway, "bad_gateway")
 			}
 			return
+		}
+		if setCookie != "" {
+			stickyCookieValue = setCookie
 		}
 
 		// Circuit breaker gate: Allow() handles the Open→HalfOpen transition.
@@ -442,9 +460,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 		// Otherwise stream straight to the real ResponseWriter: no buffering, so
 		// large responses and SSE/streaming work and memory stays flat.
 		var dst http.ResponseWriter = w
+		if cookie := buildStickyCookie(stickyCfg, stickyCookieValue); cookie != nil {
+			dst = &stickyResponseWriter{ResponseWriter: w, cookie: cookie}
+		}
 		var buf *responseBuffer
 		if retryEligible {
-			buf = newResponseBuffer(w, maxRetryResponseBuffer)
+			buf = newResponseBuffer(dst, maxRetryResponseBuffer)
 			dst = buf
 		}
 		var netErr error
@@ -574,7 +595,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	}
 
 	if lastBuf != nil {
-		lastBuf.flushTo(w)
+		flushDst := http.ResponseWriter(w)
+		if cookie := buildStickyCookie(stickyCfg, stickyCookieValue); cookie != nil {
+			flushDst = &stickyResponseWriter{ResponseWriter: w, cookie: cookie}
+		}
+		lastBuf.flushTo(flushDst)
 	}
 }
 

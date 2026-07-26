@@ -130,6 +130,33 @@ loopback-only unless you allow a scrape range via
 
 When several routes share a path, the **most specific** wins: a route constrained by host/header/query is preferred over a catch-all, and the router falls back to the catch-all when the specific route's predicates do not match.
 
+For **percentage canaries**, sticky sessions, and async mirroring on a single route,
+use `traffic` (see [configuration](docs/configuration.md#routestraffic) and
+`config/examples/traffic-splitting.yaml`):
+
+```yaml
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+      methods: [GET, POST]
+    backend: api-stable
+    traffic:
+      canary:
+        backend: api-canary
+        percent: 10
+        key:
+          header: X-User-Id
+      sticky:
+        cookie: relay_affinity
+        cookie_ttl: 24h
+      mirror:
+        backend: api-shadow
+        exclude_request_body: true
+```
+
+Header-based route matching still works for explicit canary flags:
+
 ```yaml
 routes:
   - name: canary
