@@ -1,7 +1,9 @@
 package middleware
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -91,7 +93,21 @@ func NewAPIKey(cfg APIKeyConfig) (Middleware, error) {
 				r.Header.Set(keyToHeader, matchedID)
 			}
 
-			next.ServeHTTP(w, r)
+			identitySubject := matchedID
+			identityKeyID := matchedID
+			if matchedID == key {
+				// Legacy secret-only entries use the secret as their upstream
+				// identity. Never copy that credential into Relay identity
+				// context; use a deterministic, non-reversible key ID instead.
+				sum := sha256.Sum256(given)
+				identitySubject = ""
+				identityKeyID = hex.EncodeToString(sum[:])
+			}
+			next.ServeHTTP(w, withAuthIdentity(r, AuthIdentity{
+				Source:  "api_key",
+				Subject: identitySubject,
+				KeyID:   identityKeyID,
+			}))
 		})
 	}, nil
 }

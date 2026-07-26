@@ -85,6 +85,34 @@ func TestExtAuthzAllowsOn2xx(t *testing.T) {
 	}
 }
 
+func TestExtAuthzPublishesOnlyAuthorizerIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(extAuthzSubjectHeader, "verified-user")
+		w.Header().Set(extAuthzTenantHeader, "verified-tenant")
+		w.Header().Set(extAuthzKeyIDHeader, "decision-key")
+		w.Header().Set(extAuthzClaimHeaderPrefix+"Account-Id", "verified-account")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	mw := newExtAuthz(t, server, nil, false)
+
+	var identity AuthIdentity
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, _ = authIdentityFromRequest(r)
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(extAuthzSubjectHeader, "client-spoof")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if identity.Subject != "verified-user" || identity.Tenant != "verified-tenant" ||
+		identity.KeyID != "decision-key" || identity.Claims["account-id"] != "verified-account" {
+		t.Fatalf("identity = %+v", identity)
+	}
+}
+
 // A client must not be able to spoof a copy_header: when the authorizer allows
 // the request but does not set the header, the inbound (client) value must be
 // stripped, not forwarded to the backend.

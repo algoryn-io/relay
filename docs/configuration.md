@@ -425,7 +425,11 @@ acknowledgement field that must be reviewed and added.
 | `strategy` | — | `sliding_window` (only supported strategy). |
 | `limit` | — | Max requests per window (> 0). |
 | `window` | — | Window duration (> 0). |
-| `by` | — | Key: `ip`, `route`, or `api_key`. |
+| `by` | — | Legacy key: `ip`, `route`, or `api_key`. Mutually exclusive with `key.selectors`. |
+| `key.selectors` | — | Ordered selectors: `ip`, `route`, `header` (requires `name`), `claim`/`jwt_claim` (requires `claim` or `name`), `tenant`, or `identity`. Simple selectors may be scalar strings. |
+| `key.fallback` | — | Single selector used as the whole key when any primary selector is missing. |
+| `key.reject_missing` | `false` | Return `400 rate_limit_key_missing` instead of using the shared missing bucket. |
+| `key.namespace` | `relay:ratelimit:v1` | Stable operator namespace (maximum 64 safe characters). |
 | `store` | `memory` | `memory` (per-instance, sharded) or `redis` (distributed). |
 | `memory_max_buckets` | `100000` | Strict per-process bucket cap for the memory store; LRU eviction occurs within shards at capacity. |
 | `memory_bucket_ttl` | `window` | Idle bucket TTL for the memory store; must be at least `window`. |
@@ -436,6 +440,45 @@ acknowledgement field that must be reviewed and added.
 The memory store preserves exact sliding-window request timestamps, uses no
 per-bucket goroutines, and exports `relay_rate_limit_memory_buckets` plus
 `relay_rate_limit_memory_evictions_total`.
+
+Selectors are composed in declaration order. Relay length-prefixes every
+descriptor and value, then stores only a SHA-256 digest under the namespace.
+This prevents component-boundary collisions, keeps Redis keys bounded, and
+avoids putting IPs, identities, claims, or header values in bucket names.
+Memory and Redis receive the exact same derived key.
+
+`identity`, `tenant`, and `claim`/`jwt_claim` read only Relay-owned request
+context produced by a successful `jwt`, `api_key`, `oauth2`, or `ext_authz`
+middleware; inbound headers cannot populate it. A route using one of these
+selectors (including as `fallback`) must list the authentication middleware
+before the rate limiter. `claim` accepts scalar claims published into that
+context (verified JWT scalars, OAuth2 introspection fields, or
+`X-Relay-Auth-Claim-*` from ext_authz). `identity` uses the verified subject, or
+the non-secret key ID when no subject exists.
+
+```yaml
+- name: account-write-limit
+  type: rate_limit
+  config:
+    strategy: sliding_window
+    limit: 100
+    window: 1m
+    key:
+      namespace: orders-write:v1
+      selectors:
+        - {type: tenant}
+        - {type: claim, claim: account_id}
+        - {type: route}
+      fallback: {type: ip}
+      reject_missing: true
+```
+
+On the route, place (for example) `jwt-auth` before `account-write-limit`.
+JWT publishes `sub`, scalar verified claims, `tenant`/`tenant_id`, and `kid`.
+OAuth2 introspection publishes `sub`, `tenant`/`tenant_id`, and
+`client_id` (or `jti`) without retaining the bearer token. API-key auth
+publishes the configured caller ID; secret-only entries use a SHA-256 key ID in
+context rather than the secret.
 
 ### `body_limit`
 
@@ -577,6 +620,12 @@ fail-open and the untouched body can still be forwarded. Cancellation never
 fails open. Metadata contains method, request URI, host, resolved client IP,
 request ID, verified mTLS identity when available, and only `forward_headers`;
 credentials are not included unless explicitly allowlisted.
+On a successful decision, the authorizer may also return
+`X-Relay-Auth-Subject`, `X-Relay-Auth-Tenant`, `X-Relay-Auth-Key-Id`, and
+`X-Relay-Auth-Claim-<name>`. Relay copies these values into its private identity
+context for downstream selectors. Client headers with these names are ignored;
+the values are read only from the authorizer response. They are not forwarded
+upstream unless separately listed in `copy_headers`.
 
 ```yaml
 - name: metadata-authz

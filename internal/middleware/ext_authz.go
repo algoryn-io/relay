@@ -21,6 +21,10 @@ import (
 const (
 	defaultExtAuthzTimeout      = 2 * time.Second
 	defaultExtAuthzMaxBodyBytes = 1 << 20
+	extAuthzSubjectHeader       = "X-Relay-Auth-Subject"
+	extAuthzTenantHeader        = "X-Relay-Auth-Tenant"
+	extAuthzKeyIDHeader         = "X-Relay-Auth-Key-Id"
+	extAuthzClaimHeaderPrefix   = "X-Relay-Auth-Claim-"
 )
 
 type ExtAuthzBodyMode string
@@ -185,6 +189,10 @@ func canonicalizeHeaderList(in []string) ([]string, error) {
 
 func (m *extAuthzMiddleware) handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Never forward client-spoofed Relay auth headers on any path, including
+		// fail-open bypasses where withAuthIdentity is not called.
+		stripClientAuthIdentityHeaders(r)
+
 		resp, err := m.check(r)
 		if err != nil {
 			if m.logger != nil {
@@ -215,10 +223,25 @@ func (m *extAuthzMiddleware) handler(next http.Handler) http.Handler {
 
 		switch {
 		case resp.StatusCode >= 200 && resp.StatusCode < 300:
-			// Allowed: graft headers the authorizer resolved onto the upstream
-			// request (e.g. a verified identity). Strip any client-supplied value
-			// first so a caller cannot spoof one of these headers when the
-			// authorizer allows the request but does not set it.
+			claims := make(map[string]string)
+			for name, values := range resp.Header {
+				if strings.HasPrefix(http.CanonicalHeaderKey(name), extAuthzClaimHeaderPrefix) && len(values) != 0 {
+					claim := strings.TrimPrefix(http.CanonicalHeaderKey(name), extAuthzClaimHeaderPrefix)
+					if claim != "" {
+						claims[strings.ToLower(claim)] = values[0]
+					}
+				}
+			}
+			// Publish Relay-owned identity first (also strips client spoof of
+			// X-Relay-Auth-*). Then graft authorizer copy_headers so operators
+			// can still forward those values upstream when explicitly listed.
+			r = withAuthIdentity(r, AuthIdentity{
+				Source:  "ext_authz",
+				Subject: resp.Header.Get(extAuthzSubjectHeader),
+				Tenant:  resp.Header.Get(extAuthzTenantHeader),
+				KeyID:   resp.Header.Get(extAuthzKeyIDHeader),
+				Claims:  claims,
+			})
 			for _, h := range m.copyHeaders {
 				r.Header.Del(h)
 				if v := resp.Header.Get(h); v != "" {

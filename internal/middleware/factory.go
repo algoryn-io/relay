@@ -57,12 +57,27 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitObservers
 		}
 		// ResolveEnv writes the resolved env var into RedisURL when RedisURLEnv
 		// is set, so by this point RedisURL already holds the final value.
+		key := RateLimitKeyConfig{
+			RejectMissing: def.Config.RateLimitKey.RejectMissing,
+			Namespace:     def.Config.RateLimitKey.Namespace,
+		}
+		for _, selector := range def.Config.RateLimitKey.Selectors {
+			key.Selectors = append(key.Selectors, RateLimitSelector{
+				Type: selector.Type, Name: selector.Name, Claim: selector.Claim,
+			})
+		}
+		if fallback := def.Config.RateLimitKey.Fallback; fallback != nil {
+			key.Fallback = &RateLimitSelector{
+				Type: fallback.Type, Name: fallback.Name, Claim: fallback.Claim,
+			}
+		}
 		mw, closer, err := NewRateLimit(RateLimitConfig{
 			Strategy:              Strategy(def.Config.Strategy),
 			Limit:                 def.Config.Limit,
 			Window:                def.Config.Window,
 			By:                    def.Config.By,
 			Header:                def.Config.Header,
+			Key:                   key,
 			Store:                 def.Config.RateLimitStore,
 			RedisURL:              redisURL,
 			FailOpen:              def.Config.FailOpen,

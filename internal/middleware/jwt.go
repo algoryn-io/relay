@@ -218,7 +218,19 @@ func jwtHandler(cfg JWTConfig, claimsToHeaders map[string]string, keyfunc jwt.Ke
 			} else {
 				stripAndInjectMappedClaims(r, claims, claimsToHeaders)
 			}
-			next.ServeHTTP(w, r)
+			identity := AuthIdentity{
+				Source: "jwt",
+				Claims: verifiedScalarClaims(claims),
+			}
+			identity.Subject, _ = stringFromClaim(claims, "sub")
+			identity.Tenant, _ = stringFromClaim(claims, "tenant")
+			if identity.Tenant == "" {
+				identity.Tenant, _ = stringFromClaim(claims, "tenant_id")
+			}
+			if kid, ok := token.Header["kid"].(string); ok {
+				identity.KeyID = kid
+			}
+			next.ServeHTTP(w, withAuthIdentity(r, identity))
 		})
 	}
 }
@@ -392,6 +404,19 @@ func stringFromClaim(claims jwt.MapClaims, key string) (string, bool) {
 		}
 		return s, true
 	}
+}
+
+func verifiedScalarClaims(claims jwt.MapClaims) map[string]string {
+	out := make(map[string]string)
+	for name, value := range claims {
+		switch value.(type) {
+		case string, float64, float32, int, int32, int64, bool:
+			if scalar, ok := stringFromClaim(claims, name); ok {
+				out[name] = scalar
+			}
+		}
+	}
+	return out
 }
 
 func readTokenFromHeader(r *http.Request, header string) (string, bool) {

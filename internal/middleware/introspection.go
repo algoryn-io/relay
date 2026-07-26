@@ -52,15 +52,21 @@ type IntrospectionConfig struct {
 }
 
 type introspectionResponse struct {
-	Active bool   `json:"active"`
-	Scope  string `json:"scope"`
-	Sub    string `json:"sub"`
-	Exp    int64  `json:"exp"`
+	Active   bool   `json:"active"`
+	Scope    string `json:"scope"`
+	Sub      string `json:"sub"`
+	Tenant   string `json:"tenant"`
+	TenantID string `json:"tenant_id"`
+	ClientID string `json:"client_id"`
+	JTI      string `json:"jti"`
+	Exp      int64  `json:"exp"`
 }
 
 type introspectionCacheEntry struct {
 	sub       string
 	scope     string
+	tenant    string
+	keyID     string
 	expiresAt time.Time
 }
 
@@ -160,7 +166,17 @@ func (m *introspectionMiddleware) handler(next http.Handler) http.Handler {
 				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
-			entry = introspectionCacheEntry{sub: result.Sub, scope: result.Scope}
+			tenant := result.Tenant
+			if tenant == "" {
+				tenant = result.TenantID
+			}
+			keyID := result.ClientID
+			if keyID == "" {
+				keyID = result.JTI
+			}
+			entry = introspectionCacheEntry{
+				sub: result.Sub, scope: result.Scope, tenant: tenant, keyID: keyID,
+			}
 			m.store(token, entry, result.Exp)
 		}
 
@@ -178,7 +194,15 @@ func (m *introspectionMiddleware) handler(next http.Handler) http.Handler {
 		if entry.scope != "" {
 			r.Header.Set(tokenScopeHeader, entry.scope)
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, withAuthIdentity(r, AuthIdentity{
+			Source:  "oauth2",
+			Subject: entry.sub,
+			Tenant:  entry.tenant,
+			KeyID:   entry.keyID,
+			Claims: map[string]string{
+				"scope": entry.scope,
+			},
+		}))
 	})
 }
 
