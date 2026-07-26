@@ -435,8 +435,15 @@ Fails closed (`503`) when the endpoint is unreachable.
 
 | Field | Description |
 | --- | --- |
-| `watch` | Watch the config file and hot-reload on change (`enabled` is an alias). |
+| `watch` | Watch the root config and every transitive file-based include, then hot-reload on change (`enabled` is an alias). |
 | `debounce` | Debounce window (required when `watch` is on). |
+
+The watched file set is replaced after each successful reload, so adding or
+removing includes takes effect automatically. Directory watches make atomic
+file replacements safe. If a reload refers to an include that does not exist
+yet, Relay keeps serving the last valid config and watches the nearest existing
+parent directory so it can retry when the file appears. A successfully reloaded
+`debounce` value applies to subsequent changes.
 
 ### `include`
 

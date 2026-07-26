@@ -4,15 +4,14 @@ The runtime suite builds Relay and an in-repository upstream fixture, then start
 an isolated Docker Compose project. It covers:
 
 - basic HTTP proxying;
-- reloading a changed `include` file;
+- automatically reloading a changed file-based `include`;
 - Redis unavailable with default fail-closed and explicit `fail_open: true`;
 - an upstream requiring a client certificate, with active health checks;
 - ACME configuration validation in a read-only container, including safe
   rejection when `acme_cache_dir` is missing.
 
-The include test sends `SIGHUP` after changing the included file. Relay currently
-watches only the root config file, so the test deliberately does not claim that
-transitive file watching is supported.
+The include test changes an included file without sending `SIGHUP`; the
+transitive file watcher detects it and reloads the merged configuration.
 
 Requirements: Docker Engine with Compose v2, `curl`, and `openssl`.
 

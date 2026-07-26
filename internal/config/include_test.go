@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -170,5 +171,51 @@ backends:
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("config invalid: %v", err)
+	}
+}
+
+func TestLoadWithFilesReturnsCanonicalTransitiveSet(t *testing.T) {
+	t.Parallel()
+
+	dir := writeFiles(t, map[string]string{
+		"relay.yaml":      "include: [one.yaml, nested/two.yaml]\n",
+		"one.yaml":        "include: [nested/two.yaml]\nroutes: []\n",
+		"nested/two.yaml": "include: [../relay.yaml]\nbackends: []\n",
+	})
+	root := filepath.Join(dir, ".", "relay.yaml")
+	_, files, err := LoadWithFiles(root)
+	if err != nil {
+		t.Fatalf("LoadWithFiles() error = %v", err)
+	}
+	want := []string{
+		filepath.Join(dir, "nested", "two.yaml"),
+		filepath.Join(dir, "one.yaml"),
+		filepath.Join(dir, "relay.yaml"),
+	}
+	slices.Sort(want)
+	if !slices.Equal(files, want) {
+		t.Fatalf("files = %q, want %q", files, want)
+	}
+}
+
+func TestLoadWithFilesReturnsMissingTransitiveIncludeOnError(t *testing.T) {
+	t.Parallel()
+
+	dir := writeFiles(t, map[string]string{
+		"relay.yaml":    "include: [existing.yaml]\n",
+		"existing.yaml": "include: [generated/missing.yaml]\n",
+	})
+	root := filepath.Join(dir, "relay.yaml")
+	missing := filepath.Join(dir, "generated", "missing.yaml")
+
+	cfg, files, err := LoadWithFiles(root)
+	if err == nil {
+		t.Fatal("LoadWithFiles() error = nil, want missing include error")
+	}
+	if cfg != nil {
+		t.Fatalf("config = %#v, want nil on error", cfg)
+	}
+	if !slices.Contains(files, missing) {
+		t.Fatalf("files = %q, want missing include %q", files, missing)
 	}
 }
