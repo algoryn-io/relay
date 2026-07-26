@@ -118,3 +118,50 @@ backends:
 		})
 	}
 }
+
+func TestValidateReadinessPolicy(t *testing.T) {
+	t.Parallel()
+
+	valid := validConfig()
+	valid.Listener.Health.Readiness = ReadinessPolicyConfig{
+		Mode:             "critical",
+		CriticalBackends: []string{valid.Backends[0].Name},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid critical readiness rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		policy ReadinessPolicyConfig
+		want   string
+	}{
+		{name: "unknown mode", policy: ReadinessPolicyConfig{Mode: "quorum"}, want: "must be one of any, all, critical"},
+		{name: "critical missing list", policy: ReadinessPolicyConfig{Mode: "critical"}, want: "at least one backend"},
+		{name: "list with any", policy: ReadinessPolicyConfig{Mode: "any", CriticalBackends: []string{"backend"}}, want: "valid only when mode is critical"},
+		{name: "unknown backend", policy: ReadinessPolicyConfig{Mode: "critical", CriticalBackends: []string{"missing"}}, want: "unknown backend"},
+		{name: "duplicate backend", policy: ReadinessPolicyConfig{Mode: "critical", CriticalBackends: []string{valid.Backends[0].Name, valid.Backends[0].Name}}, want: "duplicate backend"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Listener.Health.Readiness = tc.policy
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateHealthAccessCIDRs(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Listener.Health.Access.AllowedCIDRs = []string{"not-a-cidr", "0.0.0.0/0"}
+	err := cfg.Validate()
+	for _, want := range []string{"valid IP or CIDR", "public CIDRs"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() error = %v, want containing %q", err, want)
+		}
+	}
+}

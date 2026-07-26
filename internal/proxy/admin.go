@@ -2,7 +2,11 @@ package proxy
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"time"
+
+	"algoryn.io/relay/internal/config"
 )
 
 // InstanceSnapshot is a point-in-time view of a single backend instance.
@@ -110,6 +114,99 @@ func (p *Proxy) Readiness() (healthy, total int) {
 		}
 	}
 	return healthy, total
+}
+
+// ReadinessEvaluation is the diagnostic form of readiness. It is intended only
+// for an authenticated admin endpoint; public readiness responses must not
+// serialize this value.
+type ReadinessEvaluation struct {
+	Ready    bool                     `json:"ready"`
+	Mode     string                   `json:"mode"`
+	Serving  int                      `json:"serving_backends"`
+	Total    int                      `json:"total_backends"`
+	Backends []ReadinessBackendStatus `json:"backends"`
+}
+
+type ReadinessBackendStatus struct {
+	Name      string             `json:"name"`
+	Required  bool               `json:"required"`
+	Serving   bool               `json:"serving"`
+	Reason    string             `json:"reason"`
+	Instances []InstanceSnapshot `json:"instances"`
+}
+
+// EvaluateReadiness evaluates any/all/critical backend policy and returns
+// diagnostic detail suitable for the admin API.
+func (p *Proxy) EvaluateReadiness(policy config.ReadinessPolicyConfig) ReadinessEvaluation {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	mode := strings.ToLower(strings.TrimSpace(policy.Mode))
+	if mode == "" {
+		mode = "any"
+	}
+	critical := make(map[string]struct{}, len(policy.CriticalBackends))
+	for _, name := range policy.CriticalBackends {
+		critical[strings.TrimSpace(name)] = struct{}{}
+	}
+
+	names := make([]string, 0, len(p.backends))
+	for name := range p.backends {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	result := ReadinessEvaluation{Mode: mode, Total: len(names)}
+	requiredSeen := 0
+	for _, name := range names {
+		required := mode == "all"
+		if mode == "critical" {
+			_, required = critical[name]
+			if required {
+				requiredSeen++
+			}
+		}
+		status := ReadinessBackendStatus{Name: name, Required: required}
+		for _, inst := range p.instances[name] {
+			snapshot := InstanceSnapshot{
+				Healthy:        inst.Healthy,
+				ActiveRequests: int(inst.activeRequests.Load()),
+			}
+			if inst.URL != nil {
+				snapshot.URL = inst.URL.String()
+			}
+			if inst.circuit != nil {
+				snapshot.CircuitState = inst.circuit.State()
+			}
+			snapshot.Ejected, snapshot.EjectedUntil, snapshot.EjectReason, snapshot.EjectionCount = inst.outlier.snapshot(p.clock.Now())
+			status.Instances = append(status.Instances, snapshot)
+			if snapshot.Healthy && !snapshot.Ejected {
+				status.Serving = true
+			}
+		}
+		if status.Serving {
+			status.Reason = "ready"
+			result.Serving++
+		} else {
+			status.Reason = "no_healthy_instance"
+		}
+		result.Backends = append(result.Backends, status)
+	}
+
+	switch mode {
+	case "all":
+		result.Ready = result.Serving == result.Total
+	case "critical":
+		result.Ready = len(critical) > 0 && requiredSeen == len(critical)
+		for _, backend := range result.Backends {
+			if backend.Required && !backend.Serving {
+				result.Ready = false
+			}
+		}
+	default:
+		result.Ready = result.Total == 0 || result.Serving > 0
+	}
+	return result
 }
 
 // DrainInstance marks the given instance as unhealthy, removing it from the

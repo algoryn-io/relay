@@ -53,6 +53,7 @@ func validateConfig(c *Config) error {
 	validateListener(c.Listener, &errs)
 
 	backendNames := validateBackends(c.Backends, &errs)
+	validateHealthEndpoints(c.Listener.Health, backendNames, &errs)
 	middlewareNames := validateMiddlewares(c.Middleware, &errs)
 	validateRoutes(c.Routes, backendNames, middlewareNames, &errs)
 
@@ -106,6 +107,40 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 	validateNoPublicCIDR("listener.trusted_proxies", listener.TrustedProxies, errs)
 	validateIPFilterEntries("listener.admin.allowed_cidrs", listener.Admin.AllowedCIDRs, errs)
 	validateAdminAccess(listener.Admin, errs)
+	validateIPFilterEntries("listener.health.access.allowed_cidrs", listener.Health.Access.AllowedCIDRs, errs)
+	validateNoPublicCIDR("listener.health.access.allowed_cidrs", listener.Health.Access.AllowedCIDRs, errs)
+}
+
+func validateHealthEndpoints(health HealthEndpointsConfig, backends map[string]struct{}, errs *ValidationErrors) {
+	mode := strings.ToLower(strings.TrimSpace(health.Readiness.Mode))
+	switch mode {
+	case "", "any", "all":
+		if len(health.Readiness.CriticalBackends) != 0 {
+			errs.Addf("listener.health.readiness.critical_backends: valid only when mode is critical")
+		}
+	case "critical":
+		if len(health.Readiness.CriticalBackends) == 0 {
+			errs.Addf("listener.health.readiness.critical_backends: at least one backend is required when mode is critical")
+		}
+	default:
+		errs.Addf("listener.health.readiness.mode: must be one of any, all, critical")
+	}
+
+	seen := make(map[string]struct{}, len(health.Readiness.CriticalBackends))
+	for i, rawName := range health.Readiness.CriticalBackends {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			errs.Addf("listener.health.readiness.critical_backends[%d]: must not be empty", i)
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			errs.Addf("listener.health.readiness.critical_backends[%d]: duplicate backend %q", i, name)
+		}
+		seen[name] = struct{}{}
+		if _, ok := backends[name]; !ok {
+			errs.Addf("listener.health.readiness.critical_backends[%d]: unknown backend %q", i, name)
+		}
+	}
 }
 
 func validateAdminAccess(admin AdminConfig, errs *ValidationErrors) {

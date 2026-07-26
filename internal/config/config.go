@@ -25,12 +25,13 @@ type Config struct {
 }
 
 type ListenerConfig struct {
-	HTTP           HTTPConfig     `yaml:"http"`
-	HTTPS          HTTPSConfig    `yaml:"https"`
-	TLS            TLSConfig      `yaml:"tls"`
-	Timeouts       TimeoutsConfig `yaml:"timeouts"`
-	TrustedProxies []string       `yaml:"trusted_proxies"`
-	Admin          AdminConfig    `yaml:"admin"`
+	HTTP           HTTPConfig            `yaml:"http"`
+	HTTPS          HTTPSConfig           `yaml:"https"`
+	TLS            TLSConfig             `yaml:"tls"`
+	Timeouts       TimeoutsConfig        `yaml:"timeouts"`
+	TrustedProxies []string              `yaml:"trusted_proxies"`
+	Admin          AdminConfig           `yaml:"admin"`
+	Health         HealthEndpointsConfig `yaml:"health"`
 	// StripRequestHeaders lists additional inbound headers to remove at the edge
 	// before any routing or proxying, on top of the always-stripped Relay-managed
 	// identity headers. Use it for app-specific identity headers a backend trusts
@@ -50,8 +51,10 @@ type ListenerConfig struct {
 	MaxRequestBodyBytes int64 `yaml:"max_request_body_bytes"`
 }
 
-// AdminConfig controls access to the /_relay/admin/* management endpoints.
-type AdminConfig struct {
+// EndpointAccessConfig is the shared CIDR and bearer-token policy used by
+// operational endpoints. Callers decide whether an empty CIDR list means public
+// access (health endpoints) or loopback-only access (admin endpoints).
+type EndpointAccessConfig struct {
 	// AllowedCIDRs is the list of IP ranges that may call admin endpoints.
 	// Defaults to loopback only (127.0.0.0/8 and ::1/128) when empty.
 	AllowedCIDRs []string `yaml:"allowed_cidrs"`
@@ -63,6 +66,25 @@ type AdminConfig struct {
 	// token_env; token_env wins if both are set.
 	TokenFile     string `yaml:"token_file"`
 	ResolvedToken string `yaml:"-"`
+}
+
+// AdminConfig controls access to the /_relay/admin/* management endpoints.
+type AdminConfig = EndpointAccessConfig
+
+// HealthEndpointsConfig controls disclosure, access, and readiness semantics
+// for /_relay/health and /_relay/ready.
+type HealthEndpointsConfig struct {
+	// Access is optional. Empty keeps the minimal health endpoints public.
+	Access EndpointAccessConfig `yaml:"access"`
+	// Readiness selects how backend availability is aggregated.
+	Readiness ReadinessPolicyConfig `yaml:"readiness"`
+}
+
+// ReadinessPolicyConfig determines which backends must have a serving instance.
+// Mode defaults to "any"; supported values are "any", "all", and "critical".
+type ReadinessPolicyConfig struct {
+	Mode             string   `yaml:"mode"`
+	CriticalBackends []string `yaml:"critical_backends"`
 }
 
 type HTTPConfig struct {

@@ -473,9 +473,18 @@ listener:
 
 ### Health & readiness
 
-- `GET /_relay/health` — liveness; always 200 while the process is up.
-- `GET /_relay/ready` — readiness; 503 when backends exist but none has a healthy
-  instance. Use it for Kubernetes readiness probes.
+- `GET /_relay/health` — constant, minimal liveness response while the process is
+  serving.
+- `GET /_relay/ready` — opaque `ready`/`not_ready` readiness response. The
+  default `any` policy preserves Kubernetes probe behavior; `all` and an
+  explicit critical-backend list are configurable.
+- `GET /_relay/admin/readiness` — backend/instance diagnostic detail, protected
+  by admin CIDR and optional bearer-token authentication.
+
+The public probes disclose no backend names, URLs, counts, or failure reasons.
+They may optionally be restricted by real TCP peer CIDRs and a bearer token
+under `listener.health.access`; `X-Forwarded-For` cannot bypass this gate. See
+the [configuration reference](docs/configuration.md#listenerhealth).
 
 ### Metrics
 

@@ -63,6 +63,7 @@ When both are set for the same secret, the `*_env` source wins.
 | Redis URL (rate limit or ACME cache) | `redis_url_env` | `redis_url_file` |
 | API keys | `keys_env` | `keys_file` |
 | Admin bearer token | `token_env` | `token_file` |
+| Health endpoint bearer token | `token_env` | `token_file` |
 
 ---
 
@@ -195,6 +196,42 @@ acme_cache:
 below it. Lease release and publication are token-checked atomically in Redis,
 so an expired owner cannot delete another replica's lease or publish stale
 certificate data.
+
+### `listener.health`
+
+`/_relay/health` is a liveness signal with a constant minimal response:
+`200 {"status":"ok"}`. It never inspects or identifies backends.
+`/_relay/ready` returns only `{"status":"ready"}` (200) or
+`{"status":"not_ready"}` (503); backend names, URLs, counts, and failure reasons
+are never included. Both endpoints are public by default so Kubernetes HTTP
+probes remain compatible.
+
+```yaml
+listener:
+  health:
+    access:
+      # Optional: when present, the immediate TCP peer must match. X-Forwarded-For
+      # is never trusted for this gate.
+      allowed_cidrs: [10.42.0.0/16]
+      # Optional additional bearer token; env wins over file.
+      token_env: RELAY_HEALTH_TOKEN
+      # token_file: /run/secrets/relay-health-token
+    readiness:
+      # any (default), all, or critical
+      mode: critical
+      critical_backends: [orders-backend, payments-backend]
+```
+
+`any` is ready when at least one configured backend can serve (and also when no
+backends exist). `all` requires every backend. `critical` requires every named
+critical backend; the list must be non-empty, unique, and contain only configured
+backend names. `critical_backends` is rejected with other modes.
+
+For diagnostics, use `GET /_relay/admin/readiness` (or the shorter
+`/_relay/admin/ready`). It returns the evaluated policy, backend and instance
+names/URLs, health/ejection state, and bounded reasons, and is protected by the
+same real-peer CIDR plus constant-time bearer-token checks as every admin
+endpoint. Do not expose the admin API publicly.
 
 ### `listener.admin`
 
