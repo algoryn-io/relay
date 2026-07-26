@@ -206,10 +206,10 @@ func TestBuildTLSConfigManualReturnsReloader(t *testing.T) {
 	}
 }
 
-func TestBuildTLSConfigAutoReturnsNilReloader(t *testing.T) {
+func TestBuildTLSConfigAutoReturnsHandle(t *testing.T) {
 	t.Parallel()
 
-	_, reloader, err := buildTLSConfig(config.TLSConfig{
+	_, handle, err := buildTLSConfig(config.TLSConfig{
 		Mode:         "auto",
 		Domains:      []string{"example.com"},
 		ACMECacheDir: t.TempDir(),
@@ -217,8 +217,8 @@ func TestBuildTLSConfigAutoReturnsNilReloader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTLSConfig auto: %v", err)
 	}
-	if reloader != nil {
-		t.Error("reloader should be nil for auto mode (autocert handles rotation)")
+	if handle == nil {
+		t.Error("TLS config handle should be present for runtime parameter reload")
 	}
 }
 

@@ -1,0 +1,42 @@
+listener:
+  https:
+    port: 8443
+    tls:
+      mode: manual
+      # Default for clients without SNI; for named SNI it is served only when
+      # its SAN covers the requested hostname.
+      cert_file: /etc/relay/tls/default.crt
+      key_file: /etc/relay/tls/default.key
+      certificates:
+        - hosts: [api.example.com]
+          cert_file: /etc/relay/tls/api.crt
+          key_file: /etc/relay/tls/api.key
+        - hosts: ["*.tenant.example.com"]
+          cert_file: /etc/relay/tls/tenants.crt
+          key_file: /etc/relay/tls/tenants.key
+      min_version: "1.2"
+      cipher_suites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+    read_header: 10s
+
+routes:
+  - name: example
+    match:
+      path_prefix: /
+      methods: [GET]
+    backend: example
+
+backends:
+  - name: example
+    strategy: round_robin
+    instances:
+      - url: http://127.0.0.1:8080
+
+reload:
+  watch: true
+  debounce: 500ms

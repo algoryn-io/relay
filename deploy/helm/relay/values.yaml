@@ -83,6 +83,13 @@ secrets: {}
 # Reference an existing Secret via envFrom instead of (or in addition to) secrets.
 existingSecret: ""
 
+# Optional Kubernetes Secret containing inbound TLS certificates, private keys,
+# and client CA bundles. The whole Secret is mounted read-only at mountPath.
+# Relay's file watcher reloads changed Secret projections transactionally.
+tls:
+  existingSecret: ""
+  mountPath: /etc/relay/tls
+
 # Extra environment variables and sources.
 extraEnv: []
 extraEnvFrom: []

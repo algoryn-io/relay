@@ -160,8 +160,11 @@ func (st *serverState) close() {
 
 type Server struct {
 	httpServer   *http.Server
-	httpsServer  *http.Server  // nil when HTTPS is not configured
-	certReloader *CertReloader // non-nil only in manual TLS mode
+	httpsServer  *http.Server // nil when HTTPS is not configured
+	tlsHandle    *TLSConfigHandle
+	httpPort     int
+	httpsPort    int
+	tlsMode      string
 	logger       *slog.Logger
 	tracing      *observability.TracingHandle
 	metrics      *observability.Metrics
@@ -228,6 +231,9 @@ func New(
 		tracing:           tracingHandle,
 		metrics:           metrics,
 		prometheus:        prometheus,
+		httpPort:          cfg.Listener.HTTP.Port,
+		httpsPort:         cfg.Listener.HTTPS.Port,
+		tlsMode:           normalizedTLSMode(cfg.Listener.HTTPS.TLS.Mode),
 		connectionLimiter: newConnectionLimiter(cfg.Listener.MaxConnectionsPerIP),
 		shutdownDone:      make(chan struct{}),
 		states:            make(map[*serverState]struct{}),
@@ -272,11 +278,11 @@ func New(
 	}
 
 	if httpsPort > 0 {
-		tlsCfg, reloader, err := buildTLSConfig(cfg.Listener.HTTPS.TLS)
+		tlsCfg, handle, err := buildTLSConfig(cfg.Listener.HTTPS.TLS)
 		if err != nil {
 			return nil, fmt.Errorf("tls config: %w", err)
 		}
-		s.certReloader = reloader // nil for auto mode; non-nil for manual mode
+		s.tlsHandle = handle
 		s.httpsServer = &http.Server{
 			Addr:              fmt.Sprintf(":%d", httpsPort),
 			Handler:           s,
@@ -307,6 +313,30 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 	if s.shuttingDown {
 		return fmt.Errorf("server is shutting down")
 	}
+	if cfg == nil {
+		return fmt.Errorf("reload config must not be nil")
+	}
+	if rt == nil {
+		return fmt.Errorf("reload runtime config must not be nil")
+	}
+	if cfg.Listener.HTTP.Port != s.httpPort || cfg.Listener.HTTPS.Port != s.httpsPort {
+		return fmt.Errorf(
+			"hot reload cannot change listener ports (http %d->%d, https %d->%d); restart Relay",
+			s.httpPort, cfg.Listener.HTTP.Port, s.httpsPort, cfg.Listener.HTTPS.Port,
+		)
+	}
+	if mode := normalizedTLSMode(cfg.Listener.HTTPS.TLS.Mode); mode != s.tlsMode {
+		return fmt.Errorf("hot reload cannot change TLS mode from %q to %q; restart Relay", s.tlsMode, mode)
+	}
+
+	var preparedTLS *tls.Config
+	if s.tlsHandle != nil {
+		var err error
+		preparedTLS, err = prepareTLSConfig(cfg.Listener.HTTPS.TLS)
+		if err != nil {
+			return fmt.Errorf("prepare reloaded TLS config: %w", err)
+		}
+	}
 
 	newState, err := buildStateShared(cfg, rt, s.logger, s.tracing, s.metrics, s.prometheus)
 	if err != nil {
@@ -315,6 +345,9 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 	newState.onClose = func() { s.removeState(newState) }
 	s.states[newState] = struct{}{}
 
+	if preparedTLS != nil {
+		s.tlsHandle.Store(preparedTLS)
+	}
 	old := s.state.Swap(newState)
 	old.retire(s.drainTimeout)
 
@@ -322,21 +355,6 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 	s.connectionLimiter.setMetrics(newState.prometheus)
 	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
 	s.maxRequestBodyBytes.Store(cfg.Listener.MaxRequestBodyBytes)
-
-	// Rotate the TLS certificate when running in manual mode. A failure here
-	// is non-fatal: the server keeps the previous certificate in service and
-	// logs a warning so operators know the rotation did not take effect.
-	if s.certReloader != nil {
-		tlsCfg := cfg.Listener.HTTPS.TLS
-		if rotateErr := s.certReloader.Reload(tlsCfg.CertFile, tlsCfg.KeyFile); rotateErr != nil {
-			s.logger.Warn("TLS certificate reload failed, keeping current certificate",
-				"cert_file", tlsCfg.CertFile,
-				"error", rotateErr,
-			)
-		} else {
-			s.logger.Info("TLS certificate reloaded", "cert_file", tlsCfg.CertFile)
-		}
-	}
 
 	return nil
 }
@@ -720,44 +738,40 @@ func buildStateShared(
 	return st, nil
 }
 
-// buildTLSConfig returns a *tls.Config for the given TLSConfig and, when the
-// mode is "manual", a *CertReloader that can hot-swap the certificate without
-// restarting the server. The reloader is nil for mode "auto".
-//
-// mode "manual": certificate is loaded from files via CertReloader; calling
-//
-//	CertReloader.Reload replaces the certificate for all subsequent handshakes.
-//
-// mode "auto":   uses autocert (Let's Encrypt) with an in-memory cache; cert
-//
-//	renewal is handled automatically by the ACME library.
-func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertReloader, error) {
-	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
-	if mode == "" {
-		mode = "manual"
+// buildTLSConfig creates a stable listener config backed by an atomic handle.
+// Reload prepares a complete replacement before publishing it, so certificates,
+// client trust, authentication policy and protocol parameters change together.
+func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *TLSConfigHandle, error) {
+	prepared, err := prepareTLSConfig(cfg)
+	if err != nil {
+		return nil, nil, err
 	}
+	handle := newTLSConfigHandle(prepared)
+	listenerCfg := prepared.Clone()
+	listenerCfg.GetConfigForClient = handle.GetConfigForClient
+	return listenerCfg, handle, nil
+}
 
-	switch mode {
+func prepareTLSConfig(cfg config.TLSConfig) (*tls.Config, error) {
+	switch normalizedTLSMode(cfg.Mode) {
 	case "manual":
-		reloader, err := NewCertReloader(cfg.CertFile, cfg.KeyFile)
+		certificates, err := loadSNICertificates(cfg)
 		if err != nil {
-			return nil, nil, fmt.Errorf("load cert/key: %w", err)
+			return nil, err
 		}
 		tlsCfg := &tls.Config{
-			// GetCertificate is called on every TLS handshake, so swapping the
-			// cert inside CertReloader takes effect for all new connections
-			// immediately, with no listener restart required.
-			GetCertificate: reloader.GetCertificate,
+			GetCertificate: certificates.GetCertificate,
+			NextProtos:     []string{"h2", "http/1.1"},
 		}
 		if err := applyTLSHardening(tlsCfg, cfg); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		return tlsCfg, reloader, nil
+		return tlsCfg, nil
 
 	case "auto":
 		cacheDir := strings.TrimSpace(cfg.ACMECacheDir)
 		if cacheDir == "" {
-			return nil, nil, fmt.Errorf("acme_cache_dir is required when tls.mode is auto")
+			return nil, fmt.Errorf("acme_cache_dir is required when tls.mode is auto")
 		}
 		m := &autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
@@ -766,13 +780,21 @@ func buildTLSConfig(cfg config.TLSConfig) (*tls.Config, *CertReloader, error) {
 		}
 		tlsCfg := m.TLSConfig()
 		if err := applyTLSHardening(tlsCfg, cfg); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		return tlsCfg, nil, nil
+		return tlsCfg, nil
 
 	default:
-		return nil, nil, fmt.Errorf("unknown TLS mode %q", mode)
+		return nil, fmt.Errorf("unknown TLS mode %q", cfg.Mode)
 	}
+}
+
+func normalizedTLSMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return "manual"
+	}
+	return mode
 }
 
 // hardenedTLS12Ciphers is a conservative TLS 1.2 cipher list (AEAD + forward
@@ -791,10 +813,17 @@ var hardenedTLS12Ciphers = []uint16{
 func applyTLSHardening(tlsCfg *tls.Config, cfg config.TLSConfig) error {
 	switch strings.TrimSpace(cfg.MinVersion) {
 	case "1.3":
+		if len(cfg.CipherSuites) != 0 {
+			return fmt.Errorf("cipher_suites cannot be configured when min_version is 1.3")
+		}
 		tlsCfg.MinVersion = tls.VersionTLS13
 	default: // "" or "1.2"
 		tlsCfg.MinVersion = tls.VersionTLS12
-		tlsCfg.CipherSuites = hardenedTLS12Ciphers
+		ciphers, err := resolveCipherSuites(cfg.CipherSuites)
+		if err != nil {
+			return err
+		}
+		tlsCfg.CipherSuites = ciphers
 	}
 
 	if strings.TrimSpace(cfg.ClientCAFile) != "" {
@@ -817,6 +846,37 @@ func applyTLSHardening(tlsCfg *tls.Config, cfg config.TLSConfig) error {
 		}
 	}
 	return nil
+}
+
+func resolveCipherSuites(names []string) ([]uint16, error) {
+	if len(names) == 0 {
+		return append([]uint16(nil), hardenedTLS12Ciphers...), nil
+	}
+	supported := make(map[string]uint16)
+	allowedIDs := make(map[uint16]struct{}, len(hardenedTLS12Ciphers))
+	for _, id := range hardenedTLS12Ciphers {
+		allowedIDs[id] = struct{}{}
+	}
+	for _, suite := range tls.CipherSuites() {
+		if _, ok := allowedIDs[suite.ID]; ok {
+			supported[suite.Name] = suite.ID
+		}
+	}
+	resolved := make([]uint16, 0, len(names))
+	seen := make(map[uint16]struct{}, len(names))
+	for i, rawName := range names {
+		name := strings.TrimSpace(rawName)
+		id, ok := supported[name]
+		if !ok {
+			return nil, fmt.Errorf("cipher_suites[%d]: unsupported or insecure TLS 1.2 cipher %q", i, rawName)
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, fmt.Errorf("cipher_suites[%d]: duplicate cipher %q", i, rawName)
+		}
+		seen[id] = struct{}{}
+		resolved = append(resolved, id)
+	}
+	return resolved, nil
 }
 
 // relayManagedHeaders are identity/hop headers that only Relay's own middleware

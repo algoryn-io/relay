@@ -79,6 +79,11 @@ spec:
             - name: config
               mountPath: /etc/relay
               readOnly: true
+            {{- if .Values.tls.existingSecret }}
+            - name: tls
+              mountPath: {{ .Values.tls.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -86,6 +91,11 @@ spec:
         - name: config
           configMap:
             name: {{ include "relay.configMapName" . }}
+        {{- if .Values.tls.existingSecret }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

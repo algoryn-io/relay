@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"algoryn.io/relay/internal/config"
 )
 
 type watchReloadResult struct {
@@ -212,6 +214,28 @@ func fileSet(files []string) map[string]struct{} {
 		}
 	}
 	return set
+}
+
+// appendTLSWatchFiles makes file-watch reload react to atomic Secret rotations
+// and direct certificate/CA updates, not only edits to relay.yaml.
+func appendTLSWatchFiles(files []string, cfg *config.Config) []string {
+	if cfg == nil || cfg.Listener.HTTPS.Port <= 0 {
+		return files
+	}
+	tlsCfg := cfg.Listener.HTTPS.TLS
+	add := func(path string) {
+		if path = strings.TrimSpace(path); path != "" {
+			files = append(files, path)
+		}
+	}
+	add(tlsCfg.CertFile)
+	add(tlsCfg.KeyFile)
+	add(tlsCfg.ClientCAFile)
+	for _, cert := range tlsCfg.Certificates {
+		add(cert.CertFile)
+		add(cert.KeyFile)
+	}
+	return files
 }
 
 func nearestExistingDir(dir string) (string, error) {

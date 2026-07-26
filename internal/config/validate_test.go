@@ -66,6 +66,71 @@ func TestValidateHTTPSRedirectRequiresTrustedAuthority(t *testing.T) {
 	}
 }
 
+func TestValidateTLSCertificatesRejectsDuplicatesAndUnsafeWildcards(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Listener.HTTP.CanonicalHost = "relay.example.com"
+	cfg.Listener.HTTPS = HTTPSConfig{
+		Port: 8443,
+		TLS: TLSConfig{
+			Mode:     "manual",
+			CertFile: "default.pem",
+			KeyFile:  "default-key.pem",
+			Certificates: []TLSCertificateConfig{
+				{Hosts: []string{"API.example.com"}, CertFile: "api.pem", KeyFile: "api-key.pem"},
+				{Hosts: []string{"api.example.com", "*.*.example.com", "*.com", "*.co.uk"}, CertFile: "other.pem", KeyFile: "other-key.pem"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assertValidationErrorContains(t, err, "duplicate host")
+	assertValidationErrorContains(t, err, "complete left-most label")
+	assertValidationErrorContains(t, err, "registrable-style domain")
+	assertValidationErrorContains(t, err, "public suffix")
+}
+
+func TestValidateTLSCertificatesAcceptsExactAndSafeWildcard(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Listener.HTTP.CanonicalHost = "relay.example.com"
+	cfg.Listener.HTTPS = HTTPSConfig{
+		Port: 8443,
+		TLS: TLSConfig{
+			Mode:     "manual",
+			CertFile: "default.pem",
+			KeyFile:  "default-key.pem",
+			Certificates: []TLSCertificateConfig{{
+				Hosts:    []string{"api.example.com", "*.tenant.example.com"},
+				CertFile: "tenant.pem",
+				KeyFile:  "tenant-key.pem",
+			}},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateTLSCipherSuitesRejectsUnsupportedDuplicateAndTLS13(t *testing.T) {
+	t.Parallel()
+	cfg := validConfig()
+	cfg.Listener.HTTP.CanonicalHost = "relay.example.com"
+	cfg.Listener.HTTPS = HTTPSConfig{
+		Port: 8443,
+		TLS: TLSConfig{
+			Mode:         "manual",
+			CertFile:     "default.pem",
+			KeyFile:      "default-key.pem",
+			MinVersion:   "1.3",
+			CipherSuites: []string{"TLS_RSA_WITH_AES_128_CBC_SHA", "TLS_RSA_WITH_AES_128_CBC_SHA"},
+		},
+	}
+	err := cfg.Validate()
+	assertValidationErrorContains(t, err, "unsupported or insecure")
+	assertValidationErrorContains(t, err, "duplicate cipher")
+	assertValidationErrorContains(t, err, "cannot be configured when min_version is 1.3")
+}
+
 func TestValidateSecurityHeadersRejectsUnsafeAndConflictingValues(t *testing.T) {
 	t.Parallel()
 
