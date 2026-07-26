@@ -128,6 +128,49 @@ func TestClientIPNoTrustedNetsIgnoresXFF(t *testing.T) {
 	}
 }
 
+func TestForwardedForNormalizesTrustedChain(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	req.Header.Add("X-Forwarded-For", " 198.51.100.7, garbage, 2001:0db8::1 ")
+	req.Header.Add("X-Forwarded-For", "2001:db8::1, 10.0.0.2")
+
+	req = WithForwarding(req, ParseTrustedNets([]string{"10.0.0.0/8"}), true)
+	if got, want := ForwardedFor(req), "198.51.100.7, 2001:db8::1, 10.0.0.2, 10.0.0.1"; got != want {
+		t.Fatalf("ForwardedFor() = %q, want %q", got, want)
+	}
+	if got := ClientIP(req); got != "2001:db8::1" {
+		t.Fatalf("ClientIP() = %q, want 2001:db8::1", got)
+	}
+	if !EmitForwarded(req) {
+		t.Fatal("EmitForwarded() = false, want true")
+	}
+}
+
+func TestForwardedForDiscardsUntrustedChain(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.9:1234"
+	req.Header.Set("X-Forwarded-For", "127.0.0.1, 10.0.0.2")
+	req = WithForwarding(req, ParseTrustedNets([]string{"10.0.0.0/8"}), false)
+
+	if got := ForwardedFor(req); got != "203.0.113.9" {
+		t.Fatalf("ForwardedFor() = %q, want peer only", got)
+	}
+	if got := ClientIP(req); got != "203.0.113.9" {
+		t.Fatalf("ClientIP() = %q, want peer", got)
+	}
+}
+
+func TestFormatForwardedForIPv6(t *testing.T) {
+	t.Parallel()
+	if got := FormatForwardedFor("2001:db8::1"); got != `for="[2001:db8::1]"` {
+		t.Fatalf("FormatForwardedFor() = %q", got)
+	}
+}
+
 func TestParseTrustedNets(t *testing.T) {
 	t.Parallel()
 

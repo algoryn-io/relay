@@ -213,6 +213,36 @@ func TestWebSocketBidirectionalEcho(t *testing.T) {
 	}
 }
 
+func TestWebSocketRebuildsForwardedChain(t *testing.T) {
+	gotXFF := make(chan string, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXFF <- r.Header.Get("X-Forwarded-For")
+		hj := w.(http.Hijacker)
+		conn, rw, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = fmt.Fprint(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		_ = rw.Flush()
+	}))
+	defer backend.Close()
+	proxy := proxyServer(t, backend.URL)
+
+	u, _ := url.Parse(proxy.URL)
+	conn, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, _ = fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nX-Forwarded-For: 127.0.0.99\r\n\r\n", u.Host)
+	_, _ = bufio.NewReader(conn).ReadString('\n')
+
+	if got := <-gotXFF; got == "127.0.0.99" || !strings.HasPrefix(got, "127.0.0.1") {
+		t.Fatalf("websocket X-Forwarded-For = %q, want real peer only", got)
+	}
+}
+
 func TestRegularRequestStillWorksAfterWebSocketDetection(t *testing.T) {
 	t.Parallel()
 

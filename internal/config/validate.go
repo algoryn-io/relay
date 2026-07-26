@@ -59,6 +59,7 @@ func validateConfig(c *Config) error {
 	validateHealthEndpoints(c.Listener.Health, backendNames, &errs)
 	middlewareNames := validateMiddlewares(c.Middleware, &errs)
 	validateRoutes(c.Routes, backendNames, middlewareNames, &errs)
+	validateRouteIdentityPolicies(c.Routes, c.Backends, &errs)
 
 	validateObservability(c.Observability, &errs)
 	validateReload(c.Reload, &errs)
@@ -513,6 +514,7 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 
 		validateRetry(prefix+".retry", backend.Retry, errs)
 		validateBackendTLS(prefix+".tls", backend.TLS, errs)
+		validateClientIdentityPropagation(prefix+".propagate_client_identity", backend.PropagateClientIdentity, backend, errs)
 		if backend.Bulkhead.MaxConcurrent < 0 {
 			errs.Addf("%s.bulkhead.max_concurrent: must be >= 0", prefix)
 		}
@@ -537,6 +539,72 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 	}
 
 	return seen
+}
+
+func validateRouteIdentityPolicies(routes []RouteConfig, backends []BackendConfig, errs *ValidationErrors) {
+	byName := make(map[string]BackendConfig, len(backends))
+	for _, backend := range backends {
+		byName[backend.Name] = backend
+	}
+	for i, route := range routes {
+		if route.PropagateClientIdentity == nil {
+			continue
+		}
+		backend, ok := byName[route.Backend]
+		if !ok {
+			continue
+		}
+		validateClientIdentityPropagation(
+			fmt.Sprintf("routes[%d].propagate_client_identity", i),
+			*route.PropagateClientIdentity,
+			backend,
+			errs,
+		)
+	}
+}
+
+func validateClientIdentityPropagation(
+	prefix string,
+	policy ClientIdentityPropagationConfig,
+	backend BackendConfig,
+	errs *ValidationErrors,
+) {
+	if !policy.Enabled {
+		return
+	}
+	allowed := map[string]struct{}{
+		"subject": {}, "san_dns": {}, "san_email": {}, "san_ip": {},
+		"san_uri": {}, "fingerprint_sha256": {},
+	}
+	if len(policy.Fields) == 0 {
+		errs.Addf("%s.fields: must contain at least one explicitly allowed field", prefix)
+	}
+	seen := make(map[string]struct{}, len(policy.Fields))
+	for i, raw := range policy.Fields {
+		field := strings.ToLower(strings.TrimSpace(raw))
+		if _, ok := allowed[field]; !ok {
+			errs.Addf("%s.fields[%d]: unsupported field %q", prefix, i, raw)
+			continue
+		}
+		if _, duplicate := seen[field]; duplicate {
+			errs.Addf("%s.fields[%d]: duplicate field %q", prefix, i, raw)
+		}
+		seen[field] = struct{}{}
+	}
+	if backend.TLS.InsecureSkipVerify {
+		errs.Addf("%s: requires upstream certificate verification", prefix)
+	}
+	for i, instance := range backend.Instances {
+		u, err := url.Parse(instance.URL)
+		if err == nil && !strings.EqualFold(u.Scheme, "https") {
+			errs.Addf("%s: backend instance %d must use https", prefix, i)
+		}
+	}
+	outboundMTLS := strings.TrimSpace(backend.TLS.CertFile) != "" &&
+		strings.TrimSpace(backend.TLS.KeyFile) != ""
+	if !outboundMTLS && !policy.AcknowledgeVerifiedHTTPS {
+		errs.Addf("%s.acknowledge_verified_https: must be true without outbound mTLS", prefix)
+	}
 }
 
 func validateHealthCheck(prefix string, h HealthCheckConfig, errs *ValidationErrors) {

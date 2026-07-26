@@ -25,13 +25,16 @@ type Config struct {
 }
 
 type ListenerConfig struct {
-	HTTP           HTTPConfig            `yaml:"http"`
-	HTTPS          HTTPSConfig           `yaml:"https"`
-	TLS            TLSConfig             `yaml:"tls"`
-	Timeouts       TimeoutsConfig        `yaml:"timeouts"`
-	TrustedProxies []string              `yaml:"trusted_proxies"`
-	Admin          AdminConfig           `yaml:"admin"`
-	Health         HealthEndpointsConfig `yaml:"health"`
+	HTTP           HTTPConfig     `yaml:"http"`
+	HTTPS          HTTPSConfig    `yaml:"https"`
+	TLS            TLSConfig      `yaml:"tls"`
+	Timeouts       TimeoutsConfig `yaml:"timeouts"`
+	TrustedProxies []string       `yaml:"trusted_proxies"`
+	// EmitForwardedHeader makes Relay generate an RFC 7239 Forwarded header
+	// from normalized, Relay-owned values. Inbound Forwarded is always stripped.
+	EmitForwardedHeader bool                  `yaml:"emit_forwarded_header"`
+	Admin               AdminConfig           `yaml:"admin"`
+	Health              HealthEndpointsConfig `yaml:"health"`
 	// StripRequestHeaders lists additional inbound headers to remove at the edge
 	// before any routing or proxying, on top of the always-stripped Relay-managed
 	// identity headers. Use it for app-specific identity headers a backend trusts
@@ -215,6 +218,8 @@ type RouteConfig struct {
 	// Values of the form "${req.HEADER-NAME}" copy the named incoming header.
 	// All other values are used verbatim.
 	AddRequestHeaders map[string]string `yaml:"-"` // set via UnmarshalYAML
+	// PropagateClientIdentity overrides the backend identity policy for this route.
+	PropagateClientIdentity *ClientIdentityPropagationConfig `yaml:"-"`
 }
 
 type MatchConfig struct {
@@ -239,15 +244,28 @@ type BackendConfig struct {
 	//   "http1" (default) — HTTP/1.1, with HTTP/2 negotiated via ALPN for https.
 	//   "h2c"             — HTTP/2 over cleartext (prior knowledge), for gRPC and
 	//                       streaming backends that do not terminate TLS.
-	Protocol         string                 `yaml:"protocol"`
-	Strategy         string                 `yaml:"strategy"`
-	HealthCheck      HealthCheckConfig      `yaml:"health_check"`
-	OutlierDetection OutlierDetectionConfig `yaml:"outlier_detection"`
-	CircuitBreaker   CircuitBreakerConfig   `yaml:"circuit_breaker"`
-	Retry            RetryConfig            `yaml:"retry"`
-	TLS              BackendTLSConfig       `yaml:"tls"`
-	Bulkhead         BulkheadConfig         `yaml:"bulkhead"`
-	Instances        []InstanceConfig       `yaml:"instances"`
+	Protocol                string                          `yaml:"protocol"`
+	Strategy                string                          `yaml:"strategy"`
+	HealthCheck             HealthCheckConfig               `yaml:"health_check"`
+	OutlierDetection        OutlierDetectionConfig          `yaml:"outlier_detection"`
+	CircuitBreaker          CircuitBreakerConfig            `yaml:"circuit_breaker"`
+	Retry                   RetryConfig                     `yaml:"retry"`
+	TLS                     BackendTLSConfig                `yaml:"tls"`
+	PropagateClientIdentity ClientIdentityPropagationConfig `yaml:"propagate_client_identity"`
+	Bulkhead                BulkheadConfig                  `yaml:"bulkhead"`
+	Instances               []InstanceConfig                `yaml:"instances"`
+}
+
+// ClientIdentityPropagationConfig controls the small, Relay-owned set of mTLS
+// client-certificate attributes that may cross the upstream trust boundary.
+type ClientIdentityPropagationConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Fields is an explicit allowlist: subject, san_dns, san_email, san_ip,
+	// san_uri, and fingerprint_sha256.
+	Fields []string `yaml:"fields"`
+	// AcknowledgeVerifiedHTTPS is required when the verified HTTPS upstream does
+	// not also authenticate Relay with an outbound client certificate.
+	AcknowledgeVerifiedHTTPS bool `yaml:"acknowledge_verified_https"`
 }
 
 // BulkheadConfig caps the number of simultaneous in-flight requests to a

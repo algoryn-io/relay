@@ -37,16 +37,17 @@ func (cr *CompiledRewrite) Apply(path string) string {
 }
 
 type RouteRuntime struct {
-	Name              string
-	Path              string
-	PathPrefix        string
-	StripPrefix       string
-	Timeout           time.Duration
-	MaxBodyBytes      int64
-	Rewrite           *CompiledRewrite  // nil when not configured
-	AddRequestHeaders map[string]string // nil when not configured
-	Methods           []string
-	MethodSet         map[string]struct{}
+	Name                    string
+	Path                    string
+	PathPrefix              string
+	StripPrefix             string
+	Timeout                 time.Duration
+	MaxBodyBytes            int64
+	Rewrite                 *CompiledRewrite  // nil when not configured
+	AddRequestHeaders       map[string]string // nil when not configured
+	PropagateClientIdentity ClientIdentityPropagationConfig
+	Methods                 []string
+	MethodSet               map[string]struct{}
 	// HostSet holds the normalized (lowercased) hosts this route is bound to.
 	// Empty/nil means the route matches any host.
 	HostSet map[string]struct{}
@@ -67,16 +68,17 @@ type RouteRuntime struct {
 }
 
 type BackendRuntime struct {
-	Name             string
-	Protocol         string
-	Strategy         string
-	HealthCheck      HealthCheckConfig
-	OutlierDetection OutlierDetectionConfig
-	CircuitBreaker   CircuitBreakerConfig
-	Retry            RetryConfig
-	TLS              BackendTLSConfig
-	Bulkhead         BulkheadConfig
-	Instances        []InstanceRuntime
+	Name                    string
+	Protocol                string
+	Strategy                string
+	HealthCheck             HealthCheckConfig
+	OutlierDetection        OutlierDetectionConfig
+	CircuitBreaker          CircuitBreakerConfig
+	Retry                   RetryConfig
+	TLS                     BackendTLSConfig
+	PropagateClientIdentity ClientIdentityPropagationConfig
+	Bulkhead                BulkheadConfig
+	Instances               []InstanceRuntime
 }
 
 // IsH2C reports whether the backend is reached over cleartext HTTP/2.
@@ -120,16 +122,17 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 		}
 
 		rt.Backends[backend.Name] = BackendRuntime{
-			Name:             backend.Name,
-			Protocol:         backend.Protocol,
-			Strategy:         backend.Strategy,
-			HealthCheck:      backend.HealthCheck,
-			OutlierDetection: backend.OutlierDetection,
-			CircuitBreaker:   backend.CircuitBreaker,
-			Retry:            backend.Retry,
-			TLS:              backend.TLS,
-			Bulkhead:         backend.Bulkhead,
-			Instances:        instances,
+			Name:                    backend.Name,
+			Protocol:                backend.Protocol,
+			Strategy:                backend.Strategy,
+			HealthCheck:             backend.HealthCheck,
+			OutlierDetection:        backend.OutlierDetection,
+			CircuitBreaker:          backend.CircuitBreaker,
+			Retry:                   backend.Retry,
+			TLS:                     backend.TLS,
+			PropagateClientIdentity: backend.PropagateClientIdentity,
+			Bulkhead:                backend.Bulkhead,
+			Instances:               instances,
 		}
 	}
 
@@ -193,25 +196,31 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 			compiled = &CompiledRewrite{Re: re, Replacement: route.Rewrite.Replacement}
 		}
 
+		identityPolicy := rt.Backends[route.Backend].PropagateClientIdentity
+		if route.PropagateClientIdentity != nil {
+			identityPolicy = *route.PropagateClientIdentity
+		}
+
 		rt.Routes[route.Name] = RouteRuntime{
-			Name:              route.Name,
-			Path:              path,
-			PathPrefix:        pathPrefix,
-			StripPrefix:       strings.TrimSpace(route.StripPrefix),
-			Timeout:           route.Timeout,
-			MaxBodyBytes:      route.MaxBodyBytes,
-			Rewrite:           compiled,
-			AddRequestHeaders: route.AddRequestHeaders,
-			Methods:           methods,
-			MethodSet:         methodSet,
-			HostSet:           hostSet,
-			HeaderMatch:       headerMatch,
-			QueryMatch:        queryMatch,
-			Specificity:       specificity,
-			Backend:           rt.Backends[route.Backend],
-			BackendName:       route.Backend,
-			Middleware:        middleware,
-			MiddlewareRefs:    append([]string(nil), route.Middleware...),
+			Name:                    route.Name,
+			Path:                    path,
+			PathPrefix:              pathPrefix,
+			StripPrefix:             strings.TrimSpace(route.StripPrefix),
+			Timeout:                 route.Timeout,
+			MaxBodyBytes:            route.MaxBodyBytes,
+			Rewrite:                 compiled,
+			AddRequestHeaders:       route.AddRequestHeaders,
+			PropagateClientIdentity: identityPolicy,
+			Methods:                 methods,
+			MethodSet:               methodSet,
+			HostSet:                 hostSet,
+			HeaderMatch:             headerMatch,
+			QueryMatch:              queryMatch,
+			Specificity:             specificity,
+			Backend:                 rt.Backends[route.Backend],
+			BackendName:             route.Backend,
+			Middleware:              middleware,
+			MiddlewareRefs:          append([]string(nil), route.Middleware...),
 		}
 	}
 

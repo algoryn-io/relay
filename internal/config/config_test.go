@@ -49,6 +49,51 @@ reload:
 	}
 }
 
+func TestLoadClientIdentityPropagationPolicy(t *testing.T) {
+	t.Parallel()
+
+	path := writeTempConfig(t, `
+listener:
+  http:
+    port: 8080
+  emit_forwarded_header: true
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+routes:
+  - name: orders
+    match:
+      path: /orders
+      methods: [GET]
+    backend: orders-backend
+    propagate_client_identity:
+      enabled: true
+      fields: [san_uri, fingerprint_sha256]
+      acknowledge_verified_https: true
+backends:
+  - name: orders-backend
+    strategy: round_robin
+    instances:
+      - url: https://backend.example
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Listener.EmitForwardedHeader || cfg.Routes[0].PropagateClientIdentity == nil {
+		t.Fatal("forwarding/identity policy was not decoded")
+	}
+	rt, err := BuildRuntime(cfg)
+	if err != nil {
+		t.Fatalf("BuildRuntime() error = %v", err)
+	}
+	policy := rt.Routes["orders"].PropagateClientIdentity
+	if !policy.Enabled || len(policy.Fields) != 2 {
+		t.Fatalf("runtime identity policy = %#v", policy)
+	}
+}
+
 func TestLoadFullValidConfig(t *testing.T) {
 	t.Parallel()
 

@@ -295,7 +295,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 	// responseBuffer: the real ResponseWriter must remain accessible for
 	// http.Hijacker, and replaying a half-established connection is not possible.
 	if isWebSocketUpgrade(r) {
-		p.serveWebSocket(w, r, backend, clientIP, proto, originalHost)
+		p.serveWebSocket(w, r, route, backend, clientIP, proto, originalHost)
 		return
 	}
 
@@ -446,22 +446,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request, route *config.
 					}
 				}
 
-				pr.Out.Header.Del("X-Internal-Auth")
-				pr.Out.Header.Del("X-Real-IP")
-				pr.Out.Header.Del("X-Admin")
-				pr.Out.Header.Set("X-Forwarded-Host", originalHost)
-				pr.Out.Header.Set("X-Forwarded-Proto", proto)
-				if clientIP != "" {
-					pr.Out.Header.Set("X-Forwarded-For", clientIP)
-					pr.Out.Header.Set("X-Real-IP", clientIP)
-				}
-
 				// Route-level header injection. Values of the form
 				// "${req.HEADER-NAME}" copy the named header from the inbound
 				// request; all other values are used verbatim.
 				for hdr, tpl := range route.AddRequestHeaders {
 					pr.Out.Header.Set(hdr, resolveHeaderTpl(tpl, pr.In))
 				}
+				// Relay-owned forwarding and mTLS identity values are applied
+				// last so neither inbound nor route-injected values can spoof them.
+				applyRelayOwnedHeaders(pr.Out.Header, pr.In, route, backend, target, clientIP, proto, originalHost)
 			},
 			ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 				netErr = err
