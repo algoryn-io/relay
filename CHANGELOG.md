@@ -6,6 +6,14 @@ All notable changes to Relay are documented here. The format is based on
 
 ## [Unreleased]
 
+### Removed (breaking, pre-1.0)
+- Removed the unserved React dashboard and its Node build/release stages.
+- Removed the inert `observability.dashboard`, top-level `storage`, and
+  `observability.metrics.flush_interval` configuration fields. The strict
+  decoder now rejects them; delete these blocks before upgrading. The shipped
+  Grafana dashboard, Prometheus endpoint, alert rules, and Helm integrations
+  remain supported.
+
 ### Security
 - Response cache no longer stores or serves a response to an authenticated request
   (`Authorization`/`Cookie`) unless the origin marks it `public`/`s-maxage`, and it

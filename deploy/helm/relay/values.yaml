@@ -36,8 +36,6 @@ config: |
     logs:
       level: info
       format: json
-    metrics:
-      flush_interval: 30s
     prometheus:
       # Required for a ServiceMonitor / in-cluster Prometheus to scrape metrics:
       # the endpoints are loopback-only unless a scrape CIDR is allowed here.

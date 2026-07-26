@@ -67,12 +67,8 @@ func TestServerLogsRequestToFileEndToEnd(t *testing.T) {
 				File:      logPath,
 				MaxSizeMB: 1,
 			},
-			Metrics: config.MetricsConfig{
-				FlushInterval: 30 * time.Second,
-			},
 		},
-		Storage: config.StorageConfig{Path: filepath.Join(tempDir, "relay.db")},
-		Reload:  config.ReloadConfig{Watch: true, Debounce: 500 * time.Millisecond},
+		Reload: config.ReloadConfig{Watch: true, Debounce: 500 * time.Millisecond},
 	}
 
 	if err := cfg.Validate(); err != nil {

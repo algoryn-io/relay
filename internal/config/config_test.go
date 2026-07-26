@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -29,11 +30,6 @@ backends:
     instances:
       - url: http://localhost:8080
 middleware: []
-observability:
-  metrics:
-    flush_interval: 30s
-storage:
-  path: ./data
 reload:
   watch: true
   debounce: 500ms
@@ -92,18 +88,8 @@ middleware:
       secret_env: JWT_SECRET
       header: Authorization
 observability:
-  dashboard:
-    enabled: true
-    port: 9090
   logs:
     level: info
-  metrics:
-    flush_interval: 30s
-storage:
-  path: ./data
-  retention:
-    metrics_days: 90
-    logs_days: 30
 reload:
   watch: true
   debounce: 500ms
@@ -117,11 +103,47 @@ reload:
 	if got := cfg.Listener.HTTPS.TLS.Mode; got != "auto" {
 		t.Fatalf("HTTPS TLS mode = %q, want auto", got)
 	}
-	if got := cfg.Observability.Dashboard.Port; got != 9090 {
-		t.Fatalf("dashboard port = %d, want 9090", got)
-	}
 	if got := cfg.Observability.Logs.Level; got != "info" {
 		t.Fatalf("log level = %q, want info", got)
+	}
+}
+
+func TestLoadRejectsRemovedLegacyFields(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		contents string
+		field    string
+	}{
+		"dashboard": {contents: `
+observability:
+  dashboard:
+    enabled: true
+`, field: "dashboard"},
+		"storage": {contents: `
+storage:
+  path: ./data
+`, field: "storage"},
+		"metrics.flush_interval": {contents: `
+observability:
+  metrics:
+    flush_interval: 30s
+`, field: "metrics"},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := Load(writeTempConfig(t, tc.contents))
+			if err == nil {
+				t.Fatal("Load() error = nil, want unknown-field error")
+			}
+			want := "field " + tc.field + " not found"
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("Load() error = %q, want substring %q", err, want)
+			}
+		})
 	}
 }
 

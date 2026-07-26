@@ -1,13 +1,5 @@
 # syntax=docker/dockerfile:1
 
-FROM node:20-alpine AS dashboard-builder
-WORKDIR /app/dashboard
-COPY dashboard/package.json ./
-COPY dashboard/package-lock.json ./
-RUN npm ci
-COPY dashboard/ ./
-RUN npm run build
-
 FROM golang:1.25-alpine AS go-builder
 WORKDIR /app
 # Copy go.sum alongside go.mod so module downloads are integrity-verified and the
@@ -15,7 +7,6 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . ./
-COPY --from=dashboard-builder /app/dashboard/dist ./dashboard/dist
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/relay ./cmd/relay
 
 FROM alpine:3.19

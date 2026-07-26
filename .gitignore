@@ -36,15 +36,6 @@ data/
 *.sqlite3
 *.log
 
-# Dashboard (Node/Vite)
-dashboard/node_modules/
-dashboard/dist/
-dashboard/.vite/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-
 # Docker / Compose local overrides
 docker-compose.override.yml
 

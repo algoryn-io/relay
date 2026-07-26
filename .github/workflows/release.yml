@@ -23,10 +23,6 @@ jobs:
         with:
           go-version: "1.25.12"
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: "20"
-
       # Tooling GoReleaser invokes: syft for SBOMs, cosign for keyless signing.
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
