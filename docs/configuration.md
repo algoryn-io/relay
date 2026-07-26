@@ -61,7 +61,7 @@ When both are set for the same secret, the `*_env` source wins.
 | `timeouts.idle` | duration | — | Keep-alive idle timeout. |
 | `timeouts.read_header` | duration | `10s` | Header-read timeout (Slowloris mitigation). |
 | `timeouts.websocket_idle` | duration | `0` (off) | Idle timeout for proxied WebSocket/upgrade tunnels. |
-| `trusted_proxies` | []cidr/ip | `[]` | Peers allowed to set `X-Forwarded-For`. Client IP is taken from `X-Forwarded-For` only when the immediate peer is trusted. |
+| `trusted_proxies` | []cidr/ip | `[]` | Peers allowed to set `X-Forwarded-For`. Client IP is taken from `X-Forwarded-For` only when the immediate peer is trusted. Public CIDRs are rejected. |
 | `strip_request_headers` | []string | `[]` | Extra inbound headers to drop at the edge (on top of Relay-managed identity + `X-Forwarded-*`). |
 | `max_concurrent_requests` | int | `0` (unlimited) | Global in-flight cap; excess requests get a fast `503`. Internal endpoints are exempt. |
 | `max_request_body_bytes` | int64 | `10485760` | Global proxied-request body cap (10 MiB). A route's `max_body_bytes` overrides it. |
@@ -298,7 +298,7 @@ Fails closed (`503`) when the endpoint is unreachable.
 | Field | Default | Description |
 | --- | --- | --- |
 | `prometheus.path` | `/_relay/metrics/prometheus` | Prometheus scrape path. |
-| `prometheus.allowed_cidrs` | loopback | Extra source ranges (real TCP peer) allowed to scrape metrics. |
+| `prometheus.allowed_cidrs` | loopback | Extra source ranges (real TCP peer) allowed to scrape metrics. Public CIDRs are rejected. |
 
 ### `tracing`
 

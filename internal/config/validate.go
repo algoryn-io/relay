@@ -71,6 +71,7 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 		errs.Addf("listener.max_request_body_bytes: must be >= 0")
 	}
 	validateIPFilterEntries("listener.trusted_proxies", listener.TrustedProxies, errs)
+	validateNoPublicCIDR("listener.trusted_proxies", listener.TrustedProxies, errs)
 	validateIPFilterEntries("listener.admin.allowed_cidrs", listener.Admin.AllowedCIDRs, errs)
 	validateAdminAccess(listener.Admin, errs)
 }
@@ -580,8 +581,24 @@ func validateObservability(observability ObservabilityConfig, errs *ValidationEr
 		errs.Addf("observability.logs.max_size_mb: must be >= 0")
 	}
 	validateIPFilterEntries("observability.prometheus.allowed_cidrs", observability.Prometheus.AllowedCIDRs, errs)
+	validateNoPublicCIDR("observability.prometheus.allowed_cidrs", observability.Prometheus.AllowedCIDRs, errs)
 	validateFabric(observability.Fabric, errs)
 	validateTracing(observability.Tracing, errs)
+}
+
+// validateNoPublicCIDR prevents a configuration typo from trusting every
+// internet peer with forwarding headers or internal operational endpoints.
+func validateNoPublicCIDR(field string, entries []string, errs *ValidationErrors) {
+	for i, entry := range entries {
+		_, network, err := net.ParseCIDR(strings.TrimSpace(entry))
+		if err != nil {
+			continue
+		}
+		ones, _ := network.Mask.Size()
+		if ones == 0 {
+			errs.Addf("%s[%d]: public CIDRs (0.0.0.0/0 or ::/0) are not allowed", field, i)
+		}
+	}
 }
 
 func validateTracing(t TracingConfig, errs *ValidationErrors) {

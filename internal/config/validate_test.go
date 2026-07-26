@@ -35,6 +35,18 @@ func TestValidateAdminLoopbackCanUseIPOnlyAccess(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsPublicTrustedNetworks(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Listener.TrustedProxies = []string{"0.0.0.0/0"}
+	assertValidationErrorContains(t, cfg.Validate(), "listener.trusted_proxies[0]: public CIDRs")
+
+	cfg = validConfig()
+	cfg.Observability.Prometheus.AllowedCIDRs = []string{"::/0"}
+	assertValidationErrorContains(t, cfg.Validate(), "observability.prometheus.allowed_cidrs[0]: public CIDRs")
+}
+
 func TestValidateInsecureBackendTLSRequiresAcknowledgement(t *testing.T) {
 	t.Parallel()
 
