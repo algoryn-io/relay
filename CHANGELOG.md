@@ -44,6 +44,11 @@ All notable changes to Relay are documented here. The format is based on
   limit did nothing when set in a config file. They are now parsed correctly.
 
 ### Added
+- JSON body transform middleware (`type: json_body_transform`): declarative
+  top-level `rename` / `add` / `remove` for request and response JSON objects,
+  only when `content_types` and `max_bytes` are set explicitly; streaming and
+  non-JSON bodies pass through without buffering; see
+  `config/examples/json-body-transform.yaml`.
 - Edge response compression middleware (`type: compression`): negotiates
   brotli/gzip from `Accept-Encoding`, skips already-encoded bodies, Range/206,
   excluded statuses/content types, and `Cache-Control: no-transform`; see
