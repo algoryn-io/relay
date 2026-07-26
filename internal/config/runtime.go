@@ -67,15 +67,16 @@ type RouteRuntime struct {
 }
 
 type BackendRuntime struct {
-	Name           string
-	Protocol       string
-	Strategy       string
-	HealthCheck    HealthCheckConfig
-	CircuitBreaker CircuitBreakerConfig
-	Retry          RetryConfig
-	TLS            BackendTLSConfig
-	Bulkhead       BulkheadConfig
-	Instances      []InstanceRuntime
+	Name             string
+	Protocol         string
+	Strategy         string
+	HealthCheck      HealthCheckConfig
+	OutlierDetection OutlierDetectionConfig
+	CircuitBreaker   CircuitBreakerConfig
+	Retry            RetryConfig
+	TLS              BackendTLSConfig
+	Bulkhead         BulkheadConfig
+	Instances        []InstanceRuntime
 }
 
 // IsH2C reports whether the backend is reached over cleartext HTTP/2.
@@ -119,15 +120,16 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 		}
 
 		rt.Backends[backend.Name] = BackendRuntime{
-			Name:           backend.Name,
-			Protocol:       backend.Protocol,
-			Strategy:       backend.Strategy,
-			HealthCheck:    backend.HealthCheck,
-			CircuitBreaker: backend.CircuitBreaker,
-			Retry:          backend.Retry,
-			TLS:            backend.TLS,
-			Bulkhead:       backend.Bulkhead,
-			Instances:      instances,
+			Name:             backend.Name,
+			Protocol:         backend.Protocol,
+			Strategy:         backend.Strategy,
+			HealthCheck:      backend.HealthCheck,
+			OutlierDetection: backend.OutlierDetection,
+			CircuitBreaker:   backend.CircuitBreaker,
+			Retry:            backend.Retry,
+			TLS:              backend.TLS,
+			Bulkhead:         backend.Bulkhead,
+			Instances:        instances,
 		}
 	}
 

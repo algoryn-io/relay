@@ -23,6 +23,20 @@ backends:
       interval: 10s
       timeout: 2s
       path: /health
+      method: GET
+      expected_status:
+        range: [200, 299]
+      headers:
+        X-Relay-Probe: readiness
+    outlier_detection:
+      window: 30s
+      consecutive_failures: 5
+      failure_rate_percent: 50
+      minimum_volume: 20
+      base_ejection_duration: 30s
+      max_ejection_duration: 5m
+      max_ejection_percent: 50
+      success_recovery: true
     instances:
       - url: http://localhost:8080
 

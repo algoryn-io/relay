@@ -1,6 +1,13 @@
 package config
 
-import "time"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
 
 type Config struct {
 	// Include lists additional config files (relative to this file's directory,
@@ -210,14 +217,15 @@ type BackendConfig struct {
 	//   "http1" (default) — HTTP/1.1, with HTTP/2 negotiated via ALPN for https.
 	//   "h2c"             — HTTP/2 over cleartext (prior knowledge), for gRPC and
 	//                       streaming backends that do not terminate TLS.
-	Protocol       string               `yaml:"protocol"`
-	Strategy       string               `yaml:"strategy"`
-	HealthCheck    HealthCheckConfig    `yaml:"health_check"`
-	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
-	Retry          RetryConfig          `yaml:"retry"`
-	TLS            BackendTLSConfig     `yaml:"tls"`
-	Bulkhead       BulkheadConfig       `yaml:"bulkhead"`
-	Instances      []InstanceConfig     `yaml:"instances"`
+	Protocol         string                 `yaml:"protocol"`
+	Strategy         string                 `yaml:"strategy"`
+	HealthCheck      HealthCheckConfig      `yaml:"health_check"`
+	OutlierDetection OutlierDetectionConfig `yaml:"outlier_detection"`
+	CircuitBreaker   CircuitBreakerConfig   `yaml:"circuit_breaker"`
+	Retry            RetryConfig            `yaml:"retry"`
+	TLS              BackendTLSConfig       `yaml:"tls"`
+	Bulkhead         BulkheadConfig         `yaml:"bulkhead"`
+	Instances        []InstanceConfig       `yaml:"instances"`
 }
 
 // BulkheadConfig caps the number of simultaneous in-flight requests to a
@@ -285,9 +293,81 @@ type CircuitBreakerConfig struct {
 }
 
 type HealthCheckConfig struct {
-	Interval time.Duration `yaml:"interval"`
-	Timeout  time.Duration `yaml:"timeout"`
-	Path     string        `yaml:"path"`
+	Interval       time.Duration        `yaml:"interval"`
+	Timeout        time.Duration        `yaml:"timeout"`
+	Path           string               `yaml:"path"`
+	Method         string               `yaml:"method"`
+	ExpectedStatus ExpectedStatusConfig `yaml:"expected_status"`
+	Headers        map[string]string    `yaml:"headers"`
+	Body           BodyMatcherConfig    `yaml:"body"`
+	// MaxBodyBytes bounds response data read by a body matcher. It defaults to
+	// 64 KiB when a matcher is configured and is capped by validation.
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+}
+
+// ExpectedStatusConfig accepts exactly one status policy. An empty policy
+// preserves the legacy/default 2xx behavior.
+type ExpectedStatusConfig struct {
+	Exact int   `yaml:"exact"`
+	Range []int `yaml:"range"`
+	List  []int `yaml:"list"`
+}
+
+// UnmarshalYAML supports compact policies (204, "200-299", [200, 204]) and
+// the explicit mapping form ({exact: 204}, {range: [200, 299]}, {list: [...]}).
+func (c *ExpectedStatusConfig) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		if node.Tag == "!!int" {
+			return node.Decode(&c.Exact)
+		}
+		value := strings.TrimSpace(node.Value)
+		parts := strings.Split(value, "-")
+		if len(parts) != 2 {
+			exact, err := strconv.Atoi(value)
+			if err != nil {
+				return fmt.Errorf("expected_status must be an HTTP status, range, or list")
+			}
+			c.Exact = exact
+			return nil
+		}
+		minimum, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+		if err != nil {
+			return fmt.Errorf("expected_status range minimum: %w", err)
+		}
+		maximum, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return fmt.Errorf("expected_status range maximum: %w", err)
+		}
+		c.Range = []int{minimum, maximum}
+		return nil
+	case yaml.SequenceNode:
+		return node.Decode(&c.List)
+	case yaml.MappingNode:
+		type rawExpectedStatus ExpectedStatusConfig
+		return node.Decode((*rawExpectedStatus)(c))
+	default:
+		return fmt.Errorf("expected_status must be an HTTP status, range, or list")
+	}
+}
+
+type BodyMatcherConfig struct {
+	Exact    string `yaml:"exact"`
+	Contains string `yaml:"contains"`
+	Regex    string `yaml:"regex"`
+}
+
+// OutlierDetectionConfig controls passive, per-instance ejection. It is enabled
+// when either ConsecutiveFailures or FailureRatePercent is configured.
+type OutlierDetectionConfig struct {
+	Window               time.Duration `yaml:"window"`
+	ConsecutiveFailures  int           `yaml:"consecutive_failures"`
+	FailureRatePercent   float64       `yaml:"failure_rate_percent"`
+	MinimumVolume        int           `yaml:"minimum_volume"`
+	BaseEjectionDuration time.Duration `yaml:"base_ejection_duration"`
+	MaxEjectionDuration  time.Duration `yaml:"max_ejection_duration"`
+	MaxEjectionPercent   int           `yaml:"max_ejection_percent"`
+	SuccessRecovery      bool          `yaml:"success_recovery"`
 }
 
 type InstanceConfig struct {

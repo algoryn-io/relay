@@ -15,13 +15,19 @@ func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, er
 	// loop / drain), while activeRequests and the round-robin counter are atomic.
 	// This lets concurrent requests select instances without serializing.
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 
 	states := p.instances[backendName]
 	healthy := make([]*instanceState, 0, len(states))
+	recovered := make([]*instanceState, 0, 1)
 	circuitBlocked := 0
+	now := p.clock.Now()
 	for _, state := range states {
 		if state != nil && state.Healthy && state.URL != nil {
+			if ejected, didRecover := state.outlier.ejectionStatus(now); ejected {
+				continue
+			} else if didRecover {
+				recovered = append(recovered, state)
+			}
 			if state.circuit != nil && state.circuit.IsOpen() {
 				circuitBlocked++
 			} else {
@@ -31,6 +37,10 @@ func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, er
 	}
 
 	if len(healthy) == 0 {
+		p.mu.RUnlock()
+		for _, state := range recovered {
+			p.emitOutlierRecovery(backendName, state, "duration_elapsed")
+		}
 		if circuitBlocked > 0 {
 			return nil, errAllCircuitsOpen
 		}
@@ -76,5 +86,9 @@ func (p *Proxy) selectInstance(backendName, strategy string) (*instanceState, er
 	}
 
 	selected.activeRequests.Add(1)
+	p.mu.RUnlock()
+	for _, state := range recovered {
+		p.emitOutlierRecovery(backendName, state, "duration_elapsed")
+	}
 	return selected, nil
 }

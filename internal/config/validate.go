@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -43,6 +44,8 @@ var (
 )
 
 const maxJWKSStaleGrace = 24 * time.Hour
+
+const maxHealthCheckBodyBytes = 1 << 20
 
 func validateConfig(c *Config) error {
 	var errs ValidationErrors
@@ -459,6 +462,8 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 
 		validatePositiveDuration(prefix+".health_check.interval", backend.HealthCheck.Interval, errs, true)
 		validatePositiveDuration(prefix+".health_check.timeout", backend.HealthCheck.Timeout, errs, true)
+		validateHealthCheck(prefix+".health_check", backend.HealthCheck, errs)
+		validateOutlierDetection(prefix+".outlier_detection", backend.OutlierDetection, errs)
 
 		cb := backend.CircuitBreaker
 		if cb.Threshold < 0 {
@@ -494,6 +499,109 @@ func validateBackends(backends []BackendConfig, errs *ValidationErrors) map[stri
 	}
 
 	return seen
+}
+
+func validateHealthCheck(prefix string, h HealthCheckConfig, errs *ValidationErrors) {
+	if h.Path == "" && h.Interval == 0 {
+		return
+	}
+	if !strings.HasPrefix(h.Path, "/") {
+		errs.Addf("%s.path: must start with /", prefix)
+	}
+	method := strings.ToUpper(strings.TrimSpace(h.Method))
+	switch method {
+	case "", http.MethodGet, http.MethodHead, http.MethodOptions:
+	default:
+		errs.Addf("%s.method: must be one of GET, HEAD, OPTIONS", prefix)
+	}
+	policies := 0
+	if h.ExpectedStatus.Exact != 0 {
+		policies++
+		if h.ExpectedStatus.Exact < 100 || h.ExpectedStatus.Exact > 599 {
+			errs.Addf("%s.expected_status.exact: must be a valid HTTP status code", prefix)
+		}
+	}
+	if len(h.ExpectedStatus.Range) != 0 {
+		policies++
+		if len(h.ExpectedStatus.Range) != 2 ||
+			h.ExpectedStatus.Range[0] < 100 || h.ExpectedStatus.Range[1] > 599 ||
+			h.ExpectedStatus.Range[0] > h.ExpectedStatus.Range[1] {
+			errs.Addf("%s.expected_status.range: must contain [minimum, maximum] HTTP status codes", prefix)
+		}
+	}
+	if len(h.ExpectedStatus.List) != 0 {
+		policies++
+		seen := make(map[int]struct{}, len(h.ExpectedStatus.List))
+		for i, status := range h.ExpectedStatus.List {
+			if status < 100 || status > 599 {
+				errs.Addf("%s.expected_status.list[%d]: must be a valid HTTP status code", prefix, i)
+			}
+			if _, ok := seen[status]; ok {
+				errs.Addf("%s.expected_status.list[%d]: duplicate status %d", prefix, i, status)
+			}
+			seen[status] = struct{}{}
+		}
+	}
+	if policies > 1 {
+		errs.Addf("%s.expected_status: exactly one of exact, range, or list may be set", prefix)
+	}
+	for name, value := range h.Headers {
+		if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n:") {
+			errs.Addf("%s.headers: invalid header name %q", prefix, name)
+		}
+		if hasUnsafeHeaderValue(value) {
+			errs.Addf("%s.headers.%s: must not contain control characters", prefix, name)
+		}
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "connection", "proxy-connection", "keep-alive", "proxy-authenticate",
+			"proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
+			errs.Addf("%s.headers.%s: hop-by-hop headers are not allowed", prefix, name)
+		}
+	}
+	matchers := 0
+	for _, value := range []string{h.Body.Exact, h.Body.Contains, h.Body.Regex} {
+		if value != "" {
+			matchers++
+		}
+	}
+	if matchers > 1 {
+		errs.Addf("%s.body: exactly one of exact, contains, or regex may be set", prefix)
+	}
+	if h.Body.Regex != "" {
+		if _, err := regexp.Compile(h.Body.Regex); err != nil {
+			errs.Addf("%s.body.regex: invalid RE2 regular expression: %v", prefix, err)
+		}
+	}
+	if h.MaxBodyBytes < 0 || h.MaxBodyBytes > maxHealthCheckBodyBytes {
+		errs.Addf("%s.max_body_bytes: must be between 0 and %d", prefix, maxHealthCheckBodyBytes)
+	}
+}
+
+func validateOutlierDetection(prefix string, o OutlierDetectionConfig, errs *ValidationErrors) {
+	if o.ConsecutiveFailures < 0 {
+		errs.Addf("%s.consecutive_failures: must be >= 0", prefix)
+	}
+	if o.FailureRatePercent < 0 || o.FailureRatePercent > 100 {
+		errs.Addf("%s.failure_rate_percent: must be between 0 and 100", prefix)
+	}
+	if o.MinimumVolume < 0 {
+		errs.Addf("%s.minimum_volume: must be >= 0", prefix)
+	}
+	if o.Window < 0 {
+		errs.Addf("%s.window: must be >= 0", prefix)
+	}
+	if o.BaseEjectionDuration < 0 || o.MaxEjectionDuration < 0 {
+		errs.Addf("%s: ejection durations must be >= 0", prefix)
+	}
+	if o.MaxEjectionDuration > 0 && o.BaseEjectionDuration > o.MaxEjectionDuration {
+		errs.Addf("%s.max_ejection_duration: must be >= base_ejection_duration", prefix)
+	}
+	if o.MaxEjectionPercent < 0 || o.MaxEjectionPercent > 100 {
+		errs.Addf("%s.max_ejection_percent: must be between 0 and 100", prefix)
+	}
+	if o.FailureRatePercent > 0 && o.MinimumVolume == 0 {
+		errs.Addf("%s.minimum_volume: must be > 0 when failure_rate_percent is set", prefix)
+	}
 }
 
 func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors) map[string]struct{} {
