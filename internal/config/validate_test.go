@@ -265,6 +265,97 @@ func TestValidateExtAuthzRequiresURL(t *testing.T) {
 	assertValidationErrorContains(t, cfg.Validate(), "authz_url: required")
 }
 
+func TestValidateExtAuthzFailOpenRequiresSeparateAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{{
+		Name: "authz",
+		Type: "ext_authz",
+		Config: MiddlewareSettingsConfig{
+			AuthzURL:                    "https://authz.example.com/check",
+			FailOpen:                    true,
+			AcknowledgeAPIKeyInQuery:    true,
+			AcknowledgeExtAuthzFailOpen: false,
+		},
+	}}
+	cfg.Routes[0].Middleware = []string{"authz"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "acknowledge_ext_authz_fail_open: must be true")
+
+	cfg.Middleware[0].Config.AcknowledgeExtAuthzFailOpen = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() explicit acknowledgement error = %v", err)
+	}
+}
+
+func TestValidateAPIKeyQueryRequiresSeparateAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{{
+		Name: "api-key",
+		Type: "api_key",
+		Config: MiddlewareSettingsConfig{
+			KeyQuery:                    "api_key",
+			KeysEnv:                     "RELAY_API_KEYS",
+			AcknowledgeAPIKeyInQuery:    false,
+			AcknowledgeExtAuthzFailOpen: true,
+		},
+	}}
+	cfg.Routes[0].Middleware = []string{"api-key"}
+
+	assertValidationErrorContains(t, cfg.Validate(), "acknowledge_api_key_in_query: must be true")
+
+	cfg.Middleware[0].Config.AcknowledgeAPIKeyInQuery = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() explicit acknowledgement error = %v", err)
+	}
+}
+
+func TestValidateAPIKeyHeaderDoesNotRequireDangerousOptionAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{{
+		Name: "api-key",
+		Type: "api_key",
+		Config: MiddlewareSettingsConfig{
+			KeyHeader: "X-API-Key",
+			KeysEnv:   "RELAY_API_KEYS",
+		},
+	}}
+	cfg.Routes[0].Middleware = []string{"api-key"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() header-only API key error = %v", err)
+	}
+}
+
+func TestValidateRateLimitFailOpenDoesNotRequireExtAuthzAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{{
+		Name: "redis-rate-limit",
+		Type: "rate_limit",
+		Config: MiddlewareSettingsConfig{
+			Strategy:       "sliding_window",
+			Limit:          100,
+			Window:         time.Minute,
+			By:             "ip",
+			RateLimitStore: "redis",
+			RedisURL:       "redis://localhost:6379",
+			FailOpen:       true,
+		},
+	}}
+	cfg.Routes[0].Middleware = []string{"redis-rate-limit"}
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() rate-limit fail_open error = %v", err)
+	}
+}
+
 func TestValidateCacheInvalidStatus(t *testing.T) {
 	t.Parallel()
 
@@ -300,6 +391,69 @@ func TestValidateJWTOIDCRequiresHTTPS(t *testing.T) {
 	cfg.Routes[0].Middleware = []string{"jwt-oidc"}
 
 	assertValidationErrorContains(t, cfg.Validate(), "oidc_issuer: must be an https URL")
+}
+
+func TestValidateJWTRemoteKeysRequireIssuerAndAudience(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]MiddlewareSettingsConfig{
+		"jwks": {
+			Algorithm: "rs256",
+			JWKSUrl:   "https://issuer.example.com/.well-known/jwks.json",
+		},
+		"oidc": {
+			Algorithm:  "rs256",
+			OIDCIssuer: "https://issuer.example.com",
+		},
+	}
+
+	for name, settings := range tests {
+		name, settings := name, settings
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := validConfig()
+			cfg.Middleware[0].Config = settings
+
+			err := cfg.Validate()
+			assertValidationErrorContains(t, err, "issuer: required for rs256 with remote JWKS or OIDC discovery")
+			assertValidationErrorContains(t, err, "audience: required for rs256 with remote JWKS or OIDC discovery")
+
+			cfg.Middleware[0].Config.ExpectedIssuer = "https://issuer.example.com"
+			cfg.Middleware[0].Config.ExpectedAudience = "relay-api"
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate() remote JWT with bound claims error = %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateJWTLocalKeysDoNotRequireIssuerOrAudience(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]MiddlewareSettingsConfig{
+		"hs256": {
+			Algorithm: "hs256",
+			SecretEnv: "JWT_SECRET",
+		},
+		"static-pem": {
+			Algorithm:     "rs256",
+			PublicKeyFile: "/etc/relay/public.pem",
+		},
+	}
+
+	for name, settings := range tests {
+		name, settings := name, settings
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := validConfig()
+			cfg.Middleware[0].Config = settings
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate() local JWT without issuer/audience error = %v", err)
+			}
+		})
+	}
 }
 
 func TestValidateCORSMiddleware(t *testing.T) {

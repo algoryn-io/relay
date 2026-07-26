@@ -132,10 +132,15 @@ func BuildRuntime(c *Config) (*RuntimeConfig, error) {
 	}
 
 	for _, middleware := range c.Middleware {
+		runtimeSettings := middleware.Config
+		// Dangerous-option acknowledgements are validation-only. Do not carry
+		// them into runtime state or let them influence middleware behavior.
+		runtimeSettings.AcknowledgeAPIKeyInQuery = false
+		runtimeSettings.AcknowledgeExtAuthzFailOpen = false
 		rt.Middleware[middleware.Name] = MiddlewareRuntime{
 			Name:   middleware.Name,
 			Type:   middleware.Type,
-			Config: middleware.Config,
+			Config: runtimeSettings,
 		}
 	}
 

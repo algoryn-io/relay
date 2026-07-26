@@ -108,6 +108,35 @@ reload:
 	}
 }
 
+func TestLoadDangerousOptionAcknowledgements(t *testing.T) {
+	t.Parallel()
+
+	path := writeTempConfig(t, `
+middleware:
+  - name: query-key
+    type: api_key
+    config:
+      key_query: api_key
+      acknowledge_api_key_in_query: true
+  - name: external-authz
+    type: ext_authz
+    config:
+      fail_open: true
+      acknowledge_ext_authz_fail_open: true
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Middleware[0].Config.AcknowledgeAPIKeyInQuery {
+		t.Fatal("acknowledge_api_key_in_query was not decoded")
+	}
+	if !cfg.Middleware[1].Config.AcknowledgeExtAuthzFailOpen {
+		t.Fatal("acknowledge_ext_authz_fail_open was not decoded")
+	}
+}
+
 func TestLoadRejectsRemovedLegacyFields(t *testing.T) {
 	t.Parallel()
 

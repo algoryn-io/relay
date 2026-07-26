@@ -56,3 +56,34 @@ func TestBuildRuntimeNormalizesMatchPredicates(t *testing.T) {
 		t.Fatalf("specificity = %d, want 102", route.Specificity)
 	}
 }
+
+func TestBuildRuntimeDropsDangerousOptionAcknowledgements(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = []MiddlewareConfig{
+		{
+			Name: "api-key",
+			Type: "api_key",
+			Config: MiddlewareSettingsConfig{
+				KeyQuery:                    "api_key",
+				KeysEnv:                     "RELAY_API_KEYS",
+				AcknowledgeAPIKeyInQuery:    true,
+				AcknowledgeExtAuthzFailOpen: true,
+			},
+		},
+	}
+	cfg.Routes[0].Middleware = []string{"api-key"}
+
+	rt, err := BuildRuntime(cfg)
+	if err != nil {
+		t.Fatalf("BuildRuntime() error = %v", err)
+	}
+	settings := rt.Middleware["api-key"].Config
+	if settings.AcknowledgeAPIKeyInQuery || settings.AcknowledgeExtAuthzFailOpen {
+		t.Fatalf("validation-only acknowledgements leaked into runtime: %+v", settings)
+	}
+	if settings.KeyQuery != "api_key" {
+		t.Fatalf("runtime key_query = %q, want api_key", settings.KeyQuery)
+	}
+}

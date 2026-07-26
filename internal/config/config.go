@@ -310,12 +310,16 @@ type MiddlewareSettingsConfig struct {
 	ResponseSet map[string]string `yaml:"response_set"`
 	ResponseDel []string          `yaml:"response_del"`
 	// API key middleware fields
-	KeyHeader    string `yaml:"key_header"`
-	KeyQuery     string `yaml:"key_query"`
-	KeysEnv      string `yaml:"keys_env"`
-	ResolvedKeys string `yaml:"-"` // populated from KeysEnv by ResolveEnv
-	KeysFile     string `yaml:"keys_file"`
-	KeyToHeader  string `yaml:"key_to_header"`
+	KeyHeader string `yaml:"key_header"`
+	KeyQuery  string `yaml:"key_query"`
+	// AcknowledgeAPIKeyInQuery must be set when KeyQuery is configured because
+	// query-string credentials can leak through logs, caches, and referrers.
+	// It is a validation-only acknowledgement and does not alter request handling.
+	AcknowledgeAPIKeyInQuery bool   `yaml:"acknowledge_api_key_in_query"`
+	KeysEnv                  string `yaml:"keys_env"`
+	ResolvedKeys             string `yaml:"-"` // populated from KeysEnv by ResolveEnv
+	KeysFile                 string `yaml:"keys_file"`
+	KeyToHeader              string `yaml:"key_to_header"`
 	// Cache middleware fields
 	TTL             time.Duration `yaml:"ttl"`
 	CacheMethods    []string      `yaml:"methods"`
@@ -346,6 +350,9 @@ type MiddlewareSettingsConfig struct {
 	// without transport encryption.
 	AuthzAllowInsecureHTTP bool `yaml:"allow_insecure_http"`
 	FailOpen               bool `yaml:"fail_open"`
+	// AcknowledgeExtAuthzFailOpen must be set when ext_authz fail_open is true.
+	// It is a validation-only acknowledgement and does not alter request handling.
+	AcknowledgeExtAuthzFailOpen bool `yaml:"acknowledge_ext_authz_fail_open"`
 }
 
 type ObservabilityConfig struct {

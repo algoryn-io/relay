@@ -40,6 +40,32 @@ middleware:
       memory_bucket_ttl: 5m
       memory_cleanup_interval: 1m
 
+  # Remote RS256 always binds tokens to both issuer and audience:
+  # - name: jwt-remote
+  #   type: jwt
+  #   config:
+  #     algorithm: rs256
+  #     jwks_url: https://issuer.example.com/.well-known/jwks.json
+  #     issuer: https://issuer.example.com
+  #     audience: relay-api
+  #
+  # Prefer key_header for API keys. Legacy query-string keys can leak through
+  # logs, caches, and referrers, and therefore require an explicit acknowledgement:
+  # - name: legacy-query-api-key
+  #   type: api_key
+  #   config:
+  #     key_query: api_key
+  #     acknowledge_api_key_in_query: true
+  #     keys_env: RELAY_API_KEYS
+  #
+  # ext_authz fail-open bypasses authorization during authorizer failures:
+  # - name: availability-first-authz
+  #   type: ext_authz
+  #   config:
+  #     authz_url: https://authz.internal.example/check
+  #     fail_open: true
+  #     acknowledge_ext_authz_fail_open: true
+
 observability:
   logs:
     level: info
