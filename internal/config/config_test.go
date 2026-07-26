@@ -110,6 +110,38 @@ reload:
 	}
 }
 
+func TestLoadTracingSampleRateDistinguishesZeroFromDefault(t *testing.T) {
+	t.Parallel()
+	explicitPath := writeTempConfig(t, `
+observability:
+  tracing:
+    enabled: true
+    exporter: stdout
+    sample_rate: 0
+`)
+	explicit, err := Load(explicitPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Observability.Tracing.SampleRate != 0 || !explicit.Observability.Tracing.SampleRateSet {
+		t.Fatalf("explicit zero sample rate was not preserved: %+v", explicit.Observability.Tracing)
+	}
+
+	defaultPath := writeTempConfig(t, `
+observability:
+  tracing:
+    enabled: true
+    exporter: stdout
+`)
+	defaulted, err := Load(defaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaulted.Observability.Tracing.SampleRate != 1 || defaulted.Observability.Tracing.SampleRateSet {
+		t.Fatalf("default sample rate was not applied: %+v", defaulted.Observability.Tracing)
+	}
+}
+
 func TestLoadDangerousOptionAcknowledgements(t *testing.T) {
 	t.Parallel()
 

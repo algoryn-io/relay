@@ -231,6 +231,30 @@ func TestNewAccessLoggerToStdout(t *testing.T) {
 	logger.Info("ping")
 }
 
+func TestNewAccessLoggerHonorsTextFormatForFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "access.log")
+	logger, closer, err := NewAccessLogger(config.LogsConfig{
+		Level:  "info",
+		Format: "text",
+		File:   path,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.Info("text record", "route", "orders")
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); !strings.Contains(got, "msg=\"text record\"") || strings.Contains(got, `"msg":`) {
+		t.Fatalf("file did not use text format: %q", got)
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func findBackups(t *testing.T, dir, base string) []string {

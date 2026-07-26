@@ -399,7 +399,7 @@ Fails closed (`503`) when the endpoint is unreachable.
 | Field | Default | Description |
 | --- | --- | --- |
 | `level` | `info` | Log level. |
-| `format` | `json` | `json` or text. |
+| `format` | `json` | `json` or `text`, for both stdout and file sinks. |
 | `file` | — | Access-log file; empty logs to stdout. |
 | `max_size_mb` | — | Size-based rotation threshold. |
 | `max_age_days`, `compress` | — | Rotation retention / compression. |
@@ -420,6 +420,12 @@ Fails closed (`503`) when the endpoint is unreachable.
 | `endpoint` | SDK default | Collector address. |
 | `sample_rate` | `1.0` | Fraction of traces sampled (0.0–1.0). |
 | `service_name` | `relay` | Service name reported to the collector. |
+
+Logging and tracing are hot-reloadable. Relay initializes the complete new log
+handler/writer and tracing provider/exporter before changing live state. A
+failure keeps the previous observability configuration and request-handling
+state intact. After a successful atomic swap, the old writer is flushed and the
+old exporter is shut down only after requests/spans already using them drain.
 
 ### `fabric`
 
@@ -444,6 +450,15 @@ file replacements safe. If a reload refers to an include that does not exist
 yet, Relay keeps serving the last valid config and watches the nearest existing
 parent directory so it can retry when the file appears. A successfully reloaded
 `debounce` value applies to subsequent changes.
+
+Reloads are transactional through load, environment/secret resolution,
+validation, runtime build, server apply, and observability initialization. The
+process keeps one Prometheus registry and collector for its lifetime, so
+counters and existing series do not reset when states are replaced. Monitor
+`relay_config_reload_total{result,stage}` and
+`relay_config_last_successful_reload_timestamp_seconds`; stage values are the
+bounded set `load`, `resolve`, `validate`, `build`, `apply`, and
+`observability` (error text is logged, never used as a metric label).
 
 ### `include`
 

@@ -21,10 +21,30 @@ const tracerName = "algoryn.io/relay"
 // When tracing is disabled the global provider is a no-op, so this is safe
 // to always register.
 func NewTracingMiddleware(routeName, backendName string) middleware.Middleware {
+	return newTracingMiddleware(nil, routeName, backendName)
+}
+
+// NewTracingMiddlewareWithHandle binds request spans to the provider active
+// when the request starts and leases it until the span ends.
+func NewTracingMiddlewareWithHandle(handle *TracingHandle, routeName, backendName string) middleware.Middleware {
+	return newTracingMiddleware(handle, routeName, backendName)
+}
+
+func newTracingMiddleware(handle *TracingHandle, routeName, backendName string) middleware.Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tracer := otel.Tracer(tracerName)
+			provider := otel.GetTracerProvider()
 			propagator := otel.GetTextMapPropagator()
+			var target *tracingTarget
+			if handle != nil {
+				target = handle.acquire()
+				if target != nil {
+					provider = target.provider
+					propagator = target.propagator
+					defer target.release()
+				}
+			}
+			tracer := provider.Tracer(tracerName)
 
 			// Extract any incoming trace context (from the client or an upstream proxy).
 			ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))

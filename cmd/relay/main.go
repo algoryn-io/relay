@@ -75,29 +75,17 @@ func main() {
 		return
 	}
 
-	logger, logCloser, err := observability.NewAccessLogger(cfg.Observability.Logs)
+	observabilityController, err := observability.NewController(context.Background(), cfg.Observability)
 	if err != nil {
-		bootstrapLogger.Error("failed to initialize access logger", "error", err)
+		bootstrapLogger.Error("failed to initialize observability", "error", err)
 		os.Exit(1)
 	}
+	logger := observabilityController.Logging.Logger()
 	defer func() {
-		if logCloser != nil {
-			_ = logCloser.Close()
-		}
-	}()
-
-	tracingCtx := context.Background()
-	fallbackSvc := cfg.Observability.Fabric.ServiceName
-	shutdownTracing, err := observability.InitTracing(tracingCtx, cfg.Observability.Tracing, fallbackSvc)
-	if err != nil {
-		logger.Error("failed to initialize tracing", "error", err)
-		os.Exit(1)
-	}
-	defer func() {
-		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if err := shutdownTracing(flushCtx); err != nil {
-			logger.Warn("tracing shutdown error", "error", err)
+		if closeErr := observabilityController.Close(closeCtx); closeErr != nil {
+			bootstrapLogger.Warn("observability shutdown error", "error", closeErr)
 		}
 	}()
 
@@ -107,7 +95,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	server, err := listener.New(cfg, rt, logger)
+	server, err := listener.New(cfg, rt, logger, observabilityController.Tracing)
 	if err != nil {
 		logger.Error("failed to create server", "error", err)
 		os.Exit(1)
@@ -135,37 +123,49 @@ func main() {
 
 		newCfg, files, loadErr := config.LoadWithFiles(configPath)
 		result := watchReloadResult{files: files, debounce: currentDebounce()}
-		if loadErr != nil {
-			logger.Error("reload failed: load", "error", loadErr)
+		fail := func(stage string, reloadErr error) watchReloadResult {
+			server.RecordConfigReload("failure", stage)
+			logger.Error("config reload failed", "stage", stage, "error", reloadErr)
 			return result
+		}
+		if loadErr != nil {
+			return fail("load", loadErr)
 		}
 		if loadErr = newCfg.ResolveEnv(os.Getenv); loadErr != nil {
-			logger.Error("reload failed: resolve env", "error", loadErr)
-			return result
+			return fail("resolve", loadErr)
 		}
 		if loadErr = newCfg.ResolveSecretFiles(nil); loadErr != nil {
-			logger.Error("reload failed: resolve secret files", "error", loadErr)
-			return result
+			return fail("resolve", loadErr)
 		}
 		if loadErr = newCfg.Validate(); loadErr != nil {
-			logger.Error("reload failed: invalid config", "error", loadErr)
-			return result
+			return fail("validate", loadErr)
 		}
 		newRt, loadErr := config.BuildRuntime(newCfg)
 		if loadErr != nil {
-			logger.Error("reload failed: build runtime", "error", loadErr)
-			return result
+			return fail("build", loadErr)
+		}
+		preparedObservability, loadErr := observabilityController.Prepare(context.Background(), newCfg.Observability)
+		if loadErr != nil {
+			return fail("observability", loadErr)
 		}
 		if loadErr = server.Reload(newCfg, newRt); loadErr != nil {
-			logger.Error("reload failed: apply", "error", loadErr)
-			return result
+			abortCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if abortErr := preparedObservability.Abort(abortCtx); abortErr != nil {
+				logger.Warn("prepared observability cleanup failed", "error", abortErr)
+			}
+			return fail("apply", loadErr)
+		}
+		if cleanupErr := observabilityController.Apply(context.Background(), preparedObservability); cleanupErr != nil {
+			logger.Warn("retired observability cleanup failed", "error", cleanupErr)
 		}
 		configMu.Lock()
 		cfg = newCfg
 		configMu.Unlock()
 		result.success = true
 		result.debounce = newCfg.Reload.Debounce
-		logger.Info("config reloaded", "path", configPath)
+		server.RecordConfigReload("success", "observability")
+		logger.Info("config reloaded", "path", configPath, "stage", "observability")
 		return result
 	}
 

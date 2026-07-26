@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -241,6 +243,92 @@ func TestConcurrentReloadAndShutdown(t *testing.T) {
 
 	if err := server.Reload(cfg, lifecycleRuntime(upstream.URL)); err == nil {
 		t.Fatal("Reload() succeeded after shutdown")
+	}
+}
+
+func TestReloadPreservesPrometheusRegistryAndSeries(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := lifecycleConfig()
+	server, err := New(cfg, lifecycleRuntime(upstream.URL), discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+
+	request := func() {
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/svc", nil))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("request status = %d", rec.Code)
+		}
+	}
+	request()
+	oldState := server.state.Load()
+	oldCollector := oldState.prometheus
+	oldRegistry := oldCollector
+
+	if err := server.Reload(cfg, lifecycleRuntime(upstream.URL)); err != nil {
+		t.Fatal(err)
+	}
+	newState := server.state.Load()
+	if newState.prometheus != oldCollector || server.prometheus != oldRegistry {
+		t.Fatal("reload replaced the process Prometheus collector")
+	}
+	request()
+
+	rec := httptest.NewRecorder()
+	newState.prometheus.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	want := `relay_requests_total{method="GET",route="svc",status_code="204"} 2`
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("counter continuity lost; scrape missing %q", want)
+	}
+}
+
+func TestConcurrentRequestsAndReloadPreserveCounts(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := lifecycleConfig()
+	server, err := New(cfg, lifecycleRuntime(upstream.URL), discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+
+	const workers = 6
+	const requestsPerWorker = 30
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range requestsPerWorker {
+				rec := httptest.NewRecorder()
+				server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/svc", nil))
+				if rec.Code != http.StatusNoContent {
+					t.Errorf("request status = %d", rec.Code)
+					return
+				}
+			}
+		}()
+	}
+	for range 20 {
+		if err := server.Reload(cfg, lifecycleRuntime(upstream.URL)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+
+	rec := httptest.NewRecorder()
+	server.prometheus.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	want := `relay_requests_total{method="GET",route="svc",status_code="204"} ` +
+		strconv.Itoa(workers*requestsPerWorker)
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("concurrent count continuity lost; scrape missing %q", want)
 	}
 }
 

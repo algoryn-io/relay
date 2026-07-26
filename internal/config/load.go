@@ -180,6 +180,9 @@ func (c *ObservabilityConfig) normalizeAliases() {
 	if c.Logs.Format == "" {
 		c.Logs.Format = "json"
 	}
+	if !c.Tracing.SampleRateSet {
+		c.Tracing.SampleRate = 1
+	}
 }
 
 func (c *ReloadConfig) normalizeAliases() {
@@ -210,6 +213,29 @@ func (c *TimeoutsConfig) UnmarshalYAML(node *yaml.Node) error {
 	c.WriteTimeout = raw.WriteTimeout.Duration()
 	c.IdleTimeout = raw.IdleTimeout.Duration()
 
+	return nil
+}
+
+func (c *TracingConfig) UnmarshalYAML(node *yaml.Node) error {
+	type rawTracing struct {
+		Enabled     bool     `yaml:"enabled"`
+		Exporter    string   `yaml:"exporter"`
+		Endpoint    string   `yaml:"endpoint"`
+		SampleRate  *float64 `yaml:"sample_rate"`
+		ServiceName string   `yaml:"service_name"`
+	}
+	var raw rawTracing
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	c.Enabled = raw.Enabled
+	c.Exporter = raw.Exporter
+	c.Endpoint = raw.Endpoint
+	c.ServiceName = raw.ServiceName
+	if raw.SampleRate != nil {
+		c.SampleRate = *raw.SampleRate
+		c.SampleRateSet = true
+	}
 	return nil
 }
 

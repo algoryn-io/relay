@@ -19,14 +19,16 @@ func (nopCloser) Close() error { return nil }
 func NewAccessLogger(cfg config.LogsConfig) (*slog.Logger, io.Closer, error) {
 	level := parseLogLevel(cfg.Level)
 	opts := &slog.HandlerOptions{Level: level}
+	newLogger := func(writer io.Writer) *slog.Logger {
+		if strings.EqualFold(strings.TrimSpace(cfg.Format), "text") {
+			return slog.New(slog.NewTextHandler(writer, opts))
+		}
+		return slog.New(slog.NewJSONHandler(writer, opts))
+	}
 
 	filePath := strings.TrimSpace(cfg.File)
 	if filePath == "" {
-		format := strings.ToLower(strings.TrimSpace(cfg.Format))
-		if format == "text" {
-			return slog.New(slog.NewTextHandler(os.Stdout, opts)), nopCloser{}, nil
-		}
-		return slog.New(slog.NewJSONHandler(os.Stdout, opts)), nopCloser{}, nil
+		return newLogger(os.Stdout), nopCloser{}, nil
 	}
 
 	maxSizeMB := cfg.MaxSizeMB
@@ -47,7 +49,7 @@ func NewAccessLogger(cfg config.LogsConfig) (*slog.Logger, io.Closer, error) {
 	// on disk I/O or the file lock. Closing the asyncWriter flushes and closes
 	// the underlying rotating file.
 	async := newAsyncWriter(writer, asyncQueueSize)
-	return slog.New(slog.NewJSONHandler(async, opts)), async, nil
+	return newLogger(async), async, nil
 }
 
 func parseLogLevel(level string) slog.Level {

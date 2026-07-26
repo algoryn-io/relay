@@ -876,11 +876,24 @@ func validateJWTClaimsToHeaders(field string, m map[string]string, errs *Validat
 }
 
 func validateObservability(observability ObservabilityConfig, errs *ValidationErrors) {
+	switch strings.ToLower(strings.TrimSpace(observability.Logs.Level)) {
+	case "", "debug", "info", "warn", "warning", "error":
+	default:
+		errs.Addf("observability.logs.level: must be one of debug, info, warn, error")
+	}
+	switch strings.ToLower(strings.TrimSpace(observability.Logs.Format)) {
+	case "", "json", "text":
+	default:
+		errs.Addf("observability.logs.format: must be one of json, text")
+	}
 	if observability.Logs.File != "" && strings.TrimSpace(observability.Logs.File) == "" {
 		errs.Addf("observability.logs.file: must not be blank")
 	}
 	if observability.Logs.MaxSizeMB < 0 {
 		errs.Addf("observability.logs.max_size_mb: must be >= 0")
+	}
+	if observability.Logs.MaxAgeDays < 0 {
+		errs.Addf("observability.logs.max_age_days: must be >= 0")
 	}
 	validateIPFilterEntries("observability.prometheus.allowed_cidrs", observability.Prometheus.AllowedCIDRs, errs)
 	validateNoPublicCIDR("observability.prometheus.allowed_cidrs", observability.Prometheus.AllowedCIDRs, errs)
