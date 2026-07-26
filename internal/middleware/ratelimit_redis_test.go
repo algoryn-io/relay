@@ -85,44 +85,40 @@ func TestRedisRateLimitOverLimitReturns429(t *testing.T) {
 }
 
 // TestRedisRateLimitWindowExpirationAllowsAgain verifies that after the window
-// expires, new requests are allowed.
+// expires, new requests are allowed. The Redis script uses the caller-supplied
+// timestamp, so the test drives expiry with controlled now values rather than
+// wall-clock sleeps or miniredis FastForward.
 func TestRedisRateLimitWindowExpirationAllowsAgain(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
-	// Use a long wall-clock window so race/scheduling pauses cannot expire the
-	// bucket between the first and second request; advance miniredis instead.
+	store := newRedisStoreFromClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
 	window := time.Minute
-	mw := newTestRateLimitRedis(t, RateLimitConfig{
-		Strategy: SlidingWindow,
-		Limit:    1,
-		Window:   window,
-		By:       "route",
-	}, mr)
+	now := time.Unix(1_700_000_000, 0).UTC()
+	key := "relay:ratelimit:v1:route:/items"
 
-	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}), mw)
-
-	req := httptest.NewRequest(http.MethodGet, "/items", nil)
-
-	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, req)
-	if first.Code != http.StatusOK {
-		t.Fatalf("first: status = %d, want 200", first.Code)
+	allowed, _, _, err := store.Check(t.Context(), key, 1, window, now)
+	if err != nil {
+		t.Fatalf("first check: %v", err)
+	}
+	if !allowed {
+		t.Fatal("first check: want allowed")
 	}
 
-	second := httptest.NewRecorder()
-	handler.ServeHTTP(second, req)
-	assertRateLimitedBody(t, second)
+	allowed, _, _, err = store.Check(t.Context(), key, 1, window, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("second check: %v", err)
+	}
+	if allowed {
+		t.Fatal("second check: want denied inside window")
+	}
 
-	// Fast-forward miniredis clock past the window.
-	mr.FastForward(window + time.Second)
-
-	third := httptest.NewRecorder()
-	handler.ServeHTTP(third, req)
-	if third.Code != http.StatusOK {
-		t.Fatalf("after window expiry: status = %d, want 200", third.Code)
+	allowed, _, _, err = store.Check(t.Context(), key, 1, window, now.Add(window+time.Second))
+	if err != nil {
+		t.Fatalf("after expiry: %v", err)
+	}
+	if !allowed {
+		t.Fatal("after expiry: want allowed")
 	}
 }
 
