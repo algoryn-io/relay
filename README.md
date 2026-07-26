@@ -162,6 +162,7 @@ listener:
     - X-User-Id
     - X-Roles
   max_concurrent_requests: 0  # global in-flight cap (0 = unlimited); fast 503 over it
+  max_connections_per_ip: 0   # real TCP peer cap (0 = off); never trusts forwarded headers
   https:
     port: 8443
     tls:

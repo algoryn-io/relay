@@ -5,6 +5,8 @@ listener:
     read: 30s
     write: 30s
     idle: 60s
+  # Per real TCP peer; 0 disables. Do not use this to infer clients behind a LB.
+  max_connections_per_ip: 0
 
 routes:
   - name: orders-route

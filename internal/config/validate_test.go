@@ -154,6 +154,15 @@ func TestValidateInvalidPorts(t *testing.T) {
 	assertValidationErrorContains(t, cfg.Validate(), "listener: at least one of listener.http.port or listener.https.port must be greater than 0")
 }
 
+func TestValidateRejectsNegativePerIPConnectionLimit(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Listener.MaxConnectionsPerIP = -1
+
+	assertValidationErrorContains(t, cfg.Validate(), "listener.max_connections_per_ip: must be >= 0")
+}
+
 func TestValidateBodyLimitRequiresPositiveMaxBytes(t *testing.T) {
 	t.Parallel()
 

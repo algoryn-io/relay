@@ -31,6 +31,9 @@ config: |
       read_header: 10s
     # Global overload backpressure (0 = unlimited).
     max_concurrent_requests: 0
+    # Per real TCP peer (0 = disabled). Behind a load balancer prefer the
+    # global/per-request limits; forwarded headers are not used at ConnState.
+    max_connections_per_ip: 0
 
   observability:
     logs:
