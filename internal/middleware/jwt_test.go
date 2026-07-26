@@ -40,6 +40,41 @@ func TestJWTValidTokenPasses(t *testing.T) {
 	}
 }
 
+func TestJWTPublishesVerifiedRelayIdentity(t *testing.T) {
+	t.Parallel()
+
+	secret := strings.Repeat("i", 32)
+	token := signJWTClaims(t, secret, jwt.MapClaims{
+		"sub":          "user-7",
+		"tenant_id":    "tenant-3",
+		"account_id":   "account-9",
+		"access_token": "must-not-enter-context",
+		"exp":          time.Now().Add(5 * time.Minute).Unix(),
+	})
+	mw, err := NewJWT(JWTConfig{Secret: secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var identity AuthIdentity
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		identity, _ = authIdentityFromRequest(r)
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if identity.Source != "jwt" || identity.Subject != "user-7" || identity.Tenant != "tenant-3" {
+		t.Fatalf("identity = %+v", identity)
+	}
+	if identity.Claims["account_id"] != "account-9" {
+		t.Fatalf("account_id claim = %q", identity.Claims["account_id"])
+	}
+	if _, exists := identity.Claims["access_token"]; exists {
+		t.Fatal("credential-bearing claim entered identity context")
+	}
+}
+
 func TestJWTMissingTokenReturns401(t *testing.T) {
 	t.Parallel()
 

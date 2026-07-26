@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"algoryn.io/relay/internal/httpx"
+	"golang.org/x/net/http/httpguts"
 )
 
 type Strategy string
@@ -24,6 +27,7 @@ type RateLimitConfig struct {
 	Window   time.Duration
 	By       string
 	Header   string
+	Key      RateLimitKeyConfig
 	// Store selects the rate limit backend: "memory" (default) or "redis".
 	Store string
 	// RedisURL is the Redis connection URL when Store == "redis".
@@ -44,6 +48,19 @@ type RateLimitConfig struct {
 	ObserverKey           string
 }
 
+type RateLimitSelector struct {
+	Type  string
+	Name  string
+	Claim string
+}
+
+type RateLimitKeyConfig struct {
+	Selectors     []RateLimitSelector
+	Fallback      *RateLimitSelector
+	RejectMissing bool
+	Namespace     string
+}
+
 // RateLimitMetrics intentionally exposes only aggregate values: bucket keys
 // are never metric labels, avoiding a second cardinality problem.
 type RateLimitMetrics interface {
@@ -59,15 +76,19 @@ type RateLimitOperationalEvents interface {
 }
 
 type rateLimiter struct {
-	limit       int
-	window      time.Duration
-	by          string
-	header      string
-	store       rateLimitStore
-	failOpen    bool
-	redis       bool
-	events      RateLimitOperationalEvents
-	observerKey string
+	limit         int
+	window        time.Duration
+	by            string
+	header        string
+	selectors     []RateLimitSelector
+	fallback      *RateLimitSelector
+	rejectMissing bool
+	namespace     string
+	store         rateLimitStore
+	failOpen      bool
+	redis         bool
+	events        RateLimitOperationalEvents
+	observerKey   string
 }
 
 // NewRateLimit returns a sliding-window rate limit middleware. The returned
@@ -96,13 +117,18 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, io.Closer, error) {
 	if cfg.MemoryCleanupInterval == 0 {
 		cfg.MemoryCleanupInterval = defaultMemoryCleanupInterval
 	}
-	if strings.TrimSpace(cfg.By) == "" {
+	if len(cfg.Key.Selectors) > 0 && strings.TrimSpace(cfg.By) != "" {
+		return nil, nil, fmt.Errorf("rate limit by and key.selectors are mutually exclusive")
+	}
+	if len(cfg.Key.Selectors) == 0 && strings.TrimSpace(cfg.By) == "" {
 		cfg.By = "ip"
 	}
-	switch cfg.By {
-	case "ip", "route", "api_key":
-	default:
-		return nil, nil, fmt.Errorf("unsupported rate limit key %q", cfg.By)
+	if len(cfg.Key.Selectors) == 0 {
+		switch cfg.By {
+		case "ip", "route", "api_key":
+		default:
+			return nil, nil, fmt.Errorf("unsupported rate limit key %q", cfg.By)
+		}
 	}
 	if cfg.By == "api_key" && strings.TrimSpace(cfg.Header) == "" {
 		cfg.Header = "X-API-Key"
@@ -158,22 +184,45 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, io.Closer, error) {
 // store. Used internally and in tests to inject stores (e.g. miniredis).
 func newRateLimitWithStore(cfg RateLimitConfig, store rateLimitStore) (Middleware, error) {
 	rl := &rateLimiter{
-		limit:       cfg.Limit,
-		window:      cfg.Window,
-		by:          cfg.By,
-		header:      cfg.Header,
-		store:       store,
-		failOpen:    cfg.FailOpen,
-		redis:       strings.EqualFold(strings.TrimSpace(cfg.Store), "redis") || isRedisStore(store),
-		events:      cfg.Events,
-		observerKey: cfg.ObserverKey,
+		limit:         cfg.Limit,
+		window:        cfg.Window,
+		by:            cfg.By,
+		header:        cfg.Header,
+		rejectMissing: cfg.Key.RejectMissing,
+		namespace:     strings.TrimSpace(cfg.Key.Namespace),
+		store:         store,
+		failOpen:      cfg.FailOpen,
+		redis:         strings.EqualFold(strings.TrimSpace(cfg.Store), "redis") || isRedisStore(store),
+		events:        cfg.Events,
+		observerKey:   cfg.ObserverKey,
+	}
+	if rl.namespace == "" {
+		rl.namespace = "relay:ratelimit:v1"
+	}
+	if err := validateRateLimitNamespace(rl.namespace); err != nil {
+		return nil, err
+	}
+	for _, selector := range cfg.Key.Selectors {
+		normalized, err := normalizeRateLimitSelector(selector)
+		if err != nil {
+			return nil, err
+		}
+		rl.selectors = append(rl.selectors, normalized)
+	}
+	if cfg.Key.Fallback != nil {
+		normalized, err := normalizeRateLimitSelector(*cfg.Key.Fallback)
+		if err != nil {
+			return nil, fmt.Errorf("fallback: %w", err)
+		}
+		rl.fallback = &normalized
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			key := rl.keyFromRequest(r)
-			if key == "" {
-				key = "unknown"
+			key, complete := rl.rateLimitKey(r)
+			if !complete && rl.rejectMissing {
+				httpx.WriteError(w, http.StatusBadRequest, "rate_limit_key_missing")
+				return
 			}
 
 			now := time.Now()
@@ -214,16 +263,180 @@ func isRedisStore(store rateLimitStore) bool {
 }
 
 func (l *rateLimiter) keyFromRequest(r *http.Request) string {
+	raw := ""
 	switch l.by {
 	case "route":
-		return r.Method + ":" + r.URL.Path
+		raw = r.Method + ":" + r.URL.Path
 	case "api_key":
-		key := strings.TrimSpace(r.Header.Get(l.header))
-		if key == "" {
+		raw = strings.TrimSpace(r.Header.Get(l.header))
+		if raw == "" {
 			return ""
 		}
-		return l.store.HashKey(key)
 	default:
-		return httpx.ClientIP(r)
+		raw = httpx.ClientIP(r)
 	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+func (l *rateLimiter) rateLimitKey(r *http.Request) (string, bool) {
+	if len(l.selectors) == 0 {
+		key := l.keyFromRequest(r)
+		if key == "" {
+			return l.namespace + ":" + hashRateLimitComponents([]string{"missing"}), false
+		}
+		return l.namespace + ":" + key, true
+	}
+
+	components := make([]string, 0, len(l.selectors))
+	for _, selector := range l.selectors {
+		value, ok := selectorValue(r, selector)
+		if !ok {
+			if l.fallback != nil {
+				fallback, fallbackOK := selectorValue(r, *l.fallback)
+				if fallbackOK {
+					return l.namespace + ":" + hashRateLimitComponents([]string{
+						"fallback", selectorDescriptor(*l.fallback), fallback,
+					}), true
+				}
+			}
+			return l.namespace + ":" + hashRateLimitComponents([]string{"missing"}), false
+		}
+		components = append(components, selectorDescriptor(selector), value)
+	}
+	return l.namespace + ":" + hashRateLimitComponents(components), true
+}
+
+func selectorValue(r *http.Request, selector RateLimitSelector) (string, bool) {
+	var value string
+	switch selector.Type {
+	case "ip":
+		value = httpx.ClientIP(r)
+	case "route":
+		value = r.Method + ":" + r.URL.Path
+	case "header":
+		values := r.Header.Values(selector.Name)
+		if len(values) == 0 {
+			return "", false
+		}
+		value = encodeRateLimitValues(values)
+	case "identity":
+		identity, ok := authIdentityFromRequest(r)
+		if !ok {
+			return "", false
+		}
+		value = identity.Subject
+		if value == "" {
+			value = identity.KeyID
+		}
+		if value != "" {
+			value = encodeRateLimitValues([]string{identity.Source, value})
+		}
+	case "tenant":
+		identity, ok := authIdentityFromRequest(r)
+		if !ok {
+			return "", false
+		}
+		if identity.Tenant != "" {
+			value = encodeRateLimitValues([]string{identity.Source, identity.Tenant})
+		}
+	case "claim":
+		identity, ok := authIdentityFromRequest(r)
+		if !ok {
+			return "", false
+		}
+		// Claims are Relay-owned (JWT scalars, OAuth2 introspection, or
+		// ext_authz decision headers). Client headers never populate them.
+		value = identity.Claims[selector.Claim]
+	}
+	value = strings.TrimSpace(value)
+	return value, value != ""
+}
+
+func selectorDescriptor(selector RateLimitSelector) string {
+	switch selector.Type {
+	case "header":
+		return "header:" + http.CanonicalHeaderKey(selector.Name)
+	case "claim":
+		return "claim:" + selector.Claim
+	default:
+		return selector.Type
+	}
+}
+
+func hashRateLimitComponents(components []string) string {
+	h := sha256.New()
+	for _, component := range components {
+		value := []byte(component)
+		_, _ = h.Write([]byte(strconv.Itoa(len(value))))
+		_, _ = h.Write([]byte{':'})
+		_, _ = h.Write(value)
+		_, _ = h.Write([]byte{';'})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func encodeRateLimitValues(values []string) string {
+	var encoded strings.Builder
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		encoded.WriteString(strconv.Itoa(len(value)))
+		encoded.WriteByte(':')
+		encoded.WriteString(value)
+		encoded.WriteByte(';')
+	}
+	return encoded.String()
+}
+
+func normalizeRateLimitSelector(selector RateLimitSelector) (RateLimitSelector, error) {
+	selector.Type = strings.ToLower(strings.TrimSpace(selector.Type))
+	selector.Name = strings.TrimSpace(selector.Name)
+	selector.Claim = strings.TrimSpace(selector.Claim)
+	if selector.Type == "jwt_claim" {
+		selector.Type = "claim"
+	}
+	switch selector.Type {
+	case "ip", "route", "identity", "tenant":
+		if selector.Name != "" || selector.Claim != "" {
+			return selector, fmt.Errorf("selector %q does not accept name or claim", selector.Type)
+		}
+	case "header":
+		if !httpguts.ValidHeaderFieldName(selector.Name) {
+			return selector, fmt.Errorf("header selector requires a valid explicit name")
+		}
+		selector.Name = http.CanonicalHeaderKey(selector.Name)
+		if selector.Claim != "" {
+			return selector, fmt.Errorf("header selector does not accept claim")
+		}
+	case "claim":
+		if selector.Claim != "" && selector.Name != "" {
+			return selector, fmt.Errorf("claim selector accepts only one of claim or name")
+		}
+		if selector.Claim == "" {
+			selector.Claim = selector.Name
+			selector.Name = ""
+		}
+		if selector.Claim == "" {
+			return selector, fmt.Errorf("claim selector requires claim")
+		}
+		if !safeIdentityClaimName(selector.Claim) {
+			return selector, fmt.Errorf("claim selector cannot select credential-bearing claim %q", selector.Claim)
+		}
+	default:
+		return selector, fmt.Errorf("unsupported rate limit selector %q", selector.Type)
+	}
+	return selector, nil
+}
+
+func validateRateLimitNamespace(namespace string) error {
+	if len(namespace) > 64 {
+		return fmt.Errorf("rate limit namespace must be at most 64 characters")
+	}
+	for _, r := range namespace {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') && r != '.' && r != '_' && r != '-' && r != ':' {
+			return fmt.Errorf("rate limit namespace contains unsupported character %q", r)
+		}
+	}
+	return nil
 }

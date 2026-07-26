@@ -60,3 +60,39 @@ func TestValidateRateLimitMemoryBounds(t *testing.T) {
 	assertValidationErrorContains(t, err, "memory_bucket_ttl: must be at least")
 	assertValidationErrorContains(t, err, "memory_cleanup_interval")
 }
+
+func TestLoadRateLimitCompositeKey(t *testing.T) {
+	t.Parallel()
+	path := writeTempConfig(t, `
+listener:
+  http: {port: 8080}
+  timeouts: {read: 1s, write: 1s, idle: 1s}
+routes: []
+backends: []
+middleware:
+  - name: limited
+    type: rate_limit
+    config:
+      strategy: sliding_window
+      limit: 10
+      window: 30s
+      key:
+        namespace: orders:v1
+        selectors:
+          - route
+          - {type: header, name: X-Plan}
+        fallback: ip
+        reject_missing: true
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := cfg.Middleware[0].Config.RateLimitKey
+	if len(key.Selectors) != 2 || key.Selectors[1].Name != "X-Plan" {
+		t.Fatalf("selectors = %+v", key.Selectors)
+	}
+	if key.Fallback == nil || key.Fallback.Type != "ip" || !key.RejectMissing {
+		t.Fatalf("key config = %+v", key)
+	}
+}

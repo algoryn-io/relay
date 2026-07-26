@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -182,6 +183,42 @@ func TestRedisRateLimitAPIKeyHashIsConsistent(t *testing.T) {
 	if h1 == apiKey {
 		t.Error("HashKey returned the raw API key")
 	}
+}
+
+func TestRedisRateLimitCompositeKeyIsBoundedAndPrivate(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	mw := newTestRateLimitRedis(t, RateLimitConfig{
+		Limit: 1, Window: time.Minute,
+		Key: RateLimitKeyConfig{
+			Namespace: "redis-composite",
+			Selectors: []RateLimitSelector{
+				{Type: "route"},
+				{Type: "header", Name: "X-Customer"},
+			},
+		},
+	}, mr)
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	request := func() *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "/orders/private", nil)
+		req.Header.Set("X-Customer", "customer-pii")
+		return req
+	}
+	handler.ServeHTTP(httptest.NewRecorder(), request())
+
+	keys := mr.Keys()
+	if len(keys) != 1 {
+		t.Fatalf("Redis keys = %v, want one", keys)
+	}
+	if strings.Contains(keys[0], "customer-pii") || len(keys[0]) != len("redis-composite:")+64 {
+		t.Fatalf("unsafe Redis key %q", keys[0])
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, request())
+	assertRateLimitedBody(t, rec)
 }
 
 // TestRedisRateLimitFailOpen verifies that an operator can explicitly choose

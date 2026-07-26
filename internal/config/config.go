@@ -425,6 +425,31 @@ type MiddlewareConfig struct {
 	Config  MiddlewareSettingsConfig `yaml:"config"`
 }
 
+// RateLimitSelectorConfig is one ordered component of a rate-limit bucket key.
+// Type is ip, route, header, claim, tenant, or identity. Header selectors use
+// Name and verified JWT claim selectors use Claim.
+type RateLimitSelectorConfig struct {
+	Type  string `yaml:"type"`
+	Name  string `yaml:"name"`
+	Claim string `yaml:"claim"`
+}
+
+func (c *RateLimitSelectorConfig) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		c.Type = node.Value
+		return nil
+	}
+	type rawSelector RateLimitSelectorConfig
+	return node.Decode((*rawSelector)(c))
+}
+
+type RateLimitKeyConfig struct {
+	Selectors     []RateLimitSelectorConfig `yaml:"selectors"`
+	Fallback      *RateLimitSelectorConfig  `yaml:"fallback"`
+	RejectMissing bool                      `yaml:"reject_missing"`
+	Namespace     string                    `yaml:"namespace"`
+}
+
 type MiddlewareSettingsConfig struct {
 	SecretEnv string `yaml:"secret_env"`
 	// SecretFile reads the JWT HS256 secret from a mounted file (e.g. a Kubernetes
@@ -457,6 +482,9 @@ type MiddlewareSettingsConfig struct {
 	Limit            int           `yaml:"limit"`
 	Window           time.Duration `yaml:"window"`
 	By               string        `yaml:"by"`
+	// Key defines an ordered, composable bucket identity. By remains supported
+	// for legacy configurations and is mutually exclusive with key.selectors.
+	RateLimitKey RateLimitKeyConfig `yaml:"key"`
 	// Rate limit store: "memory" (default, in-process) or "redis" (distributed).
 	RateLimitStore string `yaml:"store"`
 	// MemoryMaxBuckets caps the number of in-process rate limit keys.

@@ -50,14 +50,19 @@ func TestIntrospectionActiveTokenPasses(t *testing.T) {
 
 	var calls atomic.Int64
 	server := introspectionServer(t, &calls, func(token string) introspectionResponse {
-		return introspectionResponse{Active: true, Sub: "user-1", Scope: "read write"}
+		return introspectionResponse{
+			Active: true, Sub: "user-1", Scope: "read write",
+			TenantID: "tenant-1", ClientID: "client-1",
+		}
 	})
 	mw := newIntrospection(t, server, nil, time.Minute, nil)
 
 	var gotSub, gotScope string
+	var identity AuthIdentity
 	h := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotSub = r.Header.Get(defaultSubjectHeader)
 		gotScope = r.Header.Get(tokenScopeHeader)
+		identity, _ = authIdentityFromRequest(r)
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -74,6 +79,10 @@ func TestIntrospectionActiveTokenPasses(t *testing.T) {
 	}
 	if gotScope != "read write" {
 		t.Fatalf("injected scope = %q, want 'read write'", gotScope)
+	}
+	if identity.Source != "oauth2" || identity.Subject != "user-1" ||
+		identity.Tenant != "tenant-1" || identity.KeyID != "client-1" {
+		t.Fatalf("identity = %+v", identity)
 	}
 }
 

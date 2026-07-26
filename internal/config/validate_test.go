@@ -909,6 +909,74 @@ func assertValidationErrorContains(t *testing.T, err error, want string) {
 	}
 }
 
+func TestValidateRateLimitIdentityRequiresAuthFirst(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+		Name: "identity-limit",
+		Type: "rate_limit",
+		Config: MiddlewareSettingsConfig{
+			Strategy: "sliding_window",
+			Limit:    10,
+			Window:   time.Minute,
+			RateLimitKey: RateLimitKeyConfig{
+				Selectors: []RateLimitSelectorConfig{{Type: "identity"}},
+			},
+		},
+	})
+	cfg.Routes[0].Middleware = []string{"identity-limit", "jwt-auth"}
+	err := cfg.Validate()
+	assertValidationErrorContains(t, err, "requires jwt, api_key, oauth2, or ext_authz earlier")
+
+	cfg.Routes[0].Middleware = []string{"jwt-auth", "identity-limit"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid auth/rate-limit order rejected: %v", err)
+	}
+
+	fallbackIdentity := &RateLimitSelectorConfig{Type: "tenant"}
+	cfg.Middleware[len(cfg.Middleware)-1].Config.RateLimitKey = RateLimitKeyConfig{
+		Selectors: []RateLimitSelectorConfig{{Type: "route"}},
+		Fallback:  fallbackIdentity,
+	}
+	cfg.Routes[0].Middleware = []string{"identity-limit"}
+	err = cfg.Validate()
+	assertValidationErrorContains(t, err, "requires jwt, api_key, oauth2, or ext_authz earlier")
+}
+
+func TestValidateRateLimitCompositeSelectors(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	fallback := &RateLimitSelectorConfig{Type: "ip"}
+	cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+		Name: "composite-limit",
+		Type: "rate_limit",
+		Config: MiddlewareSettingsConfig{
+			Strategy: "sliding_window",
+			Limit:    10,
+			Window:   time.Minute,
+			RateLimitKey: RateLimitKeyConfig{
+				Namespace: "orders:v1",
+				Selectors: []RateLimitSelectorConfig{
+					{Type: "route"},
+					{Type: "header", Name: "X-Plan"},
+					{Type: "claim", Claim: "account_id"},
+				},
+				Fallback: fallback,
+			},
+		},
+	})
+	cfg.Routes[0].Middleware = []string{"jwt-auth", "composite-limit"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid composite selectors rejected: %v", err)
+	}
+
+	cfg.Middleware[1].Config.By = "ip"
+	err := cfg.Validate()
+	assertValidationErrorContains(t, err, "by and key.selectors are mutually exclusive")
+}
+
 func validConfig() *Config {
 	return &Config{
 		Listener: ListenerConfig{

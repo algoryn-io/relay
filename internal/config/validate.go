@@ -59,6 +59,7 @@ func validateConfig(c *Config) error {
 	validateHealthEndpoints(c.Listener.Health, backendNames, &errs)
 	middlewareNames := validateMiddlewares(c.Middleware, &errs)
 	validateRoutes(c.Routes, backendNames, middlewareNames, &errs)
+	validateRateLimitMiddlewareOrder(c.Routes, c.Middleware, &errs)
 	validateRouteIdentityPolicies(c.Routes, c.Backends, &errs)
 
 	validateObservability(c.Observability, &errs)
@@ -742,11 +743,18 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 			if middleware.Config.Window <= 0 {
 				errs.Addf("%s.config.window: must be greater than 0", prefix)
 			}
-			switch middleware.Config.By {
-			case "ip", "route", "api_key":
-			default:
-				errs.Addf("%s.config.by: must be one of ip, route, api_key", prefix)
+			hasSelectors := len(middleware.Config.RateLimitKey.Selectors) != 0
+			if hasSelectors && strings.TrimSpace(middleware.Config.By) != "" {
+				errs.Addf("%s.config: by and key.selectors are mutually exclusive", prefix)
 			}
+			if !hasSelectors {
+				switch middleware.Config.By {
+				case "ip", "route", "api_key":
+				default:
+					errs.Addf("%s.config.by: must be one of ip, route, api_key", prefix)
+				}
+			}
+			validateRateLimitKey(prefix+".config.key", middleware.Config.RateLimitKey, errs)
 			store := strings.ToLower(strings.TrimSpace(middleware.Config.RateLimitStore))
 			switch store {
 			case "", "memory", "redis":
@@ -823,6 +831,125 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 	}
 
 	return seen
+}
+
+func validateRateLimitKey(prefix string, key RateLimitKeyConfig, errs *ValidationErrors) {
+	if len(key.Selectors) > 16 {
+		errs.Addf("%s.selectors: must contain at most 16 selectors", prefix)
+	}
+	for i, selector := range key.Selectors {
+		validateRateLimitSelector(fmt.Sprintf("%s.selectors[%d]", prefix, i), selector, errs)
+	}
+	if key.Fallback != nil {
+		validateRateLimitSelector(prefix+".fallback", *key.Fallback, errs)
+	}
+	namespace := strings.TrimSpace(key.Namespace)
+	if len(namespace) > 64 {
+		errs.Addf("%s.namespace: must be at most 64 characters", prefix)
+	}
+	for _, r := range namespace {
+		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') && r != '.' && r != '_' && r != '-' && r != ':' {
+			errs.Addf("%s.namespace: must use only letters, digits, dot, underscore, hyphen, or colon", prefix)
+			break
+		}
+	}
+}
+
+func validateRateLimitSelector(prefix string, selector RateLimitSelectorConfig, errs *ValidationErrors) {
+	kind := strings.ToLower(strings.TrimSpace(selector.Type))
+	name := strings.TrimSpace(selector.Name)
+	claim := strings.TrimSpace(selector.Claim)
+	if kind == "jwt_claim" {
+		kind = "claim"
+	}
+	switch kind {
+	case "ip", "route", "identity", "tenant":
+		if name != "" || claim != "" {
+			errs.Addf("%s: %s does not accept name or claim", prefix, kind)
+		}
+	case "header":
+		if !httpguts.ValidHeaderFieldName(name) {
+			errs.Addf("%s.name: a valid explicit header name is required", prefix)
+		}
+		if claim != "" {
+			errs.Addf("%s.claim: is invalid for a header selector", prefix)
+		}
+	case "claim":
+		if claim != "" && name != "" {
+			errs.Addf("%s: claim selector accepts only one of claim or name", prefix)
+		}
+		if claim == "" {
+			claim = name
+		}
+		if claim == "" || len(claim) > 128 || strings.ContainsAny(claim, "\x00\r\n") {
+			errs.Addf("%s.claim: a claim name of at most 128 characters is required", prefix)
+		} else if unsafeRateLimitClaimName(claim) {
+			errs.Addf("%s.claim: credential-bearing claims cannot be selected", prefix)
+		}
+	default:
+		errs.Addf("%s.type: must be one of ip, route, header, claim, jwt_claim, tenant, identity", prefix)
+	}
+}
+
+func unsafeRateLimitClaimName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "api_key", "apikey", "authorization", "cookie", "password", "secret":
+		return true
+	}
+	return strings.Contains(name, "token") ||
+		strings.Contains(name, "password") ||
+		strings.Contains(name, "secret") ||
+		strings.Contains(name, "credential") ||
+		strings.Contains(name, "cookie")
+}
+
+func validateRateLimitMiddlewareOrder(routes []RouteConfig, middlewares []MiddlewareConfig, errs *ValidationErrors) {
+	byName := make(map[string]MiddlewareConfig, len(middlewares))
+	for _, definition := range middlewares {
+		byName[definition.Name] = definition
+	}
+	for routeIndex, route := range routes {
+		authenticated := false
+		for middlewareIndex, name := range route.Middleware {
+			definition, ok := byName[name]
+			if !ok {
+				continue
+			}
+			switch definition.Type {
+			case "jwt", "api_key", "oauth2", "ext_authz":
+				authenticated = true
+			case "rate_limit":
+				if rateLimitNeedsIdentity(definition.Config.RateLimitKey) && !authenticated {
+					errs.Addf(
+						"routes[%d].middleware[%d]: rate limit middleware %q requires jwt, api_key, oauth2, or ext_authz earlier in the route middleware order",
+						routeIndex, middlewareIndex, name,
+					)
+				}
+			}
+		}
+	}
+}
+
+func rateLimitNeedsIdentity(key RateLimitKeyConfig) bool {
+	if rateLimitSelectorNeedsIdentity(key.Selectors...) {
+		return true
+	}
+	if key.Fallback != nil {
+		return rateLimitSelectorNeedsIdentity(*key.Fallback)
+	}
+	return false
+}
+
+func rateLimitSelectorNeedsIdentity(selectors ...RateLimitSelectorConfig) bool {
+	for _, selector := range selectors {
+		switch strings.ToLower(strings.TrimSpace(selector.Type)) {
+		case "identity", "tenant", "claim", "jwt_claim":
+			return true
+		}
+	}
+	return false
 }
 
 func validateRedirectHost(field, value string, errs *ValidationErrors) {
