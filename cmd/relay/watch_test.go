@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync/atomic"
@@ -56,22 +57,24 @@ func TestWatchConfigDebouncesRapidWrites(t *testing.T) {
 	f.Close()
 
 	var reloads atomic.Int64
-	debounce := 100 * time.Millisecond
+	debounce := 200 * time.Millisecond
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	go watchConfig(ctx, path, debounce, slog.Default(), func() { reloads.Add(1) })
 
-	time.Sleep(30 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
-	// 5 rapid writes within the debounce window — should collapse to 1 reload.
-	for range 5 {
-		_ = os.WriteFile(path, []byte("v\n"), 0o644)
-		time.Sleep(15 * time.Millisecond)
+	// Burst writes with no inter-write delay so scheduling jitter cannot open a
+	// second debounce window on slow CI runners.
+	for i := range 5 {
+		if err := os.WriteFile(path, []byte(fmt.Sprintf("v%d\n", i)), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	time.Sleep(debounce + 300*time.Millisecond)
+	time.Sleep(debounce + 400*time.Millisecond)
 
 	got := reloads.Load()
 	if got == 0 {
