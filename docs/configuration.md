@@ -71,6 +71,8 @@ When both are set for the same secret, the `*_env` source wins.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `http.port` | int | — | Plaintext HTTP port. Also accepts cleartext HTTP/2 (h2c). |
+| `http.canonical_host` | string | — | Fixed hostname/IP for HTTP→HTTPS redirects. Must not include a scheme, path, or port. |
+| `http.redirect_allowed_hosts` | []string | `[]` | Valid request hosts that may be preserved in HTTP→HTTPS redirects. Required when redirecting without `canonical_host`; an unlisted/malformed Host gets `400` and no redirect. |
 | `https.port` | int | — | HTTPS port (enables the TLS server). At least one of `http.port`/`https.port` is required. |
 | `https.tls` / `tls` | object | — | TLS settings (see below). `tls` at the listener level is an alias for `https.tls`. |
 | `timeouts.read` | duration | — | Full request read timeout. |
@@ -92,6 +94,12 @@ balancer, all connections may appear under the load balancer's IP; prefer
 instead of treating a forwarded address as the TCP peer. The setting is
 process-local and hot-reloadable; lowering it does not terminate established
 connections, but rejects new ones until occupancy falls below the new limit.
+
+When both HTTP and HTTPS listeners are enabled, configure `canonical_host`,
+`redirect_allowed_hosts`, or both. `canonical_host` always supplies the redirect
+authority; when an allowlist is also present, the incoming Host must be listed.
+Without a canonical host, Relay preserves only an allowlisted Host. The HTTPS
+port is taken from `https.port` (omitted for 443), including bracket-safe IPv6.
 
 ### `listener.https.tls`
 
@@ -188,7 +196,8 @@ middleware:
 
 Common fields: `name` (unique), `type` (one of the types below), `config`
 (type-specific). Supported `type` values: `jwt`, `rate_limit`, `body_limit`,
-`ip_filter`, `cors`, `header`, `api_key`, `cache`, `oauth2`, `ext_authz`.
+`ip_filter`, `cors`, `header`, `security_headers`, `api_key`, `cache`, `oauth2`,
+`ext_authz`.
 
 ### `jwt`
 
@@ -272,6 +281,33 @@ per-bucket goroutines, and exports `relay_rate_limit_memory_buckets` plus
 | `response_set` / `response_del` | Set / delete response headers. |
 
 At least one of the four is required.
+
+### `security_headers`
+
+Reusable response hardening with `preset: secure` or `preset: strict`. Each
+preset supplies HSTS, CSP, `X-Content-Type-Options`, `Referrer-Policy`, and
+`Permissions-Policy`; `secure` uses `X-Frame-Options: DENY`, while `strict` uses
+CSP `frame-ancestors 'none'`. Override any field below, or set it to `off`:
+
+| `config` field | Description |
+| --- | --- |
+| `preset` | `secure` or `strict`; optional when at least one explicit header is set. |
+| `strict_transport_security` | HSTS value. `preload` requires `includeSubDomains` and at least one year of `max-age`. |
+| `content_security_policy` | CSP value. Unsafe script execution and insecure frame ancestors are rejected. |
+| `x_frame_options` | `DENY`, `SAMEORIGIN`, or `off`. Cannot coexist with CSP `frame-ancestors`. |
+| `x_content_type_options` | `nosniff` or `off`. |
+| `referrer_policy` | Referrer policy; `unsafe-url` is rejected. |
+| `permissions_policy` | Permissions Policy; wildcard grants are rejected. |
+
+```yaml
+- name: browser-security
+  type: security_headers
+  config:
+    preset: secure
+    x_frame_options: off
+    content_security_policy: "default-src 'self'; frame-ancestors 'self'"
+    referrer_policy: strict-origin-when-cross-origin
+```
 
 ### `api_key`
 

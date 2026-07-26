@@ -14,7 +14,7 @@ routes:
       path: /api/orders
       methods: [GET, POST]
     backend: orders-backend
-    middleware: [orders-rate-limit]
+    middleware: [browser-security, orders-rate-limit]
 
 backends:
   - name: orders-backend
@@ -27,6 +27,13 @@ backends:
       - url: http://localhost:8080
 
 middleware:
+  - name: browser-security
+    type: security_headers
+    config:
+      preset: secure
+      # This example is HTTP-only. Enable HSTS after configuring HTTPS.
+      strict_transport_security: off
+
   - name: orders-rate-limit
     type: rate_limit
     config:

@@ -28,7 +28,8 @@ no extra infrastructure.
 - **Auth & security** — JWT (HS256/RS256/JWKS/**OIDC discovery**), API keys,
   **OAuth2 introspection** (RFC 7662), **external authorization** (`ext_authz`),
   IP filter, CORS, body limit, inbound/outbound **mTLS**, TLS hardening, edge
-  header stripping.
+  header stripping, reusable **security-header presets**, and host-safe
+  HTTP→HTTPS redirects.
 - **Rate limiting & caching** — sliding-window rate limiting (in-memory or shared
   via **Redis**); response **cache** with `Cache-Control`/`Vary` awareness.
 - **Observability** — structured `slog` logs, **Prometheus** metrics, **OpenTelemetry**
@@ -151,6 +152,7 @@ routes:
 listener:
   http:
     port: 8088
+    canonical_host: api.example.com # required with HTTPS unless using redirect_allowed_hosts
   timeouts:
     read: 30s
     write: 30s
@@ -239,6 +241,11 @@ middleware:
       allowed_origins: ["http://localhost:3000"]
       allowed_methods: ["GET", "POST", "OPTIONS"]
       allowed_headers: ["Authorization", "Content-Type"]
+
+  - name: browser-security
+    type: security_headers
+    config:
+      preset: secure
 
 observability:
   logs:

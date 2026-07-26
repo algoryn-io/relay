@@ -159,7 +159,7 @@ func TestBuildTLSConfigUnknownModeErrors(t *testing.T) {
 func TestHTTPSRedirectHandlerRedirectsToHTTPS(t *testing.T) {
 	t.Parallel()
 
-	handler := httpsRedirectHandler(8443)
+	handler := httpsRedirectHandler(config.HTTPConfig{RedirectAllowedHosts: []string{"example.com"}}, 8443)
 	req := httptest.NewRequest(http.MethodGet, "/api/test?q=1", nil)
 	req.Host = "example.com"
 	rec := httptest.NewRecorder()
@@ -178,7 +178,7 @@ func TestHTTPSRedirectHandlerRedirectsToHTTPS(t *testing.T) {
 func TestHTTPSRedirectHandlerOmitsPortFor443(t *testing.T) {
 	t.Parallel()
 
-	handler := httpsRedirectHandler(443)
+	handler := httpsRedirectHandler(config.HTTPConfig{CanonicalHost: "example.com"}, 443)
 	req := httptest.NewRequest(http.MethodGet, "/path", nil)
 	req.Host = "example.com"
 	rec := httptest.NewRecorder()
@@ -194,7 +194,7 @@ func TestHTTPSRedirectHandlerOmitsPortFor443(t *testing.T) {
 func TestHTTPSRedirectHandlerStripsHostPort(t *testing.T) {
 	t.Parallel()
 
-	handler := httpsRedirectHandler(8443)
+	handler := httpsRedirectHandler(config.HTTPConfig{RedirectAllowedHosts: []string{"example.com"}}, 8443)
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
 	req.Host = "example.com:8080"
 	rec := httptest.NewRecorder()
@@ -204,6 +204,51 @@ func TestHTTPSRedirectHandlerStripsHostPort(t *testing.T) {
 	want := "https://example.com:8443/x"
 	if loc != want {
 		t.Fatalf("Location = %q, want %q", loc, want)
+	}
+}
+
+func TestHTTPSRedirectHandlerRejectsHostInjection(t *testing.T) {
+	t.Parallel()
+
+	handler := httpsRedirectHandler(config.HTTPConfig{RedirectAllowedHosts: []string{"example.com"}}, 443)
+	req := httptest.NewRequest(http.MethodGet, "/login", nil)
+	req.Host = "evil.example"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if location := rec.Header().Get("Location"); location != "" {
+		t.Fatalf("Location = %q, want empty", location)
+	}
+}
+
+func TestHTTPSRedirectHandlerUsesCanonicalHost(t *testing.T) {
+	t.Parallel()
+
+	handler := httpsRedirectHandler(config.HTTPConfig{CanonicalHost: "api.example.com"}, 8443)
+	req := httptest.NewRequest(http.MethodGet, "/login?next=%2Forders", nil)
+	req.Host = "untrusted.example"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got, want := rec.Header().Get("Location"), "https://api.example.com:8443/login?next=%2Forders"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
+	}
+}
+
+func TestHTTPSRedirectHandlerPreservesIPv6AndHTTPSPort(t *testing.T) {
+	t.Parallel()
+
+	handler := httpsRedirectHandler(config.HTTPConfig{RedirectAllowedHosts: []string{"2001:db8::1"}}, 9443)
+	req := httptest.NewRequest(http.MethodGet, "/v1", nil)
+	req.Host = "[2001:db8::1]:8080"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if got, want := rec.Header().Get("Location"), "https://[2001:db8::1]:9443/v1"; got != want {
+		t.Fatalf("Location = %q, want %q", got, want)
 	}
 }
 

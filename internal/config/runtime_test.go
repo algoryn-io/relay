@@ -87,3 +87,28 @@ func TestBuildRuntimeDropsDangerousOptionAcknowledgements(t *testing.T) {
 		t.Fatalf("runtime key_query = %q, want api_key", settings.KeyQuery)
 	}
 }
+
+func TestBuildRuntimeCarriesSecurityHeaders(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+		Name: "browser-security",
+		Type: "security_headers",
+		Config: MiddlewareSettingsConfig{
+			SecurityHeadersPreset: "secure",
+			XFrameOptions:         "off",
+			ContentSecurityPolicy: "frame-ancestors 'self'",
+		},
+	})
+	cfg.Routes[0].Middleware = append(cfg.Routes[0].Middleware, "browser-security")
+
+	rt, err := BuildRuntime(cfg)
+	if err != nil {
+		t.Fatalf("BuildRuntime() error = %v", err)
+	}
+	settings := rt.Middleware["browser-security"].Config
+	if settings.SecurityHeadersPreset != "secure" || settings.XFrameOptions != "off" {
+		t.Fatalf("runtime security headers = %+v", settings)
+	}
+}

@@ -35,6 +35,114 @@ func TestValidateAdminLoopbackCanUseIPOnlyAccess(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsPublicTrustedNetworks(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Listener.TrustedProxies = []string{"0.0.0.0/0"}
+	assertValidationErrorContains(t, cfg.Validate(), "listener.trusted_proxies[0]: public CIDRs")
+
+	cfg = validConfig()
+	cfg.Observability.Prometheus.AllowedCIDRs = []string{"::/0"}
+	assertValidationErrorContains(t, cfg.Validate(), "observability.prometheus.allowed_cidrs[0]: public CIDRs")
+}
+
+func TestValidateHTTPSRedirectRequiresTrustedAuthority(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Listener.HTTPS = HTTPSConfig{
+		Port: 443,
+		TLS:  TLSConfig{Mode: "auto", Domains: []string{"api.example.com"}, ACMECacheDir: t.TempDir()},
+	}
+	assertValidationErrorContains(t, cfg.Validate(), "canonical_host or redirect_allowed_hosts is required")
+
+	cfg.Listener.HTTP.CanonicalHost = "api.example.com:443"
+	assertValidationErrorContains(t, cfg.Validate(), "without a port")
+
+	cfg.Listener.HTTP.CanonicalHost = "api.example.com"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() trusted redirect authority error = %v", err)
+	}
+}
+
+func TestValidateSecurityHeadersRejectsUnsafeAndConflictingValues(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		settings MiddlewareSettingsConfig
+		want     string
+	}{
+		"unknown preset": {
+			settings: MiddlewareSettingsConfig{SecurityHeadersPreset: "legacy"},
+			want:     "preset: must be one of secure, strict",
+		},
+		"unsafe CSP": {
+			settings: MiddlewareSettingsConfig{ContentSecurityPolicy: "script-src 'unsafe-eval'"},
+			want:     "unsafe-inline and unsafe-eval are not allowed",
+		},
+		"framing conflict": {
+			settings: MiddlewareSettingsConfig{
+				ContentSecurityPolicy: "frame-ancestors 'none'",
+				XFrameOptions:         "DENY",
+			},
+			want: "cannot both be enabled",
+		},
+		"invalid HSTS preload": {
+			settings: MiddlewareSettingsConfig{StrictTransportSecurity: "max-age=60; preload"},
+			want:     "preload requires includeSubDomains",
+		},
+		"header injection": {
+			settings: MiddlewareSettingsConfig{ReferrerPolicy: "no-referrer\r\nX-Evil: yes"},
+			want:     "must not contain control characters",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validConfig()
+			cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+				Name:   "browser-security",
+				Type:   "security_headers",
+				Config: tc.settings,
+			})
+			assertValidationErrorContains(t, cfg.Validate(), tc.want)
+		})
+	}
+}
+
+func TestValidateSecurityHeadersAcceptsSafePresetOverride(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Middleware = append(cfg.Middleware, MiddlewareConfig{
+		Name: "browser-security",
+		Type: "security_headers",
+		Config: MiddlewareSettingsConfig{
+			SecurityHeadersPreset: "secure",
+			XFrameOptions:         "off",
+			ContentSecurityPolicy: "default-src 'self'; frame-ancestors 'self'",
+			ReferrerPolicy:        "strict-origin-when-cross-origin",
+		},
+	})
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestValidateInsecureBackendTLSRequiresAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	cfg := validConfig()
+	cfg.Backends[0].TLS.InsecureSkipVerify = true
+
+	assertValidationErrorContains(t, cfg.Validate(), "acknowledge_insecure_skip_verify")
+	cfg.Backends[0].TLS.AcknowledgeInsecureSkipVerify = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() explicit acknowledgement error = %v", err)
+	}
+}
+
 func TestValidateFabricEnabledRequiresServiceName(t *testing.T) {
 	t.Parallel()
 

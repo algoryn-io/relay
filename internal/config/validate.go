@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,16 +17,17 @@ var (
 		"weighted_random":   {},
 	}
 	validMiddlewareTypes = map[string]struct{}{
-		"jwt":        {},
-		"rate_limit": {},
-		"body_limit": {},
-		"ip_filter":  {},
-		"cors":       {},
-		"header":     {},
-		"api_key":    {},
-		"cache":      {},
-		"oauth2":     {},
-		"ext_authz":  {},
+		"jwt":              {},
+		"rate_limit":       {},
+		"body_limit":       {},
+		"ip_filter":        {},
+		"cors":             {},
+		"header":           {},
+		"security_headers": {},
+		"api_key":          {},
+		"cache":            {},
+		"oauth2":           {},
+		"ext_authz":        {},
 	}
 )
 
@@ -59,6 +61,17 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 
 	if listener.HTTPS.Port > 0 {
 		validateTLS("listener.https.tls", listener.HTTPS.TLS, errs)
+	}
+	if listener.HTTP.Port > 0 && listener.HTTPS.Port > 0 {
+		if strings.TrimSpace(listener.HTTP.CanonicalHost) == "" && len(listener.HTTP.RedirectAllowedHosts) == 0 {
+			errs.Addf("listener.http: canonical_host or redirect_allowed_hosts is required when HTTP redirects to HTTPS")
+		}
+	}
+	if host := strings.TrimSpace(listener.HTTP.CanonicalHost); host != "" {
+		validateRedirectHost("listener.http.canonical_host", host, errs)
+	}
+	for i, host := range listener.HTTP.RedirectAllowedHosts {
+		validateRedirectHost(fmt.Sprintf("listener.http.redirect_allowed_hosts[%d]", i), host, errs)
 	}
 
 	validatePositiveDuration("listener.timeouts.read", listener.Timeouts.Read, errs, false)
@@ -321,7 +334,7 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 		}
 
 		if _, ok := validMiddlewareTypes[middleware.Type]; !ok {
-			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors, header, api_key, cache, oauth2, ext_authz", prefix)
+			errs.Addf("%s.type: must be one of jwt, rate_limit, body_limit, ip_filter, cors, header, security_headers, api_key, cache, oauth2, ext_authz", prefix)
 		}
 
 		if middleware.Type == "jwt" {
@@ -400,6 +413,9 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 				errs.Addf("%s.config: at least one of request_set, request_del, response_set, response_del must be provided", prefix)
 			}
 		}
+		if middleware.Type == "security_headers" {
+			validateSecurityHeadersMiddleware(prefix+".config", middleware.Config, errs)
+		}
 		if middleware.Type == "api_key" {
 			validateAPIKeyMiddleware(prefix+".config", middleware.Config, errs)
 		}
@@ -415,6 +431,250 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 	}
 
 	return seen
+}
+
+func validateRedirectHost(field, value string, errs *ValidationErrors) {
+	host := strings.TrimSpace(value)
+	if host == "" {
+		errs.Addf("%s: must not be empty", field)
+		return
+	}
+	if strings.ContainsAny(host, "/\\@?# \t\r\n") {
+		errs.Addf("%s: must be a hostname or IP address without scheme, path, or port", field)
+		return
+	}
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	}
+	if net.ParseIP(host) != nil {
+		return
+	}
+	if strings.Contains(host, ":") || len(host) > 253 {
+		errs.Addf("%s: must be a valid hostname or IP address without a port", field)
+		return
+	}
+	host = strings.TrimSuffix(host, ".")
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			errs.Addf("%s: must be a valid hostname or IP address without a port", field)
+			return
+		}
+		for _, r := range label {
+			if r != '-' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+				errs.Addf("%s: must be a valid hostname or IP address without a port", field)
+				return
+			}
+		}
+	}
+}
+
+func validateSecurityHeadersMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
+	switch strings.ToLower(strings.TrimSpace(cfg.SecurityHeadersPreset)) {
+	case "", "secure", "strict":
+	default:
+		errs.Addf("%s.preset: must be one of secure, strict", prefix)
+	}
+
+	values := map[string]string{
+		"strict_transport_security": cfg.StrictTransportSecurity,
+		"content_security_policy":   cfg.ContentSecurityPolicy,
+		"x_frame_options":           cfg.XFrameOptions,
+		"x_content_type_options":    cfg.XContentTypeOptions,
+		"referrer_policy":           cfg.ReferrerPolicy,
+		"permissions_policy":        cfg.PermissionsPolicy,
+	}
+	hasExplicit := false
+	for name, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			hasExplicit = true
+		}
+		if hasUnsafeHeaderValue(value) {
+			errs.Addf("%s.%s: must not contain control characters", prefix, name)
+		}
+	}
+	if strings.TrimSpace(cfg.SecurityHeadersPreset) == "" && !hasExplicit {
+		errs.Addf("%s: preset or at least one explicit security header is required", prefix)
+	}
+
+	validateHSTS(prefix+".strict_transport_security", cfg.StrictTransportSecurity, errs)
+	validateCSP(prefix+".content_security_policy", cfg.ContentSecurityPolicy, errs)
+	if value := strings.ToUpper(strings.TrimSpace(cfg.XFrameOptions)); value != "" && value != "OFF" && value != "DENY" && value != "SAMEORIGIN" {
+		errs.Addf("%s.x_frame_options: must be DENY, SAMEORIGIN, or off", prefix)
+	}
+	if value := strings.ToLower(strings.TrimSpace(cfg.XContentTypeOptions)); value != "" && value != "off" && value != "nosniff" {
+		errs.Addf("%s.x_content_type_options: must be nosniff or off", prefix)
+	}
+	if value := strings.ToLower(strings.TrimSpace(cfg.ReferrerPolicy)); value == "unsafe-url" {
+		errs.Addf("%s.referrer_policy: unsafe-url is not allowed", prefix)
+	} else if value != "" && value != "off" && !validReferrerPolicy(value) {
+		errs.Addf("%s.referrer_policy: must contain only recognized safe policies or off", prefix)
+	}
+	if value := strings.TrimSpace(cfg.PermissionsPolicy); value != "" && !isHeaderOff(value) {
+		validatePermissionsPolicy(prefix+".permissions_policy", value, errs)
+	}
+
+	csp := effectiveSecurityHeader(cfg.SecurityHeadersPreset, cfg.ContentSecurityPolicy, "default-src 'self'; object-src 'none'; base-uri 'self'", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+	xfo := effectiveSecurityHeader(cfg.SecurityHeadersPreset, cfg.XFrameOptions, "DENY", "off")
+	if containsCSPDirective(csp, "frame-ancestors") && !isHeaderOff(xfo) {
+		errs.Addf("%s: x_frame_options and content_security_policy frame-ancestors cannot both be enabled", prefix)
+	}
+	effective := []string{
+		effectiveSecurityHeader(cfg.SecurityHeadersPreset, cfg.StrictTransportSecurity, "max-age=31536000; includeSubDomains", "max-age=63072000; includeSubDomains; preload"),
+		csp,
+		xfo,
+		effectiveSecurityHeader(cfg.SecurityHeadersPreset, cfg.XContentTypeOptions, "nosniff", "nosniff"),
+		effectiveSecurityHeader(cfg.SecurityHeadersPreset, cfg.ReferrerPolicy, "no-referrer", "no-referrer"),
+		effectiveSecurityHeader(cfg.SecurityHeadersPreset, cfg.PermissionsPolicy, "camera=(), microphone=(), geolocation=()", "camera=(), microphone=(), geolocation=()"),
+	}
+	enabled := false
+	for _, value := range effective {
+		if strings.TrimSpace(value) != "" && !isHeaderOff(value) {
+			enabled = true
+			break
+		}
+	}
+	if !enabled {
+		errs.Addf("%s: at least one security header must remain enabled", prefix)
+	}
+}
+
+func validateHSTS(field, value string, errs *ValidationErrors) {
+	value = strings.TrimSpace(value)
+	if value == "" || isHeaderOff(value) {
+		return
+	}
+	var maxAge int64 = -1
+	seenMaxAge := false
+	includeSubdomains := false
+	preload := false
+	for _, part := range strings.Split(value, ";") {
+		part = strings.TrimSpace(part)
+		lower := strings.ToLower(part)
+		switch {
+		case strings.HasPrefix(lower, "max-age="):
+			parsed, err := strconv.ParseInt(strings.TrimPrefix(lower, "max-age="), 10, 64)
+			if err != nil || parsed < 0 || seenMaxAge {
+				errs.Addf("%s: max-age must be a non-negative integer", field)
+				return
+			}
+			maxAge = parsed
+			seenMaxAge = true
+		case lower == "includesubdomains":
+			includeSubdomains = true
+		case lower == "preload":
+			preload = true
+		default:
+			errs.Addf("%s: unsupported HSTS directive %q", field, part)
+			return
+		}
+	}
+	if maxAge < 0 {
+		errs.Addf("%s: max-age is required", field)
+	}
+	if preload && (!includeSubdomains || maxAge < 31536000) {
+		errs.Addf("%s: preload requires includeSubDomains and max-age >= 31536000", field)
+	}
+}
+
+func validReferrerPolicy(value string) bool {
+	valid := map[string]struct{}{
+		"no-referrer":                     {},
+		"no-referrer-when-downgrade":      {},
+		"origin":                          {},
+		"origin-when-cross-origin":        {},
+		"same-origin":                     {},
+		"strict-origin":                   {},
+		"strict-origin-when-cross-origin": {},
+	}
+	for _, policy := range strings.Split(value, ",") {
+		if _, ok := valid[strings.TrimSpace(policy)]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func validatePermissionsPolicy(field, value string, errs *ValidationErrors) {
+	if strings.Contains(value, "*") {
+		errs.Addf("%s: wildcard permissions are not allowed", field)
+		return
+	}
+	for _, directive := range strings.Split(value, ",") {
+		directive = strings.TrimSpace(directive)
+		eq := strings.IndexByte(directive, '=')
+		if eq <= 0 || !strings.HasPrefix(strings.TrimSpace(directive[eq+1:]), "(") || !strings.HasSuffix(strings.TrimSpace(directive[eq+1:]), ")") {
+			errs.Addf("%s: each directive must use feature=(allowlist) syntax", field)
+			return
+		}
+		feature := strings.TrimSpace(directive[:eq])
+		for _, r := range feature {
+			if r != '-' && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
+				errs.Addf("%s: invalid feature name %q", field, feature)
+				return
+			}
+		}
+	}
+}
+
+func validateCSP(field, value string, errs *ValidationErrors) {
+	value = strings.TrimSpace(value)
+	if value == "" || isHeaderOff(value) {
+		return
+	}
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, "'unsafe-inline'") || strings.Contains(lower, "'unsafe-eval'") {
+		errs.Addf("%s: unsafe-inline and unsafe-eval are not allowed", field)
+	}
+	for _, directive := range strings.Split(value, ";") {
+		fields := strings.Fields(strings.ToLower(strings.TrimSpace(directive)))
+		if len(fields) > 1 && fields[0] == "frame-ancestors" {
+			for _, source := range fields[1:] {
+				if source == "*" || strings.HasPrefix(source, "http:") || strings.HasPrefix(source, "data:") {
+					errs.Addf("%s: insecure frame-ancestors source %q is not allowed", field, source)
+				}
+			}
+		}
+	}
+}
+
+func effectiveSecurityHeader(preset, override, secure, strict string) string {
+	if strings.TrimSpace(override) != "" {
+		return strings.TrimSpace(override)
+	}
+	if strings.EqualFold(strings.TrimSpace(preset), "strict") {
+		return strict
+	}
+	if strings.EqualFold(strings.TrimSpace(preset), "secure") {
+		return secure
+	}
+	return ""
+}
+
+func containsCSPDirective(value, directive string) bool {
+	if isHeaderOff(value) {
+		return false
+	}
+	for _, part := range strings.Split(value, ";") {
+		fields := strings.Fields(part)
+		if len(fields) > 0 && strings.EqualFold(fields[0], directive) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHeaderOff(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), "off")
+}
+
+func hasUnsafeHeaderValue(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCacheMiddleware(prefix string, cfg MiddlewareSettingsConfig, errs *ValidationErrors) {
