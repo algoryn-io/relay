@@ -113,7 +113,13 @@ func (s *configWatchSupervisor) run(ctx context.Context) {
 			s.apply(result)
 		case <-timerC:
 			timerC = nil
+			// Collapse any events still queued when the timer wins the select;
+			// otherwise a write burst can schedule a second reload immediately.
+			s.drainRelevantEvents()
 			s.apply(s.onReload())
+			if s.drainRelevantEvents() {
+				schedule()
+			}
 		case event, ok := <-s.watcher.Events:
 			if !ok {
 				return
@@ -127,6 +133,26 @@ func (s *configWatchSupervisor) run(ctx context.Context) {
 				return
 			}
 			s.logger.Warn("file watcher error", "error", err)
+		}
+	}
+}
+
+// drainRelevantEvents drops ready watcher events. It returns true when at least
+// one event would have scheduled a reload.
+func (s *configWatchSupervisor) drainRelevantEvents() bool {
+	drained := false
+	for {
+		select {
+		case event, ok := <-s.watcher.Events:
+			if !ok {
+				return drained
+			}
+			if event.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename|fsnotify.Remove) != 0 &&
+				s.relevant(event.Name) {
+				drained = true
+			}
+		default:
+			return drained
 		}
 	}
 }
