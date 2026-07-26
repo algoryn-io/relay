@@ -680,6 +680,7 @@ func httpsRedirectHandler(httpsPort int) http.Handler {
 		if httpsPort == 443 {
 			target = fmt.Sprintf("https://%s%s", host, r.RequestURI)
 		}
+		// #nosec G710 -- the fixed scheme and request Host preserve the same authority.
 		http.Redirect(w, r, target, http.StatusMovedPermanently)
 	})
 }

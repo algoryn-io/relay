@@ -32,7 +32,8 @@ func newRotatingFileWriter(path string, maxBytes int64, maxAgeDays int, compress
 		return nil, fmt.Errorf("max bytes must be greater than 0")
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	// #nosec G304 -- path is the operator-configured log destination.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +107,7 @@ func (w *rotatingFileWriter) rotateLocked() error {
 		return err
 	}
 
-	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(w.path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -149,6 +150,7 @@ func (w *rotatingFileWriter) runDailyRotation() {
 // Writes to a temp file first and renames atomically so the .gz file
 // only becomes visible once it is fully written.
 func compressFile(src string) error {
+	// #nosec G304 -- src is a rotation path derived from the configured log file.
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -157,30 +159,31 @@ func compressFile(src string) error {
 
 	dst := src + ".gz"
 	tmp := dst + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// #nosec G304 -- tmp is derived from the validated rotation source path.
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
 
 	gz := gzip.NewWriter(out)
 	if _, err := io.Copy(gz, in); err != nil {
-		out.Close()
-		os.Remove(tmp)
+		_ = out.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := gz.Close(); err != nil {
-		out.Close()
-		os.Remove(tmp)
+		_ = out.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
-	in.Close()
+	_ = in.Close()
 
 	if err := os.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Remove(src)

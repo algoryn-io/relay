@@ -25,6 +25,7 @@ const maxIntrospectionBodyBytes = 1 << 20 // 1 MB
 // tokenScopeHeader carries the granted scopes to the backend after a successful
 // introspection. Like the subject header, any client-supplied value is stripped
 // first so it cannot be spoofed.
+// #nosec G101 -- this constant is an HTTP header name, not a credential.
 const tokenScopeHeader = "X-Token-Scope"
 
 // IntrospectionConfig configures the OAuth2 token introspection middleware.

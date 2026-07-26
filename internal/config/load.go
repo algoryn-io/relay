@@ -32,6 +32,7 @@ func loadWithIncludes(path string, loaded map[string]struct{}) (*Config, error) 
 	}
 	loaded[abs] = struct{}{}
 
+	// #nosec G304 -- path is the operator-selected root or an include resolved from it.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %q: %w", path, err)

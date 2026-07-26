@@ -34,7 +34,7 @@ func NewAccessLogger(cfg config.LogsConfig) (*slog.Logger, io.Closer, error) {
 		maxSizeMB = defaultLogMaxSizeMB
 	}
 
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
 		return nil, nil, err
 	}
 

@@ -221,6 +221,7 @@ func jwtHandler(cfg JWTConfig, claimsToHeaders map[string]string, keyfunc jwt.Ke
 // loadRSAPublicKeyPEM reads a PEM file and returns the RSA public key.
 // Supports PKIX ("PUBLIC KEY") and PKCS1 ("RSA PUBLIC KEY") formats.
 func loadRSAPublicKeyPEM(path string) (*rsa.PublicKey, error) {
+	// #nosec G304 -- path is an operator-controlled public-key configuration value.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read public key file %q: %w", path, err)
