@@ -39,3 +39,26 @@ func TestPrometheusExposesResilienceMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestPrometheusRecordsBoundedReloadMetrics(t *testing.T) {
+	t.Parallel()
+	c := NewPrometheusCollector()
+	c.RecordConfigReload("failure", "validate")
+	c.RecordConfigReload("success", "observability")
+
+	rec := httptest.NewRecorder()
+	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		`relay_config_reload_total{result="failure",stage="validate"} 1`,
+		`relay_config_reload_total{result="success",stage="observability"} 1`,
+		"relay_config_last_successful_reload_timestamp_seconds ",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape missing %q", want)
+		}
+	}
+	if strings.Contains(body, "error=") {
+		t.Fatal("reload metrics exposed an unbounded error label")
+	}
+}

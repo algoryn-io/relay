@@ -690,6 +690,33 @@ func TestValidateLogsMaxSizeNegative(t *testing.T) {
 	assertValidationErrorContains(t, cfg.Validate(), "observability.logs.max_size_mb: must be >= 0")
 }
 
+func TestValidateLogsReloadableFields(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		mutate func(*Config)
+		want   string
+	}{
+		"level": {
+			mutate: func(cfg *Config) { cfg.Observability.Logs.Level = "verbose" },
+			want:   "observability.logs.level",
+		},
+		"format": {
+			mutate: func(cfg *Config) { cfg.Observability.Logs.Format = "xml" },
+			want:   "observability.logs.format",
+		},
+		"max age": {
+			mutate: func(cfg *Config) { cfg.Observability.Logs.MaxAgeDays = -1 },
+			want:   "observability.logs.max_age_days",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.mutate(cfg)
+			assertValidationErrorContains(t, cfg.Validate(), tc.want)
+		})
+	}
+}
+
 func assertValidationErrorContains(t *testing.T, err error, want string) {
 	t.Helper()
 	if err == nil {

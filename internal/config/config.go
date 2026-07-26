@@ -392,7 +392,8 @@ type TracingConfig struct {
 	// Defaults to the OpenTelemetry SDK default when empty.
 	Endpoint string `yaml:"endpoint"`
 	// SampleRate is the fraction of traces to sample (0.0–1.0). Default 1.0.
-	SampleRate float64 `yaml:"sample_rate"`
+	SampleRate    float64 `yaml:"sample_rate"`
+	SampleRateSet bool    `yaml:"-"`
 	// ServiceName overrides the service name reported to the collector.
 	// Falls back to observability.fabric.service_name, then "relay".
 	ServiceName string `yaml:"service_name"`

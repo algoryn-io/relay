@@ -163,6 +163,9 @@ type Server struct {
 	httpsServer  *http.Server  // nil when HTTPS is not configured
 	certReloader *CertReloader // non-nil only in manual TLS mode
 	logger       *slog.Logger
+	tracing      *observability.TracingHandle
+	metrics      *observability.Metrics
+	prometheus   *observability.PrometheusCollector
 	state        atomic.Pointer[serverState]
 	lifecycleMu  sync.Mutex
 	shuttingDown bool
@@ -184,7 +187,12 @@ type compiledRoute struct {
 // New builds the server(s). When listener.https.port is set, a TLS server is
 // created alongside the HTTP server. If only HTTPS is configured, the HTTP
 // server redirects all requests to the HTTPS port.
-func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Server, error) {
+func New(
+	cfg *config.Config,
+	rt *config.RuntimeConfig,
+	logger *slog.Logger,
+	tracing ...*observability.TracingHandle,
+) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config must not be nil")
 	}
@@ -198,7 +206,13 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		logger = slog.Default()
 	}
 
-	st, err := buildState(cfg, rt, logger)
+	metrics := observability.NewMetrics(100)
+	prometheus := observability.NewPrometheusCollector()
+	var tracingHandle *observability.TracingHandle
+	if len(tracing) > 0 {
+		tracingHandle = tracing[0]
+	}
+	st, err := buildStateShared(cfg, rt, logger, tracingHandle, metrics, prometheus)
 	if err != nil {
 		return nil, err
 	}
@@ -211,6 +225,9 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 
 	s := &Server{
 		logger:            logger,
+		tracing:           tracingHandle,
+		metrics:           metrics,
+		prometheus:        prometheus,
 		connectionLimiter: newConnectionLimiter(cfg.Listener.MaxConnectionsPerIP),
 		shutdownDone:      make(chan struct{}),
 		states:            make(map[*serverState]struct{}),
@@ -291,7 +308,7 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 		return fmt.Errorf("server is shutting down")
 	}
 
-	newState, err := buildState(cfg, rt, s.logger)
+	newState, err := buildStateShared(cfg, rt, s.logger, s.tracing, s.metrics, s.prometheus)
 	if err != nil {
 		return fmt.Errorf("build reloaded state: %w", err)
 	}
@@ -322,6 +339,14 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 	}
 
 	return nil
+}
+
+// RecordConfigReload exposes process-lifetime reload telemetry without
+// replacing the registry when request-handling state is rebuilt.
+func (s *Server) RecordConfigReload(result, stage string) {
+	if s != nil {
+		s.prometheus.RecordConfigReload(result, stage)
+	}
 }
 
 // Start launches all configured servers concurrently and blocks until one of
@@ -534,6 +559,24 @@ func (s *Server) removeState(st *serverState) {
 }
 
 func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (st *serverState, err error) {
+	return buildStateShared(
+		cfg,
+		rt,
+		logger,
+		nil,
+		observability.NewMetrics(100),
+		observability.NewPrometheusCollector(),
+	)
+}
+
+func buildStateShared(
+	cfg *config.Config,
+	rt *config.RuntimeConfig,
+	logger *slog.Logger,
+	tracing *observability.TracingHandle,
+	metrics *observability.Metrics,
+	promCollector *observability.PrometheusCollector,
+) (st *serverState, err error) {
 	owner := &resourceOwner{}
 	defer func() {
 		if err != nil {
@@ -555,8 +598,6 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 	}))
 	rtProxy.SetWebSocketIdleTimeout(cfg.Listener.Timeouts.WebSocketIdle)
 
-	metrics := observability.NewMetrics(100)
-	promCollector := observability.NewPrometheusCollector()
 	mwRegistry, mwClosers, err := middleware.BuildRegistry(rt.Middleware, logger, promCollector)
 	if err != nil {
 		return nil, err
@@ -627,7 +668,7 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		requestIDMW := middleware.RequestID()
 		loggingMW := observability.NewLoggingMiddleware(logger, routeRef.Name, routeRef.BackendName)
 		metricsMW := observability.NewMetricsMiddlewareFabric(metrics, promCollector, fabricDispatch, relaySvc, routeRef.Name)
-		tracingMW := observability.NewTracingMiddleware(routeRef.Name, routeRef.BackendName)
+		tracingMW := observability.NewTracingMiddlewareWithHandle(tracing, routeRef.Name, routeRef.BackendName)
 
 		compiledRoutes[routeName] = &compiledRoute{
 			route:   routeRef,

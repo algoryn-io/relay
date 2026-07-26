@@ -28,6 +28,8 @@ type PrometheusCollector struct {
 	listenerRejected    prometheus.Counter
 	rateLimitBuckets    prometheus.Gauge
 	rateLimitEvictions  prometheus.Counter
+	configReloadTotal   *prometheus.CounterVec
+	configReloadSuccess prometheus.Gauge
 	registry            *prometheus.Registry
 }
 
@@ -111,10 +113,21 @@ func NewPrometheusCollector() *PrometheusCollector {
 		Help: "Total in-process rate limit buckets evicted to enforce configured capacity.",
 	})
 
+	configReloadTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "relay_config_reload_total",
+		Help: "Total configuration reload attempts by final result and pipeline stage.",
+	}, []string{"result", "stage"})
+
+	configReloadSuccess := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "relay_config_last_successful_reload_timestamp_seconds",
+		Help: "Unix timestamp of the last successfully applied configuration reload.",
+	})
+
 	reg.MustRegister(
 		requestsTotal, requestDuration, activeRequests, backendHealthy,
 		upstreamDuration, retryTotal, retryBudgetExceeded, circuitState, bulkheadInFlight, bulkheadRejected,
 		listenerConnections, listenerPeerIPs, listenerRejected, rateLimitBuckets, rateLimitEvictions,
+		configReloadTotal, configReloadSuccess,
 	)
 
 	return &PrometheusCollector{
@@ -133,6 +146,8 @@ func NewPrometheusCollector() *PrometheusCollector {
 		listenerRejected:    listenerRejected,
 		rateLimitBuckets:    rateLimitBuckets,
 		rateLimitEvictions:  rateLimitEvictions,
+		configReloadTotal:   configReloadTotal,
+		configReloadSuccess: configReloadSuccess,
 		registry:            reg,
 	}
 }
@@ -228,6 +243,28 @@ func (c *PrometheusCollector) RecordRateLimitMemoryEviction() {
 		return
 	}
 	c.rateLimitEvictions.Inc()
+}
+
+// RecordConfigReload records only bounded result/stage values; error text is
+// deliberately never used as a label.
+func (c *PrometheusCollector) RecordConfigReload(result, stage string) {
+	if c == nil {
+		return
+	}
+	switch result {
+	case "success", "failure":
+	default:
+		result = "failure"
+	}
+	switch stage {
+	case "load", "resolve", "validate", "build", "apply", "observability":
+	default:
+		stage = "apply"
+	}
+	c.configReloadTotal.WithLabelValues(result, stage).Inc()
+	if result == "success" {
+		c.configReloadSuccess.SetToCurrentTime()
+	}
 }
 
 func (c *PrometheusCollector) RequestStarted(route string) {
