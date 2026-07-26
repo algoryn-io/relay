@@ -1,0 +1,12 @@
+routes:
+  - name: reload
+    match:
+      path_prefix: /reload
+      methods: [GET]
+    backend: reload
+
+backends:
+  - name: reload
+    strategy: round_robin
+    instances:
+      - url: http://upstream-v2:8080

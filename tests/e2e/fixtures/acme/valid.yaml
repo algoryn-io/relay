@@ -1,0 +1,11 @@
+listener:
+  https:
+    port: 8443
+    tls:
+      mode: auto
+      domains: [relay.invalid]
+      acme_cache_dir: /var/lib/relay/acme
+
+routes: []
+backends: []
+middleware: []

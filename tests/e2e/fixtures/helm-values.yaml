@@ -1,0 +1,30 @@
+fullnameOverride: relay-e2e
+
+image:
+  repository: example.invalid/relay
+  tag: e2e
+
+config: |
+  listener:
+    http:
+      port: 8088
+    timeouts:
+      read: 5s
+      write: 5s
+      idle: 15s
+      read_header: 2s
+
+  routes:
+    - name: e2e
+      match:
+        path_prefix: /
+        methods: [GET]
+      backend: e2e
+
+  backends:
+    - name: e2e
+      strategy: round_robin
+      instances:
+        - url: http://upstream:8080
+
+  middleware: []

@@ -1,0 +1,10 @@
+FROM golang:1.25.12-alpine3.23@sha256:cc985ef6f9c3bf9ece7488129c9abe0a150388ccdfa428d886fc709dca0b230a AS builder
+WORKDIR /src
+COPY tests/e2e/fixtures/upstream/main.go .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/upstream main.go
+
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
+RUN adduser -D -u 10002 upstream
+COPY --from=builder /out/upstream /usr/local/bin/upstream
+USER 10002
+ENTRYPOINT ["/usr/local/bin/upstream"]
