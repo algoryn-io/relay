@@ -67,6 +67,9 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 	if listener.MaxConcurrentRequests < 0 {
 		errs.Addf("listener.max_concurrent_requests: must be >= 0")
 	}
+	if listener.MaxConnectionsPerIP < 0 {
+		errs.Addf("listener.max_connections_per_ip: must be >= 0")
+	}
 	if listener.MaxRequestBodyBytes < 0 {
 		errs.Addf("listener.max_request_body_bytes: must be >= 0")
 	}

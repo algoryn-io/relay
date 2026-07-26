@@ -33,6 +33,10 @@ type ListenerConfig struct {
 	// (global overload backpressure on top of per-backend bulkheads). Excess
 	// requests get a fast 503. 0 means unlimited.
 	MaxConcurrentRequests int `yaml:"max_concurrent_requests"`
+	// MaxConnectionsPerIP caps simultaneous TCP connections from one real peer
+	// IP. It is enforced before HTTP parsing, so forwarding headers and
+	// TrustedProxies do not affect it. 0 disables the limit.
+	MaxConnectionsPerIP int `yaml:"max_connections_per_ip"`
 	// MaxRequestBodyBytes caps request bodies for every proxied route unless
 	// that route defines max_body_bytes explicitly. Zero is normalized to a
 	// secure default of 10 MiB.

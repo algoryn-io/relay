@@ -23,6 +23,9 @@ type PrometheusCollector struct {
 	circuitState        *prometheus.GaugeVec
 	bulkheadInFlight    *prometheus.GaugeVec
 	bulkheadRejected    *prometheus.CounterVec
+	listenerConnections prometheus.Gauge
+	listenerPeerIPs     prometheus.Gauge
+	listenerRejected    prometheus.Counter
 	registry            *prometheus.Registry
 }
 
@@ -81,9 +84,25 @@ func NewPrometheusCollector() *PrometheusCollector {
 		Help: "Total requests rejected because the backend bulkhead was full.",
 	}, []string{"backend"})
 
+	listenerConnections := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "relay_listener_connections_active",
+		Help: "TCP connections currently tracked by the listener per-IP limiter.",
+	})
+
+	listenerPeerIPs := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "relay_listener_peer_ips_active",
+		Help: "Real TCP peer IPs with at least one active listener connection.",
+	})
+
+	listenerRejected := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "relay_listener_connections_rejected_total",
+		Help: "Total TCP connections rejected because the real peer IP reached its configured limit.",
+	})
+
 	reg.MustRegister(
 		requestsTotal, requestDuration, activeRequests, backendHealthy,
 		upstreamDuration, retryTotal, retryBudgetExceeded, circuitState, bulkheadInFlight, bulkheadRejected,
+		listenerConnections, listenerPeerIPs, listenerRejected,
 	)
 
 	return &PrometheusCollector{
@@ -97,6 +116,9 @@ func NewPrometheusCollector() *PrometheusCollector {
 		circuitState:        circuitState,
 		bulkheadInFlight:    bulkheadInFlight,
 		bulkheadRejected:    bulkheadRejected,
+		listenerConnections: listenerConnections,
+		listenerPeerIPs:     listenerPeerIPs,
+		listenerRejected:    listenerRejected,
 		registry:            reg,
 	}
 }
@@ -157,6 +179,25 @@ func (c *PrometheusCollector) RecordBulkheadRejected(backend string) {
 		return
 	}
 	c.bulkheadRejected.WithLabelValues(backend).Inc()
+}
+
+// SetListenerConnections reports aggregate listener limiter occupancy. Peer IPs
+// are deliberately not labels, avoiding unbounded Prometheus cardinality.
+func (c *PrometheusCollector) SetListenerConnections(connections, peerIPs int) {
+	if c == nil {
+		return
+	}
+	c.listenerConnections.Set(float64(connections))
+	c.listenerPeerIPs.Set(float64(peerIPs))
+}
+
+// RecordListenerConnectionRejected counts a connection refused by the per-IP
+// listener limit.
+func (c *PrometheusCollector) RecordListenerConnectionRejected() {
+	if c == nil {
+		return
+	}
+	c.listenerRejected.Inc()
 }
 
 func (c *PrometheusCollector) RequestStarted(route string) {

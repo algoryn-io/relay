@@ -43,6 +43,7 @@ type serverState struct {
 	metrics            *observability.Metrics
 	metricsH           http.Handler
 	prometheusH        http.Handler
+	prometheus         *observability.PrometheusCollector
 	prometheusPath     string
 	metricsAllowedNets []*net.IPNet // extra peers (beyond loopback) allowed to scrape metrics
 	routes             map[string]*compiledRoute
@@ -78,6 +79,7 @@ type Server struct {
 	inFlight            atomic.Int64 // currently in-flight proxied requests
 	maxInFlight         atomic.Int64 // global cap; 0 = unlimited (resizable on reload)
 	maxRequestBodyBytes atomic.Int64 // global body cap; route limits can override it
+	connectionLimiter   *connectionLimiter
 }
 
 type compiledRoute struct {
@@ -107,8 +109,12 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 		return nil, err
 	}
 
-	s := &Server{logger: logger}
+	s := &Server{
+		logger:            logger,
+		connectionLimiter: newConnectionLimiter(cfg.Listener.MaxConnectionsPerIP),
+	}
 	s.state.Store(st)
+	s.connectionLimiter.setMetrics(st.prometheus)
 	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
 	s.maxRequestBodyBytes.Store(cfg.Listener.MaxRequestBodyBytes)
 
@@ -135,6 +141,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 			WriteTimeout:      timeouts.Write,
 			IdleTimeout:       timeouts.Idle,
 			MaxHeaderBytes:    defaultMaxHeaderBytes,
+			ConnState:         s.connectionLimiter.connState,
 			// Accept cleartext HTTP/2 (h2c) alongside HTTP/1.1 so gRPC and other
 			// HTTP/2 clients can connect without TLS. Uses stdlib support for
 			// unencrypted HTTP/2 (Go 1.24+); transparent to HTTP/1.1 clients.
@@ -157,6 +164,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 			WriteTimeout:      timeouts.Write,
 			IdleTimeout:       timeouts.Idle,
 			MaxHeaderBytes:    defaultMaxHeaderBytes,
+			ConnState:         s.connectionLimiter.connState,
 		}
 		// When only HTTPS is configured, the HTTP server is nil; Start() still
 		// works because it only starts the servers that are non-nil.
@@ -182,6 +190,8 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 	old := s.state.Swap(newState)
 	go old.close()
 
+	s.connectionLimiter.setLimit(cfg.Listener.MaxConnectionsPerIP)
+	s.connectionLimiter.setMetrics(newState.prometheus)
 	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
 	s.maxRequestBodyBytes.Store(cfg.Listener.MaxRequestBodyBytes)
 
@@ -458,6 +468,7 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		metrics:            metrics,
 		metricsH:           observability.MetricsHandler(metrics),
 		prometheusH:        promCollector.Handler(),
+		prometheus:         promCollector,
 		prometheusPath:     promPath,
 		metricsAllowedNets: httpx.ParseTrustedNets(cfg.Observability.Prometheus.AllowedCIDRs),
 		routes:             compiledRoutes,

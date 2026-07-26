@@ -81,7 +81,17 @@ When both are set for the same secret, the `*_env` source wins.
 | `trusted_proxies` | []cidr/ip | `[]` | Peers allowed to set `X-Forwarded-For`. Client IP is taken from `X-Forwarded-For` only when the immediate peer is trusted. Public CIDRs are rejected. |
 | `strip_request_headers` | []string | `[]` | Extra inbound headers to drop at the edge (on top of Relay-managed identity + `X-Forwarded-*`). |
 | `max_concurrent_requests` | int | `0` (unlimited) | Global in-flight cap; excess requests get a fast `503`. Internal endpoints are exempt. |
+| `max_connections_per_ip` | int | `0` (disabled) | Simultaneous TCP connection cap per real peer IP. Excess connections are closed before HTTP parsing. |
 | `max_request_body_bytes` | int64 | `10485760` | Global proxied-request body cap (10 MiB). A route's `max_body_bytes` overrides it. |
+
+`max_connections_per_ip` runs at the TCP listener, before request headers exist.
+It therefore always keys on the immediate peer from `RemoteAddr` and never on
+`X-Forwarded-For`, even when that peer is in `trusted_proxies`. Behind a load
+balancer, all connections may appear under the load balancer's IP; prefer
+`max_concurrent_requests`, backend bulkheads, or request rate limits there
+instead of treating a forwarded address as the TCP peer. The setting is
+process-local and hot-reloadable; lowering it does not terminate established
+connections, but rejects new ones until occupancy falls below the new limit.
 
 ### `listener.https.tls`
 
