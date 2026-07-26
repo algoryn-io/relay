@@ -167,6 +167,33 @@ routes:
 
 Header-based route matching still works for explicit canary flags:
 
+For **percentage canaries**, sticky sessions, and async mirroring on a single route,
+use `traffic` (see [configuration](docs/configuration.md#routestraffic) and
+`config/examples/traffic-splitting.yaml`):
+
+```yaml
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+      methods: [GET, POST]
+    backend: api-stable
+    traffic:
+      canary:
+        backend: api-canary
+        percent: 10
+        key:
+          header: X-User-Id
+      sticky:
+        cookie: relay_affinity
+        cookie_ttl: 24h
+      mirror:
+        backend: api-shadow
+        exclude_request_body: true
+```
+
+Header-based route matching still works for explicit canary flags:
+
 ```yaml
 routes:
   - name: canary
