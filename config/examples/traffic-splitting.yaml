@@ -2,6 +2,10 @@
 listener:
   http:
     port: 8088
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
 
 routes:
   - name: api-route
