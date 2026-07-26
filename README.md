@@ -17,9 +17,10 @@ no extra infrastructure.
 
 ## Features
 
-- **Routing** — match by `path` / `path_prefix`, `method`, `hosts`, `headers`, and
-  `query`; most-specific-wins with catch-all fallback (virtual hosting, canary,
-  API versioning).
+- **Routing** — match by `path` / `path_prefix` / precompiled `path_regex` /
+  `path_glob`, gRPC `service`/`method`, plus `method`, `hosts`, `headers`, and
+  `query`; deterministic precedence with most-specific-wins fallback (virtual
+  hosting, canary, API versioning).
 - **Load balancing & upstreams** — `round_robin`, `least_connections`,
   `weighted_random`; active health checks; **DNS discovery** (A/AAAA/SRV with
   TTL-aware pool updates); HTTP/1.1, TLS (h2 via ALPN) and cleartext HTTP/2
@@ -123,12 +124,48 @@ loopback-only unless you allow a scrape range via
 ## Route matching
 
 - `match.path`: **exact** path (e.g. `/health`).
-- `match.path_prefix`: **prefix** match: the request path must equal the prefix or continue with `/` (e.g. `/v1` matches `/v1` and `/v1/students`, not `/v10`). If several prefixes match, the **longest** wins. `path` and `path_prefix` are mutually exclusive.
+- `match.path_prefix`: **prefix** match: the request path must equal the prefix or continue with `/` (e.g. `/v1` matches `/v1` and `/v1/students`, not `/v10`). If several prefixes match, the **longest** wins.
+- `match.path_regex`: RE2 regex against the request path (compiled once at startup). Prefer `^…$` for full-path matches.
+- `match.path_glob`: full-path glob (`*` = one segment, `**` = across segments, `?` = one non-`/`), compiled to RE2 at startup.
+- `match.grpc.service` / `match.grpc.method`: gRPC-over-HTTP/2 routing. Path is `/<service>/<method>`; `Content-Type` must be `application/grpc` (or `application/grpc+…`). Omit `method` to match every method on the service. Use `methods: [POST]` and typically `protocol: h2c` on the backend.
+- Exactly one of `path`, `path_prefix`, `path_regex`, `path_glob`, or `grpc` is required.
 - `match.hosts`: restrict a route to one or more `Host` values (port-stripped, case-insensitive). Empty means any host. Two routes can share the same path with different hosts (virtual hosting / multi-tenant).
 - `match.headers`: map of request header → exact value. The route only matches when every listed header equals the given value (useful for canary routing and header-based API versioning).
 - `match.query`: map of query parameter → exact value. Same semantics as `headers`.
 
-When several routes share a path, the **most specific** wins: a route constrained by host/header/query is preferred over a catch-all, and the router falls back to the catch-all when the specific route's predicates do not match.
+Precedence is deterministic: **exact → longest prefix → glob → regex**. gRPC
+routes are tried first when the request looks like gRPC. When several routes
+share a path tier, the **most specific** wins: a route constrained by
+host/header/query is preferred over a catch-all, and the router falls back to
+the catch-all when the specific route's predicates do not match. Example:
+[`config/examples/advanced-routing.yaml`](config/examples/advanced-routing.yaml).
+
+For **percentage canaries**, sticky sessions, and async mirroring on a single route,
+use `traffic` (see [configuration](docs/configuration.md#routestraffic) and
+`config/examples/traffic-splitting.yaml`):
+
+```yaml
+routes:
+  - name: api
+    match:
+      path_prefix: /api
+      methods: [GET, POST]
+    backend: api-stable
+    traffic:
+      canary:
+        backend: api-canary
+        percent: 10
+        key:
+          header: X-User-Id
+      sticky:
+        cookie: relay_affinity
+        cookie_ttl: 24h
+      mirror:
+        backend: api-shadow
+        exclude_request_body: true
+```
+
+Header-based route matching still works for explicit canary flags:
 
 For **percentage canaries**, sticky sessions, and async mirroring on a single route,
 use `traffic` (see [configuration](docs/configuration.md#routestraffic) and
@@ -460,6 +497,8 @@ configuration; it does not change runtime lookup behavior.
   (immediate flush, no retry buffering) so bidirectional streaming works.
 - `protocol: http1` (default) keeps HTTP/1.1 with HTTP/2 via ALPN for `https`
   backends. `h2c` cannot be combined with backend `tls` (it is cleartext).
+- Route by gRPC service/method with `match.grpc` (see [Route matching](#route-matching)
+  and `config/examples/advanced-routing.yaml`).
 
 ## Retry budget
 

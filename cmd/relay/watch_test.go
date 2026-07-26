@@ -182,16 +182,17 @@ func TestConfigWatchSupervisorDebouncesAndCloses(t *testing.T) {
 	root := filepath.Join(dir, "relay.yaml")
 	writeTestFile(t, root, "routes: []\n")
 
+	const debounce = 100 * time.Millisecond
 	var calls atomic.Int64
 	reloaded := make(chan struct{}, 5)
 	ctx, cancel := context.WithCancel(context.Background())
-	s, err := newConfigWatchSupervisor([]string{root}, 60*time.Millisecond, slog.Default(), func() watchReloadResult {
+	s, err := newConfigWatchSupervisor([]string{root}, debounce, slog.Default(), func() watchReloadResult {
 		calls.Add(1)
 		select {
 		case reloaded <- struct{}{}:
 		default:
 		}
-		return watchReloadResult{files: []string{root}, debounce: 60 * time.Millisecond, success: true}
+		return watchReloadResult{files: []string{root}, debounce: debounce, success: true}
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -202,12 +203,13 @@ func TestConfigWatchSupervisorDebouncesAndCloses(t *testing.T) {
 		close(done)
 	}()
 
+	// Burst writes in one debounce window. Avoid sleeps between writes: under
+	// -race/CI load those gaps can exceed the debounce and defeat coalescing.
 	for i := range 5 {
 		writeTestFile(t, root, "routes: []\n# "+string(rune('a'+i))+"\n")
-		time.Sleep(8 * time.Millisecond)
 	}
 	waitSignal(t, reloaded, "debounced reload")
-	time.Sleep(100 * time.Millisecond)
+	assertNoSignal(t, reloaded, 2*debounce, "extra reload after debounce")
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("reload calls = %d, want 1", got)
 	}

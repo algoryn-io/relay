@@ -261,12 +261,24 @@ query-constrained) wins, with fallback to a catch-all.
 | `traffic.sticky` | object | Cookie and/or header affinity to one backend instance (see below). |
 | `traffic.mirror` | object | Async shadow copy of the request to another backend (see below). |
 | `middleware` | []string | Names of middleware to apply, in order (`middlewares` is an alias). |
-| `match.path` | string | Exact path match. Mutually exclusive with `path_prefix`. |
+| `match.path` | string | Exact path match. Mutually exclusive with `path_prefix`, `path_regex`, `path_glob`, and `grpc`. |
 | `match.path_prefix` | string | Prefix match (`/v1` matches `/v1` and `/v1/x`, not `/v10`); longest match wins. |
-| `match.methods` | []string | Allowed HTTP methods (required). |
+| `match.path_regex` | string | RE2 regex against the request path (precompiled at startup). Prefer `^…$` for full-path matches. |
+| `match.path_glob` | string | Full-path glob (`*` one segment, `**` across segments, `?` one non-`/`). Compiled to RE2 at startup. |
+| `match.grpc.service` | string | gRPC service name (e.g. `pkg.v1.Orders`). Matches path `/<service>/<method>` with `Content-Type: application/grpc`. |
+| `match.grpc.method` | string | Optional gRPC method. When omitted, every method on the service matches. |
+| `match.methods` | []string | Allowed HTTP methods (required; use `[POST]` for gRPC). |
 | `match.hosts` | []string | Restrict to these `Host` values (port-stripped, case-insensitive). Empty = any host. |
 | `match.headers` | map | Require each request header to equal the given value (exact). |
 | `match.query` | map | Require each query parameter to equal the given value (exact). |
+
+Exactly one of `path`, `path_prefix`, `path_regex`, `path_glob`, or `grpc` is required.
+Match precedence is deterministic: **exact → longest prefix → glob → regex**.
+gRPC routes are evaluated first when the request `Content-Type` is
+`application/grpc` (or `application/grpc+…`), so a service/method rule wins over
+a broad HTTP prefix on the same path. Within a tier, higher host/header/query
+specificity wins (and for glob/regex, a more literal / longer pattern ranks
+higher). See `config/examples/advanced-routing.yaml`.
 | `strip_prefix` | string | Strip this leading path prefix before proxying (must start with `/`). |
 | `timeout` | duration | Per-route upstream timeout. |
 | `max_body_bytes` | int | Reject request bodies larger than this with `413`. `0` = no limit. |

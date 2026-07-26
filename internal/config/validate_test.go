@@ -1243,6 +1243,144 @@ backends:
 	}
 }
 
+func TestValidateAdvancedRouteMatchers(t *testing.T) {
+	t.Parallel()
+
+	t.Run("path and path_regex mutually exclusive", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Routes[0].Match.PathRegex = `^/api/.*$`
+		assertValidationErrorContains(t, cfg.Validate(), "mutually exclusive")
+	})
+
+	t.Run("invalid path_regex", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Routes[0].Match.Path = ""
+		cfg.Routes[0].Match.PathRegex = `(`
+		assertValidationErrorContains(t, cfg.Validate(), "path_regex")
+	})
+
+	t.Run("invalid path_glob", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Routes[0].Match.Path = ""
+		cfg.Routes[0].Match.PathGlob = "relative/*"
+		assertValidationErrorContains(t, cfg.Validate(), "path_glob")
+	})
+
+	t.Run("grpc method without service", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Routes[0].Match.Path = ""
+		cfg.Routes[0].Match.GRPC.Method = "GetOrder"
+		assertValidationErrorContains(t, cfg.Validate(), "grpc.service")
+	})
+
+	t.Run("invalid grpc service", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Routes[0].Match.Path = ""
+		cfg.Routes[0].Match.GRPC.Service = "bad/name"
+		assertValidationErrorContains(t, cfg.Validate(), "grpc.service")
+	})
+
+	t.Run("valid path_glob", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Routes[0].Match.Path = ""
+		cfg.Routes[0].Match.PathGlob = "/api/*/orders"
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("valid grpc", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Routes[0].Match.Path = ""
+		cfg.Routes[0].Match.GRPC.Service = "orders.v1.Orders"
+		cfg.Routes[0].Match.GRPC.Method = "GetOrder"
+		cfg.Routes[0].Match.Methods = []string{"POST"}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+}
+
+func TestLoadAdvancedRoutingYAML(t *testing.T) {
+	t.Parallel()
+
+	path := writeTempConfig(t, `
+listener:
+  http:
+    port: 8080
+  timeouts:
+    read: 30s
+    write: 30s
+    idle: 60s
+routes:
+  - name: regex-route
+    match:
+      path_regex: '^/api/v[0-9]+/orders$'
+      methods: [GET]
+    backend: api
+  - name: glob-route
+    match:
+      path_glob: /files/**
+      methods: [GET]
+    backend: api
+  - name: grpc-get
+    match:
+      grpc:
+        service: orders.v1.Orders
+        method: GetOrder
+      methods: [POST]
+    backend: orders-grpc
+  - name: grpc-svc
+    match:
+      grpc:
+        service: orders.v1.Orders
+      methods: [POST]
+    backend: orders-grpc
+backends:
+  - name: api
+    strategy: round_robin
+    instances:
+      - url: http://localhost:9001
+  - name: orders-grpc
+    strategy: round_robin
+    protocol: h2c
+    instances:
+      - url: http://localhost:9002
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Routes[0].Match.PathRegex != `^/api/v[0-9]+/orders$` {
+		t.Fatalf("path_regex = %q", cfg.Routes[0].Match.PathRegex)
+	}
+	if cfg.Routes[1].Match.PathGlob != "/files/**" {
+		t.Fatalf("path_glob = %q", cfg.Routes[1].Match.PathGlob)
+	}
+	if cfg.Routes[2].Match.GRPC.Service != "orders.v1.Orders" || cfg.Routes[2].Match.GRPC.Method != "GetOrder" {
+		t.Fatalf("grpc = %+v", cfg.Routes[2].Match.GRPC)
+	}
+
+	rt, err := BuildRuntime(cfg)
+	if err != nil {
+		t.Fatalf("BuildRuntime() error = %v", err)
+	}
+	if rt.Routes["regex-route"].PathRegexRe == nil {
+		t.Fatal("expected compiled path_regex")
+	}
+	if rt.Routes["glob-route"].PathGlobRe == nil {
+		t.Fatal("expected compiled path_glob")
+	}
+	grpcGet := rt.Routes["grpc-get"]
+	if !grpcGet.GRPC || grpcGet.Path != "/orders.v1.Orders/GetOrder" {
+		t.Fatalf("grpc-get runtime = %+v", grpcGet)
+	}
+	grpcSvc := rt.Routes["grpc-svc"]
+	if !grpcSvc.GRPC || grpcSvc.PathPrefix != "/orders.v1.Orders" {
+		t.Fatalf("grpc-svc runtime = %+v", grpcSvc)
+	}
+}
+
 func TestLoadDNSDiscoveryAndFailoverYAML(t *testing.T) {
 	t.Parallel()
 

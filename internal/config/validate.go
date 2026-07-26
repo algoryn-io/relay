@@ -408,12 +408,58 @@ func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[stri
 
 		path := strings.TrimSpace(route.Match.Path)
 		pathPrefix := strings.TrimSpace(route.Match.PathPrefix)
-		switch {
-		case path == "" && pathPrefix == "":
-			errs.Addf("%s.match: exactly one of path or path_prefix is required", prefix)
-		case path != "" && pathPrefix != "":
-			errs.Addf("%s.match: path and path_prefix are mutually exclusive", prefix)
+		pathRegex := strings.TrimSpace(route.Match.PathRegex)
+		pathGlob := strings.TrimSpace(route.Match.PathGlob)
+		grpcService := strings.TrimSpace(route.Match.GRPC.Service)
+		grpcMethod := strings.TrimSpace(route.Match.GRPC.Method)
+
+		matchers := 0
+		if path != "" {
+			matchers++
 		}
+		if pathPrefix != "" {
+			matchers++
+		}
+		if pathRegex != "" {
+			matchers++
+		}
+		if pathGlob != "" {
+			matchers++
+		}
+		if grpcService != "" {
+			matchers++
+		}
+		switch {
+		case matchers == 0:
+			errs.Addf("%s.match: exactly one of path, path_prefix, path_regex, path_glob, or grpc is required", prefix)
+		case matchers > 1:
+			errs.Addf("%s.match: path, path_prefix, path_regex, path_glob, and grpc are mutually exclusive", prefix)
+		}
+
+		if pathRegex != "" {
+			if _, err := regexp.Compile(pathRegex); err != nil {
+				errs.Addf("%s.match.path_regex: invalid RE2 regular expression: %v", prefix, err)
+			}
+		}
+		if pathGlob != "" {
+			if _, err := CompilePathGlob(pathGlob); err != nil {
+				errs.Addf("%s.match.path_glob: %v", prefix, err)
+			}
+		}
+		if grpcMethod != "" && grpcService == "" {
+			errs.Addf("%s.match.grpc.service: required when grpc.method is set", prefix)
+		}
+		if grpcService != "" {
+			if err := validateGRPCName(grpcService); err != nil {
+				errs.Addf("%s.match.grpc.service: %v", prefix, err)
+			}
+		}
+		if grpcMethod != "" {
+			if err := validateGRPCName(grpcMethod); err != nil {
+				errs.Addf("%s.match.grpc.method: %v", prefix, err)
+			}
+		}
+
 		if len(route.Match.Methods) == 0 {
 			errs.Addf("%s.match.methods: must not be empty", prefix)
 		}
@@ -468,6 +514,34 @@ func validateRoutes(routes []RouteConfig, backendNames, middlewareNames map[stri
 			}
 		}
 	}
+}
+
+// validateGRPCName accepts a gRPC service or method identifier: optional
+// dotted package segments for services (e.g. "pkg.v1.Orders") or a bare
+// method name (e.g. "GetOrder"). Segments must be non-empty identifiers.
+func validateGRPCName(name string) error {
+	if name == "" {
+		return fmt.Errorf("must not be empty")
+	}
+	if strings.Contains(name, "/") {
+		return fmt.Errorf("must not contain '/'")
+	}
+	if strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
+		return fmt.Errorf("invalid dotted name %q", name)
+	}
+	for _, part := range strings.Split(name, ".") {
+		if part == "" {
+			return fmt.Errorf("invalid dotted name %q", name)
+		}
+		for i, r := range part {
+			ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' ||
+				(i > 0 && r >= '0' && r <= '9')
+			if !ok {
+				return fmt.Errorf("invalid identifier segment %q", part)
+			}
+		}
+	}
+	return nil
 }
 
 func validateRouteFailover(
