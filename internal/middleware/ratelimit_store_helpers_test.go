@@ -20,14 +20,27 @@ func (s *memoryStore) bucketLen(key string) int {
 	sh := s.shardFor(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
-	return len(sh.buckets[key])
+	bucket := sh.buckets[key]
+	if bucket == nil {
+		return 0
+	}
+	return len(bucket.events)
 }
 
 func (s *memoryStore) seedBucket(key string, ts []time.Time) {
 	sh := s.shardFor(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
-	sh.buckets[key] = ts
+	if bucket := sh.buckets[key]; bucket != nil {
+		bucket.events = ts
+		bucket.lastSeen = ts[len(ts)-1]
+		sh.moveToFront(bucket)
+		return
+	}
+	bucket := &memoryBucket{key: key, events: ts, lastSeen: ts[len(ts)-1]}
+	sh.buckets[key] = bucket
+	sh.pushFront(bucket)
+	s.addBuckets(1)
 }
 
 func TestMemoryStorePruneRemovesStaleBuckets(t *testing.T) {

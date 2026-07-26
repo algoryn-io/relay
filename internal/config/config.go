@@ -281,6 +281,12 @@ type MiddlewareSettingsConfig struct {
 	By               string        `yaml:"by"`
 	// Rate limit store: "memory" (default, in-process) or "redis" (distributed).
 	RateLimitStore string `yaml:"store"`
+	// MemoryMaxBuckets caps the number of in-process rate limit keys.
+	MemoryMaxBuckets int `yaml:"memory_max_buckets"`
+	// MemoryBucketTTL expires idle in-process buckets. It must be at least Window.
+	MemoryBucketTTL time.Duration `yaml:"memory_bucket_ttl"`
+	// MemoryCleanupInterval controls the in-process stale bucket sweep.
+	MemoryCleanupInterval time.Duration `yaml:"memory_cleanup_interval"`
 	// RedisURL is the connection URL for the Redis rate limit store.
 	// Accepts redis:// and rediss:// (TLS) schemes. Use redis_url_env for
 	// production to avoid credentials in config files.

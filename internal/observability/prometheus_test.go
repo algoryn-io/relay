@@ -17,6 +17,8 @@ func TestPrometheusExposesResilienceMetrics(t *testing.T) {
 	c.SetCircuitState("orders", "http://1.2.3.4:8080", "open")
 	c.SetBulkheadInFlight("orders", 3)
 	c.RecordBulkheadRejected("orders")
+	c.AddRateLimitMemoryBuckets(7)
+	c.RecordRateLimitMemoryEviction()
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -29,6 +31,8 @@ func TestPrometheusExposesResilienceMetrics(t *testing.T) {
 		`relay_circuit_breaker_state{backend="orders",instance="http://1.2.3.4:8080"} 2`,
 		`relay_bulkhead_in_flight{backend="orders"} 3`,
 		`relay_bulkhead_rejected_total{backend="orders"} 1`,
+		`relay_rate_limit_memory_buckets 7`,
+		`relay_rate_limit_memory_evictions_total 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("scrape missing %q", want)

@@ -51,12 +51,27 @@ config: |
         path_prefix: /
         methods: [GET, POST]
       backend: example-backend
+      middleware: [example-rate-limit]
 
   backends:
     - name: example-backend
       strategy: round_robin
       instances:
         - url: http://example-upstream:8080
+
+  middleware:
+    - name: example-rate-limit
+      type: rate_limit
+      config:
+        strategy: sliding_window
+        limit: 100
+        window: 1m
+        by: ip
+        store: memory
+        # Per-pod cap. Use Redis above when replicas need a shared limit.
+        memory_max_buckets: 100000
+        memory_bucket_ttl: 5m
+        memory_cleanup_interval: 1m
 
 # Secrets injected as environment variables (e.g. JWT_SECRET referenced by a
 # middleware's secret_env). Rendered into a Secret and exposed via envFrom.

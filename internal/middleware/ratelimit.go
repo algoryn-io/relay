@@ -32,6 +32,21 @@ type RateLimitConfig struct {
 	// FailOpen permits a request when the backing store fails. It defaults to
 	// false: rate limiting must not silently vanish during a Redis outage.
 	FailOpen bool
+	// MemoryMaxBuckets strictly caps in-process key cardinality.
+	MemoryMaxBuckets int
+	// MemoryBucketTTL expires idle buckets. It must be at least Window so
+	// cleanup cannot reset a still-active sliding window.
+	MemoryBucketTTL time.Duration
+	// MemoryCleanupInterval controls the single store-wide cleanup loop.
+	MemoryCleanupInterval time.Duration
+	Metrics               RateLimitMetrics
+}
+
+// RateLimitMetrics intentionally exposes only aggregate values: bucket keys
+// are never metric labels, avoiding a second cardinality problem.
+type RateLimitMetrics interface {
+	AddRateLimitMemoryBuckets(delta int)
+	RecordRateLimitMemoryEviction()
 }
 
 type rateLimiter struct {
@@ -60,6 +75,15 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, io.Closer, error) {
 	if cfg.Window <= 0 {
 		return nil, nil, fmt.Errorf("rate limit window must be greater than 0")
 	}
+	if cfg.MemoryMaxBuckets == 0 {
+		cfg.MemoryMaxBuckets = defaultMemoryMaxBuckets
+	}
+	if cfg.MemoryBucketTTL == 0 {
+		cfg.MemoryBucketTTL = cfg.Window
+	}
+	if cfg.MemoryCleanupInterval == 0 {
+		cfg.MemoryCleanupInterval = defaultMemoryCleanupInterval
+	}
 	if strings.TrimSpace(cfg.By) == "" {
 		cfg.By = "ip"
 	}
@@ -83,12 +107,28 @@ func NewRateLimit(cfg RateLimitConfig) (Middleware, io.Closer, error) {
 			return nil, nil, fmt.Errorf("create redis store: %w", err)
 		}
 		store = rs
-	default: // "" or "memory"
-		ms, err := newMemoryStore()
+	case "", "memory":
+		if cfg.MemoryMaxBuckets <= 0 {
+			return nil, nil, fmt.Errorf("memory_max_buckets must be greater than 0")
+		}
+		if cfg.MemoryBucketTTL < cfg.Window {
+			return nil, nil, fmt.Errorf("memory_bucket_ttl must be at least the rate limit window")
+		}
+		if cfg.MemoryCleanupInterval <= 0 {
+			return nil, nil, fmt.Errorf("memory_cleanup_interval must be greater than 0")
+		}
+		ms, err := newMemoryStoreWithOptions(memoryStoreOptions{
+			maxBuckets:      cfg.MemoryMaxBuckets,
+			bucketTTL:       cfg.MemoryBucketTTL,
+			cleanupInterval: cfg.MemoryCleanupInterval,
+			metrics:         cfg.Metrics,
+		})
 		if err != nil {
 			return nil, nil, err
 		}
 		store = ms
+	default:
+		return nil, nil, fmt.Errorf("unsupported rate limit store %q", cfg.Store)
 	}
 
 	mw, err := newRateLimitWithStore(cfg, store)

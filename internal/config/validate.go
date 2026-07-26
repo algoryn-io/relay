@@ -346,6 +346,21 @@ func validateMiddlewares(middlewares []MiddlewareConfig, errs *ValidationErrors)
 			default:
 				errs.Addf("%s.config.store: must be one of memory, redis", prefix)
 			}
+			if store != "redis" {
+				if middleware.Config.MemoryMaxBuckets < 0 {
+					errs.Addf("%s.config.memory_max_buckets: must be greater than 0", prefix)
+				}
+				if middleware.Config.MemoryBucketTTL < 0 {
+					errs.Addf("%s.config.memory_bucket_ttl: must be greater than 0", prefix)
+				}
+				if middleware.Config.MemoryCleanupInterval < 0 {
+					errs.Addf("%s.config.memory_cleanup_interval: must be greater than 0", prefix)
+				}
+				if middleware.Config.MemoryBucketTTL > 0 &&
+					middleware.Config.MemoryBucketTTL < middleware.Config.Window {
+					errs.Addf("%s.config.memory_bucket_ttl: must be at least config.window", prefix)
+				}
+			}
 			if store == "redis" {
 				hasURL := strings.TrimSpace(middleware.Config.RedisURL) != ""
 				hasURLEnv := strings.TrimSpace(middleware.Config.RedisURLEnv) != ""

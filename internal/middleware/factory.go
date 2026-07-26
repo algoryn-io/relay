@@ -11,7 +11,7 @@ import (
 // Build constructs a middleware. The returned io.Closer (nil for stateless
 // middleware) owns any resources that must be released when the middleware is
 // discarded, e.g. on config reload.
-func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, io.Closer, error) {
+func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics ...RateLimitMetrics) (Middleware, io.Closer, error) {
 	switch def.Type {
 	case "jwt":
 		mw, err := NewJWT(JWTConfig{
@@ -31,17 +31,25 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, io.Cl
 		return mw, nil, err
 	case "rate_limit":
 		redisURL := def.Config.RedisURL
+		var metrics RateLimitMetrics
+		if len(rateLimitMetrics) > 0 {
+			metrics = rateLimitMetrics[0]
+		}
 		// ResolveEnv writes the resolved env var into RedisURL when RedisURLEnv
 		// is set, so by this point RedisURL already holds the final value.
 		return NewRateLimit(RateLimitConfig{
-			Strategy: Strategy(def.Config.Strategy),
-			Limit:    def.Config.Limit,
-			Window:   def.Config.Window,
-			By:       def.Config.By,
-			Header:   def.Config.Header,
-			Store:    def.Config.RateLimitStore,
-			RedisURL: redisURL,
-			FailOpen: def.Config.FailOpen,
+			Strategy:              Strategy(def.Config.Strategy),
+			Limit:                 def.Config.Limit,
+			Window:                def.Config.Window,
+			By:                    def.Config.By,
+			Header:                def.Config.Header,
+			Store:                 def.Config.RateLimitStore,
+			RedisURL:              redisURL,
+			FailOpen:              def.Config.FailOpen,
+			MemoryMaxBuckets:      def.Config.MemoryMaxBuckets,
+			MemoryBucketTTL:       def.Config.MemoryBucketTTL,
+			MemoryCleanupInterval: def.Config.MemoryCleanupInterval,
+			Metrics:               metrics,
 		})
 	case "body_limit":
 		mw, err := NewBodyLimit(BodyLimitConfig{
@@ -125,11 +133,11 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger) (Middleware, io.Cl
 // BuildRegistry builds all middlewares. The returned closers own resources that
 // must be released when this registry is replaced (config reload) or the server
 // shuts down; close them via CloseAll.
-func BuildRegistry(defs map[string]config.MiddlewareRuntime, logger *slog.Logger) (map[string]Middleware, []io.Closer, error) {
+func BuildRegistry(defs map[string]config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics ...RateLimitMetrics) (map[string]Middleware, []io.Closer, error) {
 	registry := make(map[string]Middleware, len(defs))
 	var closers []io.Closer
 	for name, def := range defs {
-		mw, closer, err := Build(def, logger)
+		mw, closer, err := Build(def, logger, rateLimitMetrics...)
 		if err != nil {
 			CloseAll(closers) // don't leak resources already built this pass
 			return nil, nil, fmt.Errorf("build middleware %q: %w", name, err)

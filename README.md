@@ -215,6 +215,9 @@ middleware:
       limit: 100
       window: 1m
       by: ip
+      memory_max_buckets: 100000
+      memory_bucket_ttl: 5m
+      memory_cleanup_interval: 1m
 
   - name: api-body-limit
     type: body_limit
@@ -263,6 +266,10 @@ observability:
 
 - Supported strategy: `sliding_window`
 - Supported keys: `ip`, `route`, `api_key`
+- The in-memory store defaults to 100,000 buckets, expires idle buckets, and
+  uses bounded sharded LRU eviction under high-cardinality traffic.
+- Tune `memory_max_buckets`, `memory_bucket_ttl` (at least the rate-limit
+  window), and `memory_cleanup_interval`; Redis settings are unaffected.
 
 ### Body Limit (`type: body_limit`)
 

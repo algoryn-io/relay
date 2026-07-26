@@ -216,8 +216,15 @@ Common fields: `name` (unique), `type` (one of the types below), `config`
 | `window` | — | Window duration (> 0). |
 | `by` | — | Key: `ip`, `route`, or `api_key`. |
 | `store` | `memory` | `memory` (per-instance, sharded) or `redis` (distributed). |
+| `memory_max_buckets` | `100000` | Strict per-process bucket cap for the memory store; LRU eviction occurs within shards at capacity. |
+| `memory_bucket_ttl` | `window` | Idle bucket TTL for the memory store; must be at least `window`. |
+| `memory_cleanup_interval` | `1m` | Interval for the single background stale-bucket cleanup loop. |
 | `redis_url` / `redis_url_env` / `redis_url_file` | — | Redis connection URL (`redis://`, `rediss://`) when `store: redis`. |
 | `fail_open` | `false` | When `store: redis`, allow requests if Redis is unavailable. Keep `false` for protected routes. |
+
+The memory store preserves exact sliding-window request timestamps, uses no
+per-bucket goroutines, and exports `relay_rate_limit_memory_buckets` plus
+`relay_rate_limit_memory_evictions_total`.
 
 ### `body_limit`
 

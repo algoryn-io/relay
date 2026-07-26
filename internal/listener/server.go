@@ -378,13 +378,14 @@ func buildState(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logge
 		return nil, err
 	}
 	rtProxy.SetWebSocketIdleTimeout(cfg.Listener.Timeouts.WebSocketIdle)
-	mwRegistry, mwClosers, err := middleware.BuildRegistry(rt.Middleware, logger)
+
+	metrics := observability.NewMetrics(100)
+	promCollector := observability.NewPrometheusCollector()
+	mwRegistry, mwClosers, err := middleware.BuildRegistry(rt.Middleware, logger, promCollector)
 	if err != nil {
 		return nil, err
 	}
 
-	metrics := observability.NewMetrics(100)
-	promCollector := observability.NewPrometheusCollector()
 	rtProxy.SetHealthNotifier(promCollector)
 	rtProxy.SetMetrics(promCollector)
 	for backendName, backend := range rt.Backends {
