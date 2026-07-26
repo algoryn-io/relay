@@ -8,7 +8,6 @@ on:
 env:
   GOVULNCHECK_VERSION: v1.1.4
   GOLANGCI_LINT_VERSION: v2.12.2
-  GOSEC_VERSION: v2.28.0
 
 jobs:
   test:

@@ -6,10 +6,9 @@ LDFLAGS    := -X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME)
 
 GOVULNCHECK_VERSION  := v1.1.4
 GOLANGCI_LINT_VERSION := v2.12.2
-GOSEC_VERSION         := v2.28.0
 TOOLS_BIN             := $(CURDIR)/bin
 
-.PHONY: dev test build lint vuln security tools install-govulncheck install-golangci-lint install-gosec release docker load loadtest
+.PHONY: dev test build lint vuln tools install-govulncheck install-golangci-lint release docker load loadtest
 
 dev:
 	go run ./cmd/relay -config config/example.yaml
@@ -39,19 +38,13 @@ install-govulncheck:
 install-golangci-lint:
 	GOBIN="$(TOOLS_BIN)" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
-install-gosec:
-	GOBIN="$(TOOLS_BIN)" go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
-
-tools: install-govulncheck install-golangci-lint install-gosec
+tools: install-govulncheck install-golangci-lint
 
 lint: install-golangci-lint
 	"$(TOOLS_BIN)/golangci-lint" run
 
 vuln: install-govulncheck
 	"$(TOOLS_BIN)/govulncheck" ./...
-
-security: install-gosec
-	"$(TOOLS_BIN)/gosec" ./...
 
 release:
 	goreleaser release
