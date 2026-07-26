@@ -536,13 +536,36 @@ Fails closed (`503`) when the endpoint is unreachable.
 | --- | --- | --- |
 | `authz_url` | — | External authorizer (`https` required by default). |
 | `allow_insecure_http` | `false` | Explicitly permit plaintext HTTP only for a trusted internal network. |
-| `forward_headers` | — | Inbound headers to include on the probe (method/URI/host/client-IP are always sent). |
+| `authz_method` | `GET` | Authorization call method: `GET`, `POST`, or `HEAD`. Body modes require `POST`. |
+| `authz_body` | `none` | Probe body: `none`, bounded/replayable `original`, or structured `metadata`. |
+| `authz_max_body_bytes` | `1048576` | Maximum authorization body; bounds buffered `original` data and serialized metadata. |
+| `authz_content_type` | mode-dependent | Valid media type override. Metadata requires `application/json` or a `+json` type; original otherwise inherits the inbound type. |
+| `forward_headers` | — | Explicit allowlist of inbound headers sent on the probe and included in metadata. Method/URI/host/client-IP are always sent separately. |
 | `copy_headers` | — | Headers from a 2xx response to inject into the upstream request. |
 | `authz_timeout` | `2s` | Per-call timeout. |
 | `fail_open` | `false` | On error/unreachable: allow (`true`) or deny with `503` (`false`). |
 | `acknowledge_ext_authz_fail_open` | `false` | Required when `fail_open: true`; explicitly acknowledges that authorizer failures will bypass authorization. Validation-only. |
 
 `2xx` allows; `401`/`403` deny; other statuses follow `fail_open`.
+The default `GET`/`none` contract is backward compatible. `original` never reads
+streaming, chunked, or protocol-upgrade/WebSocket bodies. An oversized body
+returns `413` even with `fail_open`; a body that cannot safely be inspected
+returns `503`, or bypasses authorization only when explicitly configured
+fail-open and the untouched body can still be forwarded. Cancellation never
+fails open. Metadata contains method, request URI, host, resolved client IP,
+request ID, verified mTLS identity when available, and only `forward_headers`;
+credentials are not included unless explicitly allowlisted.
+
+```yaml
+- name: metadata-authz
+  type: ext_authz
+  config:
+    authz_url: https://authz.internal.example/check
+    authz_method: POST
+    authz_body: metadata
+    authz_content_type: application/json
+    forward_headers: [X-Tenant-ID]
+```
 
 ```yaml
 - name: availability-first-authz

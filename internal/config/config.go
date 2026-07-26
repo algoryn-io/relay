@@ -501,7 +501,12 @@ type MiddlewareSettingsConfig struct {
 	RequiredScopes        []string      `yaml:"required_scopes"`
 	IntrospectionCacheTTL time.Duration `yaml:"cache_ttl"`
 	// External authorization middleware (ext_authz) fields.
-	AuthzURL            string        `yaml:"authz_url"`
+	AuthzURL    string `yaml:"authz_url"`
+	AuthzMethod string `yaml:"authz_method"`
+	AuthzBody   string `yaml:"authz_body"`
+	// AuthzMaxBodyBytes bounds original and metadata authorization bodies.
+	AuthzMaxBodyBytes   int64         `yaml:"authz_max_body_bytes"`
+	AuthzContentType    string        `yaml:"authz_content_type"`
 	AuthzForwardHeaders []string      `yaml:"forward_headers"`
 	AuthzCopyHeaders    []string      `yaml:"copy_headers"`
 	AuthzTimeout        time.Duration `yaml:"authz_timeout"`

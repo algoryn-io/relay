@@ -3,6 +3,8 @@ package config
 import (
 	"crypto/tls"
 	"fmt"
+	"math"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/http/httpguts"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -1049,6 +1052,52 @@ func validateExtAuthzMiddleware(prefix string, cfg MiddlewareSettingsConfig, err
 	}
 	if cfg.AuthzTimeout < 0 {
 		errs.Addf("%s.authz_timeout: must be >= 0", prefix)
+	}
+	method := strings.ToUpper(strings.TrimSpace(cfg.AuthzMethod))
+	if method == "" {
+		method = http.MethodGet
+	}
+	if method != http.MethodGet && method != http.MethodPost && method != http.MethodHead {
+		errs.Addf("%s.authz_method: must be GET, POST, or HEAD", prefix)
+	}
+	body := strings.ToLower(strings.TrimSpace(cfg.AuthzBody))
+	if body == "" {
+		body = "none"
+	}
+	if body != "none" && body != "original" && body != "metadata" {
+		errs.Addf("%s.authz_body: must be none, original, or metadata", prefix)
+	}
+	if (body == "original" || body == "metadata") && method != http.MethodPost {
+		errs.Addf("%s.authz_body: %s requires authz_method POST", prefix, body)
+	}
+	if cfg.AuthzMaxBodyBytes < 0 || cfg.AuthzMaxBodyBytes == math.MaxInt64 {
+		errs.Addf("%s.authz_max_body_bytes: must be between 0 and %d", prefix, int64(math.MaxInt64-1))
+	}
+	contentType := strings.TrimSpace(cfg.AuthzContentType)
+	if body == "none" && contentType != "" {
+		errs.Addf("%s.authz_content_type: requires authz_body original or metadata", prefix)
+	}
+	if contentType != "" {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			errs.Addf("%s.authz_content_type: invalid media type", prefix)
+		} else if body == "metadata" && mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
+			errs.Addf("%s.authz_content_type: metadata requires application/json or +json", prefix)
+		}
+	}
+	for _, field := range []struct {
+		name    string
+		headers []string
+	}{
+		{name: "forward_headers", headers: cfg.AuthzForwardHeaders},
+		{name: "copy_headers", headers: cfg.AuthzCopyHeaders},
+	} {
+		for _, header := range field.headers {
+			header = strings.TrimSpace(header)
+			if header != "" && !httpguts.ValidHeaderFieldName(header) {
+				errs.Addf("%s.%s: invalid header name %q", prefix, field.name, header)
+			}
+		}
 	}
 	if cfg.FailOpen && !cfg.AcknowledgeExtAuthzFailOpen {
 		errs.Addf("%s.acknowledge_ext_authz_fail_open: must be true when fail_open is enabled; fail_open bypasses authorization when the authorizer is unavailable", prefix)
