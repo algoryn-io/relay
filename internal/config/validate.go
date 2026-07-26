@@ -67,6 +67,9 @@ func validateListener(listener ListenerConfig, errs *ValidationErrors) {
 	if listener.MaxConcurrentRequests < 0 {
 		errs.Addf("listener.max_concurrent_requests: must be >= 0")
 	}
+	if listener.MaxRequestBodyBytes < 0 {
+		errs.Addf("listener.max_request_body_bytes: must be >= 0")
+	}
 	validateIPFilterEntries("listener.trusted_proxies", listener.TrustedProxies, errs)
 	validateIPFilterEntries("listener.admin.allowed_cidrs", listener.Admin.AllowedCIDRs, errs)
 	validateAdminAccess(listener.Admin, errs)
