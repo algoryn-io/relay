@@ -36,6 +36,10 @@ type ListenerConfig struct {
 	// (global overload backpressure on top of per-backend bulkheads). Excess
 	// requests get a fast 503. 0 means unlimited.
 	MaxConcurrentRequests int `yaml:"max_concurrent_requests"`
+	// MaxRequestBodyBytes caps request bodies for every proxied route unless
+	// that route defines max_body_bytes explicitly. Zero is normalized to a
+	// secure default of 10 MiB.
+	MaxRequestBodyBytes int64 `yaml:"max_request_body_bytes"`
 }
 
 // AdminConfig controls access to the /_relay/admin/* management endpoints.

@@ -64,6 +64,7 @@ When both are set for the same secret, the `*_env` source wins.
 | `trusted_proxies` | []cidr/ip | `[]` | Peers allowed to set `X-Forwarded-For`. Client IP is taken from `X-Forwarded-For` only when the immediate peer is trusted. |
 | `strip_request_headers` | []string | `[]` | Extra inbound headers to drop at the edge (on top of Relay-managed identity + `X-Forwarded-*`). |
 | `max_concurrent_requests` | int | `0` (unlimited) | Global in-flight cap; excess requests get a fast `503`. Internal endpoints are exempt. |
+| `max_request_body_bytes` | int64 | `10485760` | Global proxied-request body cap (10 MiB). A route's `max_body_bytes` overrides it. |
 
 ### `listener.https.tls`
 

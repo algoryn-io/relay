@@ -75,8 +75,9 @@ type Server struct {
 	state        atomic.Pointer[serverState]
 	reloadMu     sync.Mutex
 
-	inFlight    atomic.Int64 // currently in-flight proxied requests
-	maxInFlight atomic.Int64 // global cap; 0 = unlimited (resizable on reload)
+	inFlight            atomic.Int64 // currently in-flight proxied requests
+	maxInFlight         atomic.Int64 // global cap; 0 = unlimited (resizable on reload)
+	maxRequestBodyBytes atomic.Int64 // global body cap; route limits can override it
 }
 
 type compiledRoute struct {
@@ -109,6 +110,7 @@ func New(cfg *config.Config, rt *config.RuntimeConfig, logger *slog.Logger) (*Se
 	s := &Server{logger: logger}
 	s.state.Store(st)
 	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
+	s.maxRequestBodyBytes.Store(cfg.Listener.MaxRequestBodyBytes)
 
 	timeouts := cfg.Listener.Timeouts
 	httpsPort := cfg.Listener.HTTPS.Port
@@ -181,6 +183,7 @@ func (s *Server) Reload(cfg *config.Config, rt *config.RuntimeConfig) error {
 	go old.close()
 
 	s.maxInFlight.Store(int64(cfg.Listener.MaxConcurrentRequests))
+	s.maxRequestBodyBytes.Store(cfg.Listener.MaxRequestBodyBytes)
 
 	for _, srv := range []*http.Server{s.httpServer, s.httpsServer} {
 		if srv == nil {
@@ -332,6 +335,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			s.logger.Error("compiled route not found", "route", route.Name)
 			httpx.WriteError(w, http.StatusInternalServerError, "internal_error")
 			return
+		}
+		limit := s.maxRequestBodyBytes.Load()
+		if compiled.route.MaxBodyBytes > 0 {
+			limit = compiled.route.MaxBodyBytes
+		}
+		if limit > 0 && req.Body != nil && req.Body != http.NoBody {
+			if req.ContentLength > limit {
+				httpx.WriteError(w, http.StatusRequestEntityTooLarge, "request_body_too_large")
+				return
+			}
+			req.Body = http.MaxBytesReader(w, req.Body, limit)
 		}
 		compiled.handler.ServeHTTP(w, req)
 	case errors.Is(err, router.ErrMethodNotAllowed):

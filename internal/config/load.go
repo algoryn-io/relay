@@ -10,6 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const defaultMaxRequestBodyBytes int64 = 10 << 20
+
 func Load(path string) (*Config, error) {
 	return loadWithIncludes(path, make(map[string]struct{}))
 }
@@ -100,6 +102,9 @@ func (c *ListenerConfig) normalizeAliases() {
 		c.TLS = c.HTTPS.TLS
 	}
 	c.Timeouts.normalizeAliases()
+	if c.MaxRequestBodyBytes == 0 {
+		c.MaxRequestBodyBytes = defaultMaxRequestBodyBytes
+	}
 }
 
 func (c *TimeoutsConfig) normalizeAliases() {
