@@ -15,6 +15,7 @@ import (
 )
 
 const defaultJWKSCacheTTL = 5 * time.Minute
+const maxJWKSStaleGrace = 24 * time.Hour
 
 // maxJWKSBytes caps the JWKS response body. A JWKS document is a handful of keys;
 // the cap prevents a hostile or misconfigured endpoint from streaming an
@@ -24,11 +25,6 @@ const maxJWKSBytes = 1 << 20 // 1 MB
 // minRSAKeyBits is the smallest RSA modulus accepted from a JWKS endpoint.
 // Anything weaker is rejected so a downgraded/forged small key cannot be trusted.
 const minRSAKeyBits = 2048
-
-// jwksStaleGrace bounds how long a cached key is served after its TTL expires
-// when the endpoint cannot be refreshed. Beyond TTL+grace the cache fails closed
-// so a key revoked during an IdP outage stops being accepted.
-const jwksStaleGrace = 5 * time.Minute
 
 type jwkSet struct {
 	Keys []jwk `json:"keys"`
@@ -41,18 +37,28 @@ type jwk struct {
 	E   string `json:"e"`
 }
 
-// jwksCache fetches RSA public keys from a JWKS endpoint and caches them by kid.
-// Keys are refreshed when the TTL expires or when a kid is not found in the cache.
-type jwksCache struct {
-	mu        sync.Mutex
-	keys      map[string]*rsa.PublicKey
-	fetchedAt time.Time
-	ttl       time.Duration
-	url       string
-	client    *http.Client
+type retiredJWKSKey struct {
+	key       *rsa.PublicKey
+	retiredAt time.Time
 }
 
-func newJWKSCache(url string, ttl time.Duration, client *http.Client) *jwksCache {
+// jwksCache fetches RSA public keys from a JWKS endpoint and caches them by kid.
+// ttl controls refresh frequency. staleGrace is a separate, opt-in availability
+// window for keys removed by a successful refresh and for active keys when a
+// refresh fails. Both windows are measured from successful refresh timestamps.
+type jwksCache struct {
+	mu                    sync.Mutex
+	keys                  map[string]*rsa.PublicKey
+	retired               map[string]retiredJWKSKey
+	lastSuccessfulRefresh time.Time
+	ttl                   time.Duration
+	staleGrace            time.Duration
+	url                   string
+	client                *http.Client
+	now                   func() time.Time
+}
+
+func newJWKSCache(url string, ttl, staleGrace time.Duration, client *http.Client) *jwksCache {
 	if ttl <= 0 {
 		ttl = defaultJWKSCacheTTL
 	}
@@ -60,10 +66,13 @@ func newJWKSCache(url string, ttl time.Duration, client *http.Client) *jwksCache
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	return &jwksCache{
-		url:    url,
-		ttl:    ttl,
-		keys:   make(map[string]*rsa.PublicKey),
-		client: client,
+		url:        url,
+		ttl:        ttl,
+		staleGrace: staleGrace,
+		keys:       make(map[string]*rsa.PublicKey),
+		retired:    make(map[string]retiredJWKSKey),
+		client:     client,
+		now:        time.Now,
 	}
 }
 
@@ -82,40 +91,78 @@ func (c *jwksCache) Keyfunc(token *jwt.Token) (any, error) {
 
 func (c *jwksCache) getKey(kid string) (*rsa.PublicKey, error) {
 	c.mu.Lock()
-	key, ok := c.keys[kid]
-	age := time.Since(c.fetchedAt)
+	now := c.now()
+	key, active := c.keys[kid]
+	retired, retiredOK := c.retired[kid]
+	fresh := c.isFreshLocked(now)
+	retiredValid := retiredOK && c.retiredKeyValidLocked(retired, now)
+	observedRefresh := c.lastSuccessfulRefresh
 	c.mu.Unlock()
 
-	if ok && age <= c.ttl {
+	if active && fresh {
 		return key, nil
 	}
+	if retiredValid && fresh {
+		return retired.key, nil
+	}
+	if fresh {
+		// The current set is authoritative until its refresh TTL. Avoid turning
+		// attacker-controlled unknown kids into unbounded requests to the IdP.
+		return nil, fmt.Errorf("jwks: kid %q not found", kid)
+	}
 
-	if err := c.refresh(); err != nil {
-		// Serve a stale key only within a bounded grace window beyond the TTL, so
-		// a temporary endpoint outage doesn't reject traffic, but a revoked key is
-		// not honored forever.
-		if ok && age <= c.ttl+jwksStaleGrace {
+	if err := c.refresh(observedRefresh); err != nil {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		now = c.now()
+		// A failed fetch never advances lastSuccessfulRefresh. Active stale keys
+		// therefore stop being accepted at last success + TTL + grace, even if
+		// every later refresh attempt fails.
+		if key, ok := c.keys[kid]; ok && c.staleSetValidLocked(now) {
 			return key, nil
+		}
+		if retired, ok := c.retired[kid]; ok &&
+			c.retiredKeyValidLocked(retired, now) &&
+			c.staleSetValidLocked(now) {
+			return retired.key, nil
 		}
 		return nil, fmt.Errorf("jwks: %w", err)
 	}
 
 	c.mu.Lock()
-	key, ok = c.keys[kid]
-	c.mu.Unlock()
-
-	if !ok {
-		return nil, fmt.Errorf("jwks: kid %q not found", kid)
+	defer c.mu.Unlock()
+	if key, ok := c.keys[kid]; ok {
+		return key, nil
 	}
-	return key, nil
+	if retired, ok := c.retired[kid]; ok && c.retiredKeyValidLocked(retired, c.now()) {
+		return retired.key, nil
+	}
+	return nil, fmt.Errorf("jwks: kid %q not found", kid)
 }
 
-func (c *jwksCache) refresh() error {
+func (c *jwksCache) isFreshLocked(now time.Time) bool {
+	return !c.lastSuccessfulRefresh.IsZero() &&
+		now.Sub(c.lastSuccessfulRefresh) <= c.ttl
+}
+
+func (c *jwksCache) staleSetValidLocked(now time.Time) bool {
+	return c.staleGrace > 0 &&
+		!c.lastSuccessfulRefresh.IsZero() &&
+		now.Sub(c.lastSuccessfulRefresh) <= c.ttl+c.staleGrace
+}
+
+func (c *jwksCache) retiredKeyValidLocked(retired retiredJWKSKey, now time.Time) bool {
+	return c.staleGrace > 0 && now.Sub(retired.retiredAt) <= c.staleGrace
+}
+
+func (c *jwksCache) refresh(observedRefresh time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Re-check after acquiring lock — another goroutine may have already refreshed.
-	if time.Since(c.fetchedAt) <= c.ttl && len(c.keys) > 0 {
+	// Re-check after acquiring the lock so concurrent requests that observed the
+	// same expired set coalesce into one refresh.
+	if !c.lastSuccessfulRefresh.Equal(observedRefresh) {
 		return nil
 	}
 
@@ -146,8 +193,23 @@ func (c *jwksCache) refresh() error {
 		newKeys[k.Kid] = pub
 	}
 
+	refreshedAt := c.now()
+	for kid, key := range c.keys {
+		if _, stillActive := newKeys[kid]; !stillActive && c.staleGrace > 0 {
+			c.retired[kid] = retiredJWKSKey{key: key, retiredAt: refreshedAt}
+		}
+	}
+	for kid := range newKeys {
+		delete(c.retired, kid)
+	}
+	for kid, retired := range c.retired {
+		if !c.retiredKeyValidLocked(retired, refreshedAt) {
+			delete(c.retired, kid)
+		}
+	}
+
 	c.keys = newKeys
-	c.fetchedAt = time.Now()
+	c.lastSuccessfulRefresh = refreshedAt
 	return nil
 }
 

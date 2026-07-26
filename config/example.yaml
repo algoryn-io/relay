@@ -46,6 +46,10 @@ middleware:
   #   config:
   #     algorithm: rs256
   #     jwks_url: https://issuer.example.com/.well-known/jwks.json
+  #     jwks_cache_ttl: 5m
+  #     # Default 0: removed keys are rejected immediately after refresh.
+  #     # Opt in only to trade revocation speed for outage availability (max 24h).
+  #     jwks_stale_grace: 0s
   #     issuer: https://issuer.example.com
   #     audience: relay-api
   #

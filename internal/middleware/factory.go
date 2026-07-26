@@ -20,6 +20,7 @@ func Build(def config.MiddlewareRuntime, logger *slog.Logger, rateLimitMetrics .
 			PublicKeyFile:    def.Config.PublicKeyFile,
 			JWKSUrl:          def.Config.JWKSUrl,
 			JWKSCacheTTL:     def.Config.JWKSCacheTTL,
+			JWKSStaleGrace:   def.Config.JWKSStaleGrace,
 			OIDCIssuer:       def.Config.OIDCIssuer,
 			Header:           def.Config.Header,
 			ClaimsToHeaders:  def.Config.ClaimsToHeaders,

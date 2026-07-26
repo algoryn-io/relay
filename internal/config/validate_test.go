@@ -453,6 +453,40 @@ func TestValidateJWTRemoteKeysRequireIssuerAndAudience(t *testing.T) {
 	}
 }
 
+func TestValidateJWKSStaleGraceBounds(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		grace time.Duration
+		want  string
+	}{
+		"negative": {
+			grace: -time.Second,
+			want:  "jwks_stale_grace: must be >= 0",
+		},
+		"over maximum": {
+			grace: maxJWKSStaleGrace + time.Second,
+			want:  "jwks_stale_grace: must be <= 24h0m0s",
+		},
+	}
+
+	for name, tc := range tests {
+		tc := tc
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := validConfig()
+			cfg.Middleware[0].Config = MiddlewareSettingsConfig{
+				Algorithm:        "rs256",
+				JWKSUrl:          "https://issuer.example.com/jwks",
+				JWKSStaleGrace:   tc.grace,
+				ExpectedIssuer:   "https://issuer.example.com",
+				ExpectedAudience: "relay-api",
+			}
+			assertValidationErrorContains(t, cfg.Validate(), tc.want)
+		})
+	}
+}
+
 func TestValidateJWTLocalKeysDoNotRequireIssuerOrAudience(t *testing.T) {
 	t.Parallel()
 

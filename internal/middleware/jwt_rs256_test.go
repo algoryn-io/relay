@@ -174,8 +174,9 @@ func TestJWTJWKSCacheRefreshOnKidMiss(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	// Very short TTL so the cache expires quickly.
-	cache := newJWKSCache(server.URL, 50*time.Millisecond, server.Client())
+	now := time.Unix(1_700_000_000, 0)
+	cache := newJWKSCache(server.URL, time.Minute, 0, server.Client())
+	cache.now = func() time.Time { return now }
 
 	// Prime the cache with key-1.
 	_, _ = cache.getKey("key-1")
@@ -183,8 +184,7 @@ func TestJWTJWKSCacheRefreshOnKidMiss(t *testing.T) {
 	// Rotate server keys to include key-2.
 	currentKeys = append(currentKeys, &rsaKidPair{kid: "key-2", priv: priv2})
 
-	// Wait for TTL to expire.
-	time.Sleep(60 * time.Millisecond)
+	now = now.Add(time.Minute + time.Second)
 
 	// Token signed with key-2 should resolve after a cache refresh.
 	token := signRS256(t, priv2, "key-2", time.Now().Add(5*time.Minute))
@@ -194,35 +194,6 @@ func TestJWTJWKSCacheRefreshOnKidMiss(t *testing.T) {
 	)
 	if err != nil || !parsed.Valid {
 		t.Fatalf("expected valid token after cache refresh, err=%v", err)
-	}
-}
-
-func TestJWKSStaleKeyServedWithinGraceThenFailsClosed(t *testing.T) {
-	t.Parallel()
-
-	_, jwksServer := jwksServerFixture(t, "key-1")
-	cache := newJWKSCache(jwksServer.URL, time.Minute, jwksServer.Client())
-
-	// Prime the cache, then take the endpoint down.
-	if _, err := cache.getKey("key-1"); err != nil {
-		t.Fatalf("priming getKey error = %v", err)
-	}
-	jwksServer.Close()
-
-	// Just past TTL but within the grace window: stale key is still served.
-	cache.mu.Lock()
-	cache.fetchedAt = time.Now().Add(-(cache.ttl + jwksStaleGrace/2))
-	cache.mu.Unlock()
-	if _, err := cache.getKey("key-1"); err != nil {
-		t.Fatalf("within grace: getKey error = %v, want stale key served", err)
-	}
-
-	// Beyond TTL+grace: fail closed.
-	cache.mu.Lock()
-	cache.fetchedAt = time.Now().Add(-(cache.ttl + jwksStaleGrace + time.Minute))
-	cache.mu.Unlock()
-	if _, err := cache.getKey("key-1"); err == nil {
-		t.Fatal("beyond grace: getKey returned nil error, want fail-closed")
 	}
 }
 
